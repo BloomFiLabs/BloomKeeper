@@ -1,0 +1,15 @@
+{
+  "name": "bloom-server",
+  "version": "1.0.0",
+  "description": "Bloom Server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo 'Server dev script - add your dev command here'",
+    "build": "echo 'Server build script - add your build command here'",
+    "start": "echo 'Server start script - add your start command here'"
+  },
+  "devDependencies": {},
+  "dependencies": {}
+}
+

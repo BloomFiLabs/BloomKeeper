@@ -1,0 +1,16 @@
+{
+  "name": "bloom-contracts",
+  "version": "1.0.0",
+  "description": "Bloom Smart Contracts",
+  "private": true,
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "test:coverage": "forge coverage",
+    "lint": "forge fmt --check",
+    "format": "forge fmt"
+  },
+  "devDependencies": {},
+  "dependencies": {}
+}
+
