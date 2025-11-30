@@ -1,0 +1,27 @@
+{
+  "name": "aster-perp-script",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone TypeScript utility for opening a BNB/USDT perpetual position on Aster DEX",
+  "main": "dist/open-perp-position.js",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/open-perp-position.js",
+    "dev": "ts-node open-perp-position.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@vitest/coverage-v8": "^2.1.8",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5",
+    "vitest": "^2.1.8"
+  }
+}
