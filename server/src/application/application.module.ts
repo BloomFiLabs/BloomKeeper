@@ -2,21 +2,28 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { DomainModule } from '../domain/domain.module';
 import { GraphModule } from '../infrastructure/adapters/graph/graph.module';
-import { PersistenceModule } from '../infrastructure/adapters/persistence/persistence.module';
 import { BlockchainModule } from '../infrastructure/adapters/blockchain/blockchain.module';
-import { BotService } from './services/BotService';
+// StrategyBotService disabled - using perp keeper only
+// import { StrategyBotService } from './services/StrategyBotService';
 import { DeribitAdapter } from '../infrastructure/adapters/external/DeribitAdapter';
+import { PerformanceTracker } from './services/PerformanceTracker';
+// HyperLiquidDataProvider and HyperLiquidExecutor moved to PerpKeeperModule
+// (they require HyperLiquidWebSocketProvider which is only in PerpKeeperModule)
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     DomainModule,
     GraphModule,
-    PersistenceModule,
     BlockchainModule,
+    // PersistenceModule is imported in app.module.ts conditionally
   ],
-  providers: [BotService, DeribitAdapter],
-  exports: [BotService],
+  providers: [
+    // StrategyBotService disabled - using perp keeper only
+    DeribitAdapter, 
+    PerformanceTracker,
+    // HyperLiquidDataProvider and HyperLiquidExecutor removed - use PerpKeeperModule instead
+  ],
+  exports: [],
 })
 export class ApplicationModule {}
-

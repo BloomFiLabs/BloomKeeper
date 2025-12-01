@@ -1,18 +1,19 @@
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { BotStateEntity } from './entities/BotState.entity';
-import { CandleEntity } from './entities/Candle.entity';
-import { PostgresBotStateRepository } from './PostgresBotStateRepository';
+import { Module, Global } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { PrismaService } from './prisma.service';
+import { PrismaBotStateRepository } from './PrismaBotStateRepository';
 
+@Global()
 @Module({
-  imports: [TypeOrmModule.forFeature([BotStateEntity, CandleEntity])],
+  imports: [ConfigModule],
   providers: [
+    PrismaService,
     {
       provide: 'IBotStateRepository',
-      useClass: PostgresBotStateRepository,
+      useClass: PrismaBotStateRepository,
     },
   ],
-  exports: ['IBotStateRepository'],
+  exports: ['IBotStateRepository', PrismaService],
 })
 export class PersistenceModule {}
 

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Contract, Wallet, JsonRpcProvider } from 'ethers';
+import { Contract, Wallet, JsonRpcProvider, formatUnits } from 'ethers';
 import { IStrategyExecutor } from '../../../domain/ports/IStrategyExecutor';
 
 @Injectable()
@@ -10,8 +10,9 @@ export class EthersStrategyExecutor implements IStrategyExecutor {
   private provider: JsonRpcProvider;
 
   private readonly STRATEGY_ABI = [
-    'function rebalance() external',
+    'function rebalance(uint256 rangePct1e5) external',
     'function emergencyExit() external',
+    'function harvest() external',
   ];
 
   constructor(private configService: ConfigService) {
@@ -27,24 +28,62 @@ export class EthersStrategyExecutor implements IStrategyExecutor {
     }
   }
 
-  async rebalance(strategyAddress: string): Promise<string> {
-    return this.executeWithRetry(() => this._rebalance(strategyAddress), 'rebalance');
+  async rebalance(strategyAddress: string, rangePct1e5?: bigint): Promise<string> {
+    return this.executeWithRetry(() => this._rebalance(strategyAddress, rangePct1e5), 'rebalance');
   }
 
   async emergencyExit(strategyAddress: string): Promise<string> {
       return this.executeWithRetry(() => this._emergencyExit(strategyAddress), 'emergencyExit');
   }
 
-  private async _rebalance(strategyAddress: string): Promise<string> {
+  async harvest(strategyAddress: string): Promise<string> {
+      return this.executeWithRetry(() => this._harvest(strategyAddress), 'harvest');
+  }
+
+  async getLastHarvestAmount(strategyAddress: string): Promise<number> {
+    try {
+      const EVENT_ABI = [
+        'event ManagerFeeTaken(uint256 amount)',
+      ];
+      
+      const contract = new Contract(strategyAddress, EVENT_ABI, this.provider);
+      const latestBlock = await this.provider.getBlockNumber();
+      const fromBlock = Math.max(0, latestBlock - 100); // Last ~200 seconds on Base
+      
+      const filter = contract.filters.ManagerFeeTaken();
+      const events = await contract.queryFilter(filter, fromBlock, latestBlock);
+      
+      if (events.length > 0) {
+        const lastEvent = events[events.length - 1];
+        // Cast to EventLog to access args
+        if ('args' in lastEvent && lastEvent.args) {
+          const managerFee = Number(formatUnits(lastEvent.args.amount, 6)); // USDC has 6 decimals
+          const totalCollected = managerFee / 0.2; // Manager gets 20%, so total = managerFee / 0.2
+          
+          this.logger.log(`📊 Last harvest: Manager fee = $${managerFee.toFixed(4)}, Total = $${totalCollected.toFixed(4)}`);
+          return totalCollected;
+        }
+      }
+      
+      return 0;
+    } catch (error) {
+      this.logger.warn(`Could not query harvest events: ${error.message}`);
+      return 0;
+    }
+  }
+
+  private async _rebalance(strategyAddress: string, rangePct1e5?: bigint): Promise<string> {
     if (!this.wallet) throw new Error('Keeper wallet not initialized');
 
-    this.logger.log(`Executing rebalance on ${strategyAddress}...`);
+    // Use provided range or 0 (contract will use activeRange)
+    const rangeParam = rangePct1e5 ?? 0n;
+    this.logger.log(`Executing rebalance on ${strategyAddress} with range ${rangeParam.toString()}...`);
     const contract = new Contract(strategyAddress, this.STRATEGY_ABI, this.wallet);
     
     // Estimate gas
     let gasLimit;
     try {
-        gasLimit = await contract.rebalance.estimateGas();
+        gasLimit = await contract.rebalance.estimateGas(rangeParam);
         // Add buffer
         gasLimit = (gasLimit * 120n) / 100n;
     } catch (e) {
@@ -52,7 +91,7 @@ export class EthersStrategyExecutor implements IStrategyExecutor {
         gasLimit = 3000000n; // Fallback
     }
 
-    const tx = await contract.rebalance({ gasLimit });
+    const tx = await contract.rebalance(rangeParam, { gasLimit });
     this.logger.log(`Transaction sent: ${tx.hash}`);
     
     const receipt = await tx.wait();
@@ -71,6 +110,20 @@ export class EthersStrategyExecutor implements IStrategyExecutor {
     this.logger.log(`Transaction sent: ${tx.hash}`);
     
     const receipt = await tx.wait();
+    return receipt.hash;
+  }
+
+  private async _harvest(strategyAddress: string): Promise<string> {
+    if (!this.wallet) throw new Error('Keeper wallet not initialized');
+  
+    this.logger.log(`💰 Collecting trading fees from ${strategyAddress}...`);
+    const contract = new Contract(strategyAddress, this.STRATEGY_ABI, this.wallet);
+    
+    const tx = await contract.harvest();
+    this.logger.log(`Transaction sent: ${tx.hash}`);
+    
+    const receipt = await tx.wait();
+    this.logger.log(`✅ Fees collected and distributed to vault`);
     return receipt.hash;
   }
 

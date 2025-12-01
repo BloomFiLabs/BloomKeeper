@@ -1117,7 +1117,8 @@ export class UniswapV4Adapter extends TheGraphDataAdapter {
 
 export class UniswapV3Adapter extends TheGraphDataAdapter {
   constructor(config: Omit<TheGraphConfig, 'subgraphUrl'> & { apiKey?: string; useUrlAuth?: boolean }) {
-    const subgraphId = '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
+    // Base network Uniswap V3 subgraph (matching live bot)
+    const subgraphId = 'HMuAwufqZ1YCRmzL2SfHTVkzZovC9VL2UAKhjvRqKiR1';
     
     let endpoint: string;
     let apiKeyForHeader: string | undefined;

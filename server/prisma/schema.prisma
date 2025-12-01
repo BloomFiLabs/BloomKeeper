@@ -1,0 +1,38 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model BotState {
+  poolId              String   @id
+  priceLower          Float
+  priceUpper          Float
+  lastRebalancePrice  Float
+  lastRebalanceAt     DateTime @default(now())
+  currentVolatility   Float?
+  currentHurst        Float?
+  isActive            Boolean  @default(true)
+
+  @@map("bot_state")
+}
+
+model Candle {
+  id           String   @id @default(uuid())
+  poolAddress  String
+  timestamp    DateTime
+  open         Float
+  high         Float
+  low          Float
+  close        Float
+  volume       Float
+
+  @@unique([poolAddress, timestamp])
+  @@index([poolAddress, timestamp])
+  @@map("candles")
+}

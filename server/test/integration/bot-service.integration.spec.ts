@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BotService } from '../../src/application/services/BotService';
 import { StatisticalAnalyst } from '../../src/domain/services/StatisticalAnalyst';
 import { RangeOptimizer } from '../../src/domain/services/RangeOptimizer';
+import { RebalanceDecisionEngine } from '../../src/domain/services/RebalanceDecisionEngine';
 import { GarchService } from '../../src/domain/services/GarchService';
 import { DeribitAdapter } from '../../src/infrastructure/adapters/external/DeribitAdapter';
 import { IMarketDataProvider } from '../../src/domain/ports/IMarketDataProvider';
@@ -25,6 +26,7 @@ describe('BotService Integration - Full Flow with Smart Contract', () => {
     mockMarketData = {
       getHistory: jest.fn(),
       getLatestCandle: jest.fn(),
+      getPoolFeeApr: jest.fn().mockResolvedValue(11.0),
     };
 
     mockBotStateRepo = {
@@ -37,6 +39,23 @@ describe('BotService Integration - Full Flow with Smart Contract', () => {
     mockExecutor = {
       rebalance: jest.fn().mockResolvedValue('0xTransactionHash123'),
       emergencyExit: jest.fn().mockResolvedValue('0xEmergencyHash'),
+      harvest: jest.fn().mockResolvedValue('0xHarvestHash'),
+      getLastHarvestAmount: jest.fn().mockResolvedValue(0.002),
+    };
+
+    const mockBlockchain = {
+      getStrategyState: jest.fn().mockResolvedValue({ totalAssets: BigInt(10000 * 1e6), totalPrincipal: BigInt(10000 * 1e6) }),
+      getGasPriceGwei: jest.fn().mockResolvedValue(0.1),
+      getStrategyPositionRange: jest.fn().mockResolvedValue({ lower: 2000, upper: 4000 }),
+      tickToPrice: jest.fn((tick: number) => Math.pow(1.0001, tick)),
+    };
+
+    const mockDecisionEngine = {
+      decide: jest.fn().mockReturnValue({
+        shouldRebalance: true,
+        reason: 'Test: Rebalance triggered for testing',
+        confidence: 0.9,
+      }),
     };
 
     const mockDeribit = {
@@ -53,6 +72,8 @@ describe('BotService Integration - Full Flow with Smart Contract', () => {
         { provide: 'IMarketDataProvider', useValue: mockMarketData },
         { provide: 'IBotStateRepository', useValue: mockBotStateRepo },
         { provide: 'IStrategyExecutor', useValue: mockExecutor },
+        { provide: 'IBlockchainAdapter', useValue: mockBlockchain },
+        { provide: RebalanceDecisionEngine, useValue: mockDecisionEngine },
         { provide: DeribitAdapter, useValue: mockDeribit },
       ],
     }).compile();

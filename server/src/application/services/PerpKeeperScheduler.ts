@@ -1,0 +1,361 @@
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Cron, CronExpression, Interval } from '@nestjs/schedule';
+import { PerpKeeperOrchestrator } from '../../domain/services/PerpKeeperOrchestrator';
+import { ConfigService } from '@nestjs/config';
+import { PerpKeeperPerformanceLogger } from '../../infrastructure/logging/PerpKeeperPerformanceLogger';
+import { PerpKeeperService } from './PerpKeeperService';
+import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
+import * as cliProgress from 'cli-progress';
+
+/**
+ * PerpKeeperScheduler - Scheduled execution for funding rate arbitrage
+ * 
+ * Executes hourly at funding rate clock (typically :00 minutes)
+ * Also runs immediately on startup
+ */
+@Injectable()
+export class PerpKeeperScheduler implements OnModuleInit {
+  private readonly logger = new Logger(PerpKeeperScheduler.name);
+  private symbols: string[] = []; // Will be populated by auto-discovery or configuration
+  private readonly minSpread: number;
+  private readonly maxPositionSizeUsd: number;
+  private isRunning = false;
+  private lastDiscoveryTime: number = 0;
+  private readonly DISCOVERY_CACHE_TTL = 3600000; // 1 hour cache
+
+  constructor(
+    private readonly orchestrator: PerpKeeperOrchestrator,
+    private readonly configService: ConfigService,
+    private readonly performanceLogger: PerpKeeperPerformanceLogger,
+    private readonly keeperService: PerpKeeperService,
+  ) {
+    // Initialize orchestrator with exchange adapters
+    const adapters = this.keeperService.getExchangeAdapters();
+    this.orchestrator.initialize(adapters);
+    this.logger.log(`Orchestrator initialized with ${adapters.size} exchange adapters`);
+
+    // Load configuration
+    const symbolsEnv = this.configService.get<string>('KEEPER_SYMBOLS');
+    // If KEEPER_SYMBOLS is explicitly set, use it; otherwise auto-discover
+    if (symbolsEnv) {
+      this.symbols = symbolsEnv.split(',').map(s => s.trim());
+      this.logger.log(
+        `Scheduler initialized with configured symbols: ${this.symbols.join(',')}`
+      );
+    } else {
+      this.logger.log(
+        `Scheduler initialized - will auto-discover all assets on first run`
+      );
+    }
+    
+    this.minSpread = parseFloat(this.configService.get<string>('KEEPER_MIN_SPREAD') || '0.0001');
+    this.maxPositionSizeUsd = parseFloat(
+      this.configService.get<string>('KEEPER_MAX_POSITION_SIZE_USD') || '10000',
+    );
+
+    this.logger.log(
+      `Configuration: minSpread=${this.minSpread}, maxPositionSize=${this.maxPositionSizeUsd}`
+    );
+  }
+
+  /**
+   * Run immediately on module initialization (startup)
+   */
+  async onModuleInit() {
+    // Wait a bit for other services to initialize
+    setTimeout(async () => {
+      this.logger.log('🚀 Starting initial arbitrage opportunity check on startup...');
+      await this.executeHourly();
+    }, 2000); // 2 second delay to ensure all services are ready
+  }
+
+  /**
+   * Discover all common assets across exchanges (with caching)
+   */
+  private async discoverAssetsIfNeeded(): Promise<string[]> {
+    const now = Date.now();
+    
+    // Use cache if available and fresh
+    if (this.symbols.length > 0 && (now - this.lastDiscoveryTime) < this.DISCOVERY_CACHE_TTL) {
+      return this.symbols;
+    }
+
+    // Auto-discover all assets
+    try {
+      this.logger.log('Auto-discovering all available assets across exchanges...');
+      this.symbols = await this.orchestrator.discoverCommonAssets();
+      this.lastDiscoveryTime = now;
+      this.logger.log(
+        `Auto-discovery complete: Found ${this.symbols.length} common assets: ${this.symbols.join(', ')}`
+      );
+      return this.symbols;
+    } catch (error: any) {
+      this.logger.error(`Asset discovery failed: ${error.message}`);
+      // Fallback to defaults if discovery fails
+      if (this.symbols.length === 0) {
+        this.symbols = ['ETH', 'BTC'];
+        this.logger.warn(`Using fallback symbols: ${this.symbols.join(', ')}`);
+      }
+      return this.symbols;
+    }
+  }
+
+  /**
+   * Execute hourly at :00 minutes (funding rate clock)
+   * Adjust cron expression based on actual funding rate schedule
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async executeHourly() {
+    if (this.isRunning) {
+      this.logger.warn('Previous execution still running, skipping this cycle');
+      return;
+    }
+
+    this.isRunning = true;
+    const startTime = Date.now();
+
+    try {
+      this.logger.log('Starting hourly funding rate arbitrage execution...');
+
+      // Auto-discover all assets if not configured
+      const symbols = await this.discoverAssetsIfNeeded();
+      
+      if (symbols.length === 0) {
+        this.logger.warn('No assets found to compare, skipping execution');
+        return;
+      }
+
+      // Check balances before proceeding
+      await this.checkBalances();
+
+      // Health check
+      const healthCheck = await this.orchestrator.healthCheck();
+      if (!healthCheck.healthy) {
+        this.logger.warn('Exchanges not healthy, skipping execution');
+        return;
+      }
+
+      // Find opportunities across ALL discovered assets (with progress bar)
+      this.logger.log(`🔍 Searching for arbitrage opportunities across ${symbols.length} assets...`);
+      const opportunities = await this.orchestrator.findArbitrageOpportunities(
+        symbols,
+        this.minSpread,
+        true, // Show progress bar
+      );
+
+      this.logger.log(`Found ${opportunities.length} arbitrage opportunities`);
+
+      if (opportunities.length === 0) {
+        this.logger.log('No opportunities found, skipping execution');
+        return;
+      }
+
+      // Execute strategy across ALL discovered assets
+      const result = await this.orchestrator.executeArbitrageStrategy(
+        symbols,
+        this.minSpread,
+        this.maxPositionSizeUsd,
+      );
+
+      // Track arbitrage opportunities
+      this.performanceLogger.recordArbitrageOpportunity(true, result.opportunitiesExecuted > 0);
+      if (result.opportunitiesExecuted > 0) {
+        this.performanceLogger.recordArbitrageOpportunity(false, true);
+      }
+
+      // Update position metrics with current funding rates
+      await this.updatePerformanceMetrics();
+
+      const duration = Date.now() - startTime;
+
+      this.logger.log(
+        `Execution completed in ${duration}ms: ` +
+        `${result.opportunitiesExecuted}/${result.opportunitiesEvaluated} opportunities executed, ` +
+        `Expected return: $${result.totalExpectedReturn.toFixed(2)}, ` +
+        `Orders placed: ${result.ordersPlaced}`,
+      );
+
+      if (result.errors.length > 0) {
+        this.logger.warn(`Execution had ${result.errors.length} errors:`, result.errors);
+      }
+    } catch (error: any) {
+      this.logger.error(`Hourly execution failed: ${error.message}`, error.stack);
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  /**
+   * Update performance metrics with current positions and funding rates
+   */
+  private async updatePerformanceMetrics(): Promise<void> {
+    try {
+      const positions = await this.keeperService.getAllPositions();
+      
+      // Get funding rate comparisons for all discovered symbols
+      const symbols = await this.discoverAssetsIfNeeded();
+      const fundingComparisons: any[] = [];
+      for (const symbol of symbols) {
+        try {
+          const comparison = await this.orchestrator.compareFundingRates(symbol);
+          if (comparison) {
+            // Convert to array format expected by performance logger
+            for (const rate of comparison.rates) {
+              fundingComparisons.push({
+                symbol: rate.symbol,
+                exchange: rate.exchange,
+                fundingRate: rate.currentRate, // Use currentRate from ExchangeFundingRate
+              });
+            }
+          }
+        } catch (error) {
+          // Skip if we can't get funding rates for this symbol
+        }
+      }
+
+      // Group positions by exchange
+      const positionsByExchange = new Map();
+      for (const position of positions) {
+        const exchangePositions = positionsByExchange.get(position.exchangeType) || [];
+        exchangePositions.push(position);
+        positionsByExchange.set(position.exchangeType, exchangePositions);
+      }
+
+      // Update metrics for each exchange
+      for (const [exchange, exchangePositions] of positionsByExchange.entries()) {
+        // Flatten funding rates from comparisons
+        const exchangeFundingRates: Array<{ symbol: string; exchange: ExchangeType; fundingRate: number }> = [];
+        for (const comparison of fundingComparisons) {
+            for (const rate of comparison.rates) {
+              if (rate.exchange === exchange) {
+                exchangeFundingRates.push({
+                  symbol: rate.symbol,
+                  exchange: rate.exchange,
+                  fundingRate: rate.currentRate, // Use currentRate, not fundingRate
+                });
+              }
+            }
+        }
+        this.performanceLogger.updatePositionMetrics(exchange, exchangePositions, exchangeFundingRates);
+      }
+    } catch (error: any) {
+      this.logger.error(`Failed to update performance metrics: ${error.message}`);
+    }
+  }
+
+  /**
+   * Log comprehensive performance metrics every 5 minutes
+   */
+  @Interval(5 * 60 * 1000) // Every 5 minutes
+  async logPerformanceMetrics() {
+    try {
+      await this.updatePerformanceMetrics();
+      
+      // Get total capital deployed (sum of all balances)
+      let totalCapital = 0;
+      for (const exchangeType of ['ASTER', 'LIGHTER', 'HYPERLIQUID'] as any[]) {
+        try {
+          const balance = await this.keeperService.getBalance(exchangeType);
+          totalCapital += balance;
+        } catch (error) {
+          // Skip if we can't get balance
+        }
+      }
+
+      this.performanceLogger.logPerformanceMetrics(totalCapital);
+    } catch (error: any) {
+      this.logger.error(`Failed to log performance metrics: ${error.message}`);
+    }
+  }
+
+  /**
+   * Log compact performance summary every minute
+   */
+  @Interval(60 * 1000) // Every minute
+  async logCompactSummary() {
+    try {
+      // Get total capital deployed
+      let totalCapital = 0;
+      for (const exchangeType of ['ASTER', 'LIGHTER', 'HYPERLIQUID'] as any[]) {
+        try {
+          const balance = await this.keeperService.getBalance(exchangeType);
+          totalCapital += balance;
+        } catch (error) {
+          // Skip if we can't get balance
+        }
+      }
+
+      this.performanceLogger.logCompactSummary(totalCapital);
+    } catch (error: any) {
+      // Silently fail for compact summary to avoid spam
+    }
+  }
+
+  /**
+   * Manual trigger for testing
+   */
+  async executeManually(): Promise<void> {
+    await this.executeHourly();
+  }
+
+  /**
+   * Check balances across all exchanges and warn if insufficient
+   */
+  private async checkBalances(): Promise<void> {
+    const minBalanceForTrading = 10; // Minimum $10 needed per exchange to cover fees
+    const exchanges = [ExchangeType.ASTER, ExchangeType.LIGHTER, ExchangeType.HYPERLIQUID];
+    
+    this.logger.log('💰 Checking exchange balances...');
+    
+    const balances: Array<{ exchange: ExchangeType; balance: number; canTrade: boolean }> = [];
+    
+    for (const exchange of exchanges) {
+      try {
+        const balance = await this.keeperService.getBalance(exchange);
+        const canTrade = balance >= minBalanceForTrading;
+        balances.push({ exchange, balance, canTrade });
+        
+        const status = canTrade ? '✅' : '⚠️';
+        this.logger.log(`   ${status} ${exchange}: $${balance.toFixed(2)} ${canTrade ? '(can trade)' : `(need $${minBalanceForTrading}+)`}`);
+        
+        // For HyperLiquid, also log equity to see total account value
+        if (exchange === ExchangeType.HYPERLIQUID) {
+          try {
+            const equity = await this.keeperService.getEquity(exchange);
+            this.logger.log(`      └─ Equity: $${equity.toFixed(2)} (includes margin used)`);
+          } catch (e) {
+            // Ignore equity fetch errors
+          }
+        }
+      } catch (error: any) {
+        this.logger.warn(`   ❌ ${exchange}: Failed to check balance - ${error.message}`);
+        balances.push({ exchange, balance: 0, canTrade: false });
+      }
+    }
+    
+    const tradableExchanges = balances.filter(b => b.canTrade).length;
+    const totalBalance = balances.reduce((sum, b) => sum + b.balance, 0);
+    const minBalance = Math.min(...balances.map(b => b.balance).filter(b => b > 0));
+    
+    this.logger.log(`   Total balance across exchanges: $${totalBalance.toFixed(2)}`);
+    if (minBalance > 0) {
+      this.logger.log(`   Minimum balance (limits position size): $${minBalance.toFixed(2)}`);
+    }
+    
+    if (tradableExchanges < 2) {
+      this.logger.warn(
+        `⚠️  INSUFFICIENT BALANCE: Need at least $${minBalanceForTrading} on 2+ exchanges to execute arbitrage. ` +
+        `Currently have tradable balance on ${tradableExchanges} exchange(s). ` +
+        `The bot will use whatever balance is available (minimum $${minBalanceForTrading} per exchange).`
+      );
+    } else {
+      this.logger.log(
+        `✅ Ready for arbitrage: ${tradableExchanges} exchange(s) have sufficient balance. ` +
+        `Position size will be limited by minimum balance: $${minBalance.toFixed(2)}`
+      );
+    }
+    
+    this.logger.log('');
+  }
+}
+

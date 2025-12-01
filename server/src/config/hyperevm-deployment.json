@@ -1,0 +1,25 @@
+{
+  "chainId": 999,
+  "chainName": "HyperEVM Mainnet",
+  "rpcUrl": "https://hyperliquid-mainnet.g.alchemy.com/v2/fe3jXYwWdSG3qiVvQWBZ5",
+  "contracts": {
+    "BloomStrategyVault": "0x7eedc4088b197b4ee05bbb00b8c957c411b533df",
+    "HyperEVMFundingStrategy": "0x247062659f997BDb5975b984c2bE2aDF87661314",
+    "DeltaNeutralFundingStrategy": "0xD5a0AAc6B35e76f5FA1CE0481b4d7F4a85947dbe",
+    "USDC": "0xb88339CB7199b77E23DB6E890353E22632Ba630f",
+    "WETH": "0xADcb2f358Eae6492F61A5F87eb8893d09391d160"
+  },
+  "hyperLend": {
+    "lendingPool": "",
+    "comment": "Get from https://docs.hyperlend.finance or app.hyperlend.finance"
+  },
+  "hyperLiquid": {
+    "L1Read": "0x0000000000000000000000000000000000000800",
+    "CoreWriter": "0x3333333333333333333333333333333333333333"
+  },
+  "deployedAt": "2025-11-25T11:00:00Z",
+  "deployer": "0x16A1e17144f10091D6dA0eCA7F336Ccc76462e03"
+}
+
+
+
