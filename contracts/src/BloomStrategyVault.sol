@@ -5,13 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-
-interface IStrategy {
-    function deposit(uint256 amount) external;
-    function withdraw(uint256 amount) external;
-    function claimRewards(address recipient) external returns (uint256);
-    function totalAssets() external view returns (uint256);
-}
+import "./IStrategy.sol";
 
 contract BloomStrategyVault is ERC4626, Ownable {
     using SafeERC20 for IERC20;

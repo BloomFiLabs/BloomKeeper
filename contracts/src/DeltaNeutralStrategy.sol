@@ -47,8 +47,11 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
     address public immutable pool;
     
     uint256 public constant RANGE_WIDTH_PCT = 500_000;
-    uint256 public constant TARGET_RANGE = 50_000; // 0.5%
+    uint256 public constant TARGET_RANGE = 50_000; // 0.5% (default/fallback)
     uint256 public constant SAFE_LTV = 60; // 60% (Lowered from 70% for safety)
+    
+    // Current active range (can be updated by keeper)
+    uint256 public activeRange = TARGET_RANGE;
     uint256 public constant SLIPPAGE_BPS = 200; // 2%
     
     uint256 public constant USER_HURDLE_BPS = 3500; // Users get first 35% APY
@@ -104,7 +107,7 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
         require(amount > 0, "Deposit amount > 0");
         IERC20(usdc).safeTransferFrom(msg.sender, address(this), amount);
         totalPrincipal += amount;
-        _openPosition(amount);
+        _openPosition(amount, activeRange);
     }
 
     function withdraw(uint256 amount) external onlyVault {
@@ -173,7 +176,7 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
         assets += colVal;
         
         // 4. LP Position Value
-        (uint256 amount0, uint256 amount1) = liquidityManager.getPositionAmounts(address(this), pool, TARGET_RANGE);
+        (uint256 amount0, uint256 amount1) = liquidityManager.getPositionAmounts(address(this), pool, activeRange);
         // amount0 is WETH, amount1 is USDC
         if (amount0 > 0) assets += _convertWethToUsdc(amount0);
         assets += amount1;
@@ -224,11 +227,19 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
     }
 
     /// @notice Claims rewards to Vault, closes old position, and opens new centered position.
-    function rebalance() external onlyKeeper {
+    /// @param rangePct1e5 Optional range width in 1e5 scale (e.g., 50_000 = 0.5%). If 0, uses current activeRange.
+    function rebalance(uint256 rangePct1e5) external onlyKeeper {
+        // Use provided range or fall back to current active range
+        uint256 targetRange = rangePct1e5 > 0 ? rangePct1e5 : activeRange;
+        
+        // Validate range (0.00001% to 99.99%)
+        require(targetRange >= 1 && targetRange <= 9_999_000, "Invalid range");
+        
+        // ✅ FIX: Claim and unwind BEFORE updating activeRange
         // 1. Claim Rewards to Vault (Profit Taking)
         _claimToVault();
 
-        // 2. Unwind
+        // 2. Unwind using CURRENT activeRange (not targetRange)
         _unwindPosition();
 
         // 3. Withdraw ALL Collateral to re-split efficiently
@@ -255,7 +266,10 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
             }
         }
 
-        // 4. Open New Position with all available USDC
+        // 4. Update activeRange AFTER unwinding old position
+        activeRange = targetRange;
+        
+        // 5. Open New Position with all available USDC
         uint256 totalUsdc = IERC20(usdc).balanceOf(address(this));
         
         // If we have 0 USDC, it means either everything was lost (unlikely) or everything is in WETH?
@@ -275,7 +289,7 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
         // We just reset principal to current assets for accurate tracking moving forward.
         totalPrincipal = totalUsdc;
         
-        _openPosition(totalUsdc);
+        _openPosition(totalUsdc, targetRange);
         
         emit Rebalanced(block.timestamp, totalUsdc);
     }
@@ -313,7 +327,7 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
 
     function _harvest(address recipient) internal returns (uint256) {
         // Collect raw fees
-        (uint256 fees0, uint256 fees1) = liquidityManager.collectFees(pool, TARGET_RANGE, address(this));
+        (uint256 fees0, uint256 fees1) = liquidityManager.collectFees(pool, activeRange, address(this));
         
         uint256 totalUsdcCollected = fees1;
         if (fees0 > 0) {
@@ -359,7 +373,7 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
         return 0;
     }
 
-    function _openPosition(uint256 amount) internal {
+    function _openPosition(uint256 amount, uint256 rangePct1e5) internal {
         uint256 usdcToLp = (amount * SAFE_LTV) / (100 + SAFE_LTV);
         uint256 usdcToCollateral = amount - usdcToLp;
         
@@ -376,7 +390,7 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
 
         // 2. Calculate Exact WETH to Borrow using LiquidityAmounts
         // Step A: Get Tick Range
-        (int24 tickLower, int24 tickUpper) = liquidityManager.calculateRangeTicks(pool, TARGET_RANGE);
+        (int24 tickLower, int24 tickUpper) = liquidityManager.calculateRangeTicks(pool, rangePct1e5);
         
         // Step B: Get Current Price
         (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
@@ -417,7 +431,7 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
 
         LiquidityRangeManager.ManageLiquidityParams memory lpParams = LiquidityRangeManager.ManageLiquidityParams({
             pool: pool,
-            rangePct1e5: TARGET_RANGE,
+            rangePct1e5: rangePct1e5,
             amount0Desired: wethToBorrow, 
             amount1Desired: usdcToLp,
             amount0Min: amount0Min,
@@ -430,11 +444,11 @@ contract DeltaNeutralStrategy is IStrategy, Ownable {
 
     function _unwindPosition() internal {
         // 1. Remove Liquidity
-        (uint256 tokenId, uint128 liquidity,,) = liquidityManager.getManagedPosition(address(this), pool, TARGET_RANGE);
+        (uint256 tokenId, uint128 liquidity,,) = liquidityManager.getManagedPosition(address(this), pool, activeRange);
         if(tokenId != 0 && liquidity > 0) {
             LiquidityRangeManager.DecreaseLiquidityParams memory decParams = LiquidityRangeManager.DecreaseLiquidityParams({
                 pool: pool,
-                rangePct1e5: TARGET_RANGE,
+                rangePct1e5: activeRange,
                 liquidity: liquidity,
                 amount0Min: 0,
                 amount1Min: 0,

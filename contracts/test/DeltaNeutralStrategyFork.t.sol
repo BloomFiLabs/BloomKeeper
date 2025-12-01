@@ -195,7 +195,7 @@ contract DeltaNeutralStrategyForkTest is Test {
         
         // Test Rebalance
         vm.prank(keeper);
-        strategy.rebalance();
+        strategy.rebalance(50_000); // Pass range parameter
         
         // Check LP exists (new position)
         (uint256 tokenId,,,) = liquidityManager.getManagedPosition(address(strategy), POOL_WETH_USDC, 50_000);
