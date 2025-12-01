@@ -353,13 +353,26 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         throw new Error('No authentication method available');
       }
 
-      const formData = new URLSearchParams();
+      // Build query string manually to ensure signature is last parameter
+      // This matches the Aster API documentation format
+      const queryParams: string[] = [];
+      const signatureParam: string[] = [];
+      
       for (const [key, value] of Object.entries(params)) {
-        formData.append(key, String(value));
+        if (key === 'signature') {
+          signatureParam.push(`signature=${value}`);
+        } else {
+          queryParams.push(`${key}=${encodeURIComponent(String(value))}`);
+        }
       }
+      
+      // Sort query params (excluding signature)
+      queryParams.sort();
+      
+      // Build final query string with signature as last parameter
+      const queryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
-      const response = await this.client.get('/fapi/v2/positionRisk', {
-        params: Object.fromEntries(formData),
+      const response = await this.client.get(`/fapi/v2/positionRisk?${queryString}`, {
         headers,
       });
 
@@ -630,7 +643,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
             `Current timestamp format: seconds (${Math.floor(Date.now() / 1000)})`
           );
         } else {
-          this.logger.warn(`Aster API returned 400 Bad Request: ${errorMsg}`);
+          this.logger.warn(`Aster API returned Bad Request: ${JSON.stringify(error.response?.data)}`);
         }
         return 0;
       }
@@ -659,13 +672,26 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         throw new Error('No authentication method available');
       }
 
-      const formData = new URLSearchParams();
+      // Build query string manually to ensure signature is last parameter
+      // This matches the Aster API documentation format
+      const queryParams: string[] = [];
+      const signatureParam: string[] = [];
+      
       for (const [key, value] of Object.entries(params)) {
-        formData.append(key, String(value));
+        if (key === 'signature') {
+          signatureParam.push(`signature=${value}`);
+        } else {
+          queryParams.push(`${key}=${encodeURIComponent(String(value))}`);
+        }
       }
+      
+      // Sort query params (excluding signature)
+      queryParams.sort();
+      
+      // Build final query string with signature as last parameter
+      const queryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
-      const response = await this.client.get('/fapi/v2/account', {
-        params: Object.fromEntries(formData),
+      const response = await this.client.get(`/fapi/v2/account?${queryString}`, {
         headers,
       });
 
@@ -699,6 +725,463 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     } catch (error: any) {
       throw new ExchangeError(
         `Connection test failed: ${error.message}`,
+        ExchangeType.ASTER,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  async transferInternal(amount: number, toPerp: boolean): Promise<string> {
+    try {
+      if (amount <= 0) {
+        throw new Error('Transfer amount must be greater than 0');
+      }
+
+      // Aster API: type 1 = spot to futures, type 2 = futures to spot
+      const transferType = toPerp ? 1 : 2;
+      const direction = toPerp ? 'spot → futures' : 'futures → spot';
+      this.logger.log(`Transferring $${amount.toFixed(2)} ${direction} on Aster...`);
+
+      // Use API key authentication if available
+      let params: Record<string, any>;
+      let headers: Record<string, string> = {};
+
+      if (this.apiKey && this.apiSecret) {
+        params = this.signParamsWithApiKey({
+          asset: 'USDT', // Default to USDT for transfers
+          amount: amount.toString(),
+          type: transferType,
+        });
+        headers['X-MBX-APIKEY'] = this.apiKey;
+      } else {
+        throw new Error('API key and secret required for transfers. Provide ASTER_API_KEY and ASTER_API_SECRET.');
+      }
+
+      // Manually build query string to ensure signature is last
+      const queryParams: string[] = [];
+      const signatureParam: string[] = [];
+      for (const [key, value] of Object.entries(params)) {
+        if (key === 'signature') {
+          signatureParam.push(`${key}=${value}`);
+        } else {
+          queryParams.push(`${key}=${value}`);
+        }
+      }
+      queryParams.sort(); // Sort other params
+      const finalQueryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+
+      const response = await this.client.post(`/fapi/v1/transfer?${finalQueryString}`, {}, { headers });
+
+      if (response.data && response.data.tranId) {
+        const tranId = response.data.tranId;
+        this.logger.log(`✅ Transfer successful: ${direction} - Transaction ID: ${tranId}`);
+        return tranId.toString();
+      } else {
+        throw new Error(`Transfer failed: ${JSON.stringify(response.data)}`);
+      }
+    } catch (error: any) {
+      this.logger.error(`Failed to transfer ${toPerp ? 'spot → futures' : 'futures → spot'}: ${error.message}`);
+      if (error.response) {
+        this.logger.debug(`Aster API error response: ${JSON.stringify(error.response.data)}`);
+      }
+      throw new ExchangeError(
+        `Failed to transfer: ${error.message}`,
+        ExchangeType.ASTER,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  async depositExternal(amount: number, asset: string, destination?: string): Promise<string> {
+    try {
+      if (amount <= 0) {
+        throw new Error('Deposit amount must be greater than 0');
+      }
+
+      this.logger.log(`Depositing $${amount.toFixed(2)} ${asset} to Aster...`);
+
+      // Aster external deposits typically require on-chain interaction
+      // Check if there's a deposit endpoint in the API
+      let params: Record<string, any>;
+      let headers: Record<string, string> = {};
+
+      if (this.apiKey && this.apiSecret) {
+        params = this.signParamsWithApiKey({
+          asset: asset,
+          amount: amount.toString(),
+        });
+        headers['X-MBX-APIKEY'] = this.apiKey;
+      } else {
+        throw new Error('API key and secret required for deposits. Provide ASTER_API_KEY and ASTER_API_SECRET.');
+      }
+
+      // Try deposit endpoint (may not exist, but we'll try)
+      try {
+        const queryParams: string[] = [];
+        const signatureParam: string[] = [];
+        for (const [key, value] of Object.entries(params)) {
+          if (key === 'signature') {
+            signatureParam.push(`${key}=${value}`);
+          } else {
+            queryParams.push(`${key}=${value}`);
+          }
+        }
+        queryParams.sort();
+        const finalQueryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+
+        const response = await this.client.post(`/fapi/v1/deposit?${finalQueryString}`, {}, { headers });
+
+        if (response.data && (response.data.tranId || response.data.id)) {
+          const depositId = response.data.tranId || response.data.id;
+          this.logger.log(`✅ Deposit successful - Transaction ID: ${depositId}`);
+          return depositId.toString();
+        } else {
+          throw new Error(`Deposit failed: ${JSON.stringify(response.data)}`);
+        }
+      } catch (apiError: any) {
+        // If deposit endpoint doesn't exist, provide helpful error message
+        if (apiError.response?.status === 404 || apiError.response?.status === 405) {
+          throw new Error(
+            'External deposits to Aster must be done by transferring funds to the deposit address on-chain. ' +
+            'This adapter does not support on-chain transactions. Please use a wallet or bridge contract. ' +
+            'Check Aster documentation for deposit address and procedures.'
+          );
+        }
+        throw apiError;
+      }
+    } catch (error: any) {
+      if (error instanceof ExchangeError) {
+        throw error;
+      }
+      this.logger.error(`Failed to deposit ${asset}: ${error.message}`);
+      if (error.response) {
+        this.logger.debug(`Aster API error response: ${JSON.stringify(error.response.data)}`);
+      }
+      throw new ExchangeError(
+        `Failed to deposit: ${error.message}`,
+        ExchangeType.ASTER,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  async withdrawExternal(amount: number, asset: string, destination: string): Promise<string> {
+    try {
+      if (amount <= 0) {
+        throw new Error('Withdrawal amount must be greater than 0');
+      }
+
+      if (!destination || !destination.match(/^0x[a-fA-F0-9]{40}$/)) {
+        throw new Error('Invalid destination address. Must be a valid Ethereum address (0x followed by 40 hex characters)');
+      }
+
+      this.logger.log(`Withdrawing $${amount.toFixed(2)} ${asset} to ${destination} on Aster...`);
+
+      if (!this.wallet || !this.config.userAddress || !this.config.signerAddress) {
+        throw new Error(
+          'Wallet, user address, and signer address required for withdrawals. ' +
+          'Provide ASTER_USER, ASTER_SIGNER, and ASTER_PRIVATE_KEY.'
+        );
+      }
+
+      // Aster withdrawal uses EIP712 signature (not regular Ethereum message signature)
+      // Endpoint: /fapi/aster/user-withdraw (uses API key + HMAC signature with PRIVATE_KEY)
+      // Documentation: https://github.com/asterdex/api-docs/blob/master/aster-deposit-withdrawal.md
+      
+      // Chain ID: 42161 (Arbitrum), 56 (BSC), 1 (Ethereum)
+      // Default to Arbitrum (42161) as that's where most withdrawals go
+      const chainId = 42161; // Arbitrum One
+      
+      // Get withdrawal fee from API (per Aster documentation section 3)
+      // Endpoint: /bapi/futures/v1/public/future/aster/estimate-withdraw-fee
+      let fee: string;
+      try {
+        const feeResponse = await axios.get(
+          'https://www.asterdex.com/bapi/futures/v1/public/future/aster/estimate-withdraw-fee',
+          {
+            params: {
+              chainId: chainId,
+              network: 'EVM',
+              currency: asset.toUpperCase(),
+              accountType: 'spot',
+            },
+            timeout: 10000,
+          }
+        );
+        
+        if (feeResponse.data?.success && feeResponse.data?.data?.gasCost !== undefined) {
+          // gasCost is the estimated withdrawal fee in token units
+          fee = feeResponse.data.data.gasCost.toString();
+          this.logger.debug(`Withdrawal fee from API: ${fee} ${asset}`);
+        } else {
+          // Fallback to a default fee if API doesn't return expected format
+          fee = '0.01';
+          this.logger.warn(`Failed to get fee from API, using default: ${fee}`);
+        }
+      } catch (feeError: any) {
+        // Fallback to a default fee if API call fails
+        fee = '0.01';
+        this.logger.warn(
+          `Failed to query withdrawal fee from API: ${feeError.message}. Using default: ${fee}`
+        );
+      }
+      
+      // Generate nonce (timestamp in milliseconds, then multiply by 1000 for microseconds)
+      // Per Aster docs: "use the current timestamp in milliseconds and multiply '1000'"
+      const nonceMs = Date.now();
+      const nonceValue = nonceMs * 1000; // Convert to microseconds
+      const nonceString = nonceValue.toString(); // String for request body
+      
+      // Map chainId to chain name (required for EIP712 signature)
+      const chainNameMap: Record<number, string> = {
+        56: 'BSC',
+        42161: 'Arbitrum',
+        1: 'ETH',
+      };
+      const destinationChain = chainNameMap[chainId] || 'Arbitrum';
+      
+      // Build EIP712 domain (per Aster documentation)
+      const domain = {
+        name: 'Aster',
+        version: '1',
+        chainId: chainId, // The chainId of the withdraw chain
+        verifyingContract: '0x0000000000000000000000000000000000000000', // Fixed zero address
+      };
+      
+      // Build EIP712 types (per Aster documentation)
+      const types = {
+        Action: [
+          { name: 'type', type: 'string' },
+          { name: 'destination', type: 'address' },
+          { name: 'destination Chain', type: 'string' },
+          { name: 'token', type: 'string' },
+          { name: 'amount', type: 'string' },
+          { name: 'fee', type: 'string' },
+          { name: 'nonce', type: 'uint256' },
+          { name: 'aster chain', type: 'string' },
+        ],
+      };
+      
+      // Build EIP712 message (per Aster documentation)
+      // Note: nonce must be a number (not BigInt) for ethers.js signTypedData
+      // ethers.js will handle the conversion to uint256 internally
+      const message = {
+        type: 'Withdraw',
+        destination: destination.toLowerCase(),
+        'destination Chain': destinationChain,
+        token: asset.toUpperCase(),
+        amount: amount.toFixed(2),
+        fee: fee,
+        nonce: nonceValue, // Use number, ethers.js will convert to uint256
+        'aster chain': 'Mainnet',
+      };
+      
+      // Sign using EIP712 typed data (uses ASTER_PRIVATE_KEY from wallet)
+      this.logger.debug(
+        `EIP712 signature: domain=${JSON.stringify(domain)}, ` +
+        `message=${JSON.stringify(message)}`
+      );
+      
+      const userSignature = await this.wallet.signTypedData(domain, types, message);
+
+      // Use /fapi/aster/user-withdraw endpoint (matches web interface and EIP712 test script)
+      // This endpoint uses API key + HMAC signature with PRIVATE_KEY, and includes EIP712 userSignature
+      if (!this.apiKey) {
+        throw new Error(
+          'API key required for withdrawals. ' +
+          'Provide ASTER_API_KEY.'
+        );
+      }
+
+      // For HMAC signature, use PRIVATE_KEY (per user requirement)
+      // User explicitly stated: "PRIVATE_KEY needs to be used for this call from the .env"
+      let privateKeyForHmac = this.configService.get<string>('PRIVATE_KEY');
+      if (!privateKeyForHmac) {
+        privateKeyForHmac = process.env.PRIVATE_KEY;
+      }
+      if (!privateKeyForHmac) {
+        // Fallback to ASTER_PRIVATE_KEY if PRIVATE_KEY not available
+        privateKeyForHmac = this.configService.get<string>('ASTER_PRIVATE_KEY') || process.env.ASTER_PRIVATE_KEY;
+      }
+      if (!privateKeyForHmac) {
+        throw new Error(
+          'Private key required for withdrawal HMAC signature. ' +
+          'Provide PRIVATE_KEY or ASTER_PRIVATE_KEY in .env.'
+        );
+      }
+      
+      // Remove 0x prefix if present
+      const privateKeyHex = privateKeyForHmac.replace(/^0x/, '');
+
+      // Build parameters for HMAC signing (per Aster docs section 6)
+      // Parameters: chainId, asset, amount, fee, receiver, nonce, userSignature, recvWindow, timestamp
+      // Note: userSignature (EIP712) IS included in the HMAC calculation
+      // nonceString already declared above (line 936)
+      const hmacParams: Record<string, any> = {
+        chainId: chainId.toString(),
+        asset: asset.toUpperCase(),
+        amount: amount.toFixed(2),
+        fee: fee,
+        receiver: destination.toLowerCase(),
+        nonce: nonceString,
+        userSignature: userSignature, // EIP712 signature - included in HMAC
+        recvWindow: 60000, // Match EIP712 test script
+        timestamp: Date.now(),
+      };
+
+      // Remove null/undefined values
+      const cleanParams = Object.fromEntries(
+        Object.entries(hmacParams).filter(([, value]) => value !== null && value !== undefined),
+      );
+
+      // Build query string for HMAC signing (sorted alphabetically)
+      const queryString = Object.keys(cleanParams)
+        .sort()
+        .map((key) => `${key}=${cleanParams[key]}`) // No URL encoding
+        .join('&');
+
+      // Create HMAC SHA256 signature using PRIVATE_KEY
+      this.logger.debug(
+        `HMAC signing details:\n` +
+        `  Private key source: ${this.configService.get<string>('PRIVATE_KEY') ? 'PRIVATE_KEY' : 'ASTER_PRIVATE_KEY'}\n` +
+        `  Private key (first 10 chars): ${privateKeyHex.substring(0, 10)}...\n` +
+        `  Query string: ${queryString.substring(0, 200)}...\n` +
+        `  Query string length: ${queryString.length}`
+      );
+      
+      const hmacSignature = crypto
+        .createHmac('sha256', privateKeyHex)
+        .update(queryString)
+        .digest('hex');
+      
+      this.logger.debug(`HMAC signature: ${hmacSignature}`);
+
+      // Build final query string: include all params + signature last
+      const finalQueryString = `${queryString}&signature=${hmacSignature}`;
+
+      this.logger.debug(
+        `Withdrawal via fapi/aster/user-withdraw endpoint: ${this.config.baseUrl}/fapi/aster/user-withdraw?${finalQueryString.substring(0, 200)}...`
+      );
+
+      // Use /fapi/aster/user-withdraw endpoint (matches web interface EIP712 flow)
+      // Add retry logic for transient errors (-1000, -1001, -1007, -1016)
+      const maxRetries = 3;
+      const retryDelay = 2000; // 2 seconds
+      let lastError: any = null;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const response = await this.client.post(
+            `/fapi/aster/user-withdraw?${finalQueryString}`,
+            {}, // Empty body
+            {
+              headers: {
+                'X-MBX-APIKEY': this.apiKey,
+                'Content-Type': 'application/json',
+              },
+              timeout: 30000,
+            }
+          );
+
+          // Handle response (per Aster API documentation section 6)
+          // /fapi/aster/user-withdraw returns: { withdrawId, hash }
+          if (response.data && response.data.withdrawId) {
+            const withdrawId = response.data.withdrawId;
+            const hash = response.data.hash || 'unknown';
+            this.logger.log(
+              `✅ Withdrawal successful - Withdrawal ID: ${withdrawId}, Hash: ${hash}`
+            );
+            return withdrawId.toString();
+          } else if (response.data && (response.data.id || response.data.tranId)) {
+            // Fallback for other response formats
+            const withdrawId = response.data.id || response.data.tranId;
+            this.logger.log(
+              `✅ Withdrawal successful - Withdrawal ID: ${withdrawId}`
+            );
+            return withdrawId.toString();
+          } else {
+            throw new Error(`Withdrawal failed: ${JSON.stringify(response.data)}`);
+          }
+        } catch (error: any) {
+          lastError = error;
+          const errorCode = error.response?.data?.code;
+          const errorMsg = error.response?.data?.msg || error.message;
+
+          // Check if it's a retryable error
+          const retryableErrors = [-1000, -1001, -1007, -1016]; // UNKNOWN, DISCONNECTED, TIMEOUT, SERVICE_SHUTTING_DOWN
+          const isRetryable = retryableErrors.includes(errorCode);
+          
+          // Check for specific error messages that need longer delays
+          const isMultiChainLimit = errorMsg && errorMsg.toLowerCase().includes('multi chain limit');
+          const isRateLimit = errorMsg && (errorMsg.toLowerCase().includes('rate limit') || errorMsg.toLowerCase().includes('too many'));
+
+          if (isRetryable && attempt < maxRetries) {
+            // Use longer delay for rate limits (30s, 60s, 90s)
+            // Use shorter delay for other retryable errors (2s, 4s, 6s)
+            const delay = (isMultiChainLimit || isRateLimit) 
+              ? 30000 * attempt // 30s, 60s, 90s for rate limits
+              : retryDelay * attempt; // 2s, 4s, 6s for other errors
+            
+            this.logger.warn(
+              `Withdrawal attempt ${attempt}/${maxRetries} failed with retryable error ` +
+              `(${errorCode}: ${errorMsg}). Retrying in ${delay}ms...`
+            );
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          } else {
+            // Not retryable or max retries reached
+            break;
+          }
+        }
+      }
+
+      // If we get here, all retries failed
+      const errorCode = lastError?.response?.data?.code;
+      const errorMsg = lastError?.response?.data?.msg || lastError?.message;
+      
+      // Provide helpful error messages based on error code
+      let errorMessage = `Withdrawal failed after ${maxRetries} attempts`;
+      if (errorCode === -1000) {
+        // Check for specific error messages
+        if (errorMsg && errorMsg.toLowerCase().includes('multi chain limit')) {
+          errorMessage = 'Multi-chain withdrawal rate limit reached. Aster limits withdrawals across different chains. Please wait before retrying or reduce withdrawal frequency.';
+        } else if (errorMsg && errorMsg.toLowerCase().includes('rate limit')) {
+          errorMessage = 'Withdrawal rate limit reached. Please wait before retrying.';
+        } else {
+          errorMessage = 'Service unavailable (UNKNOWN error). Please try again later.';
+        }
+      } else if (errorCode === -1001) {
+        errorMessage = 'Internal error (DISCONNECTED). Please try again later.';
+      } else if (errorCode === -1007) {
+        errorMessage = 'Timeout waiting for response. Please try again later.';
+      } else if (errorCode === -1016) {
+        errorMessage = 'Service is shutting down. Please try again later.';
+      } else if (errorCode === -1022) {
+        errorMessage = 'Invalid signature. Check API key and secret configuration.';
+      } else if (errorCode === -1021) {
+        errorMessage = 'Timestamp outside recvWindow. Check system clock synchronization.';
+      } else if (errorCode === -2015) {
+        errorMessage = 'Invalid API key, IP, or permissions. Check API key configuration.';
+      } else if (errorCode === -2018) {
+        errorMessage = 'Insufficient balance for withdrawal.';
+      } else if (errorMsg) {
+        errorMessage = `${errorMessage}: ${errorMsg} (code: ${errorCode || 'N/A'})`;
+      }
+
+      throw new Error(errorMessage);
+    } catch (error: any) {
+      if (error instanceof ExchangeError) {
+        throw error;
+      }
+      this.logger.error(`Failed to withdraw ${asset} to ${destination}: ${error.message}`);
+      if (error.response) {
+        this.logger.debug(`Aster API error response: ${JSON.stringify(error.response.data)}`);
+      }
+      throw new ExchangeError(
+        `Failed to withdraw: ${error.message}`,
         ExchangeType.ASTER,
         undefined,
         error,

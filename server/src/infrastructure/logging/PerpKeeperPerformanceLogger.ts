@@ -76,6 +76,7 @@ interface FundingRateSnapshot {
   fundingRate: number; // Per period (e.g., per 8 hours)
   positionSize: number; // Position size in base asset
   positionValue: number; // Position value in USD
+  positionSide: 'LONG' | 'SHORT'; // Position side to correctly calculate APY
   timestamp: Date;
 }
 
@@ -153,6 +154,19 @@ export class PerpKeeperPerformanceLogger {
   }
 
   /**
+   * Track position timestamps and last funding payment time for each position
+   */
+  private positionTimestamps: Map<string, Date> = new Map(); // Key: "exchange:symbol:side"
+  private lastFundingPaymentTime: Map<string, Date> = new Map(); // Key: "exchange:symbol:side"
+
+  /**
+   * Get or create position timestamp
+   */
+  private getPositionKey(exchange: ExchangeType, symbol: string, side: string): string {
+    return `${exchange}:${symbol}:${side}`;
+  }
+
+  /**
    * Update position metrics for an exchange
    */
   updatePositionMetrics(
@@ -166,23 +180,77 @@ export class PerpKeeperPerformanceLogger {
     metrics.positionsCount = positions.length;
     metrics.totalPositionValue = positions.reduce((sum, pos) => sum + pos.getPositionValue(), 0);
     metrics.totalUnrealizedPnl = positions.reduce((sum, pos) => sum + pos.unrealizedPnl, 0);
-    metrics.lastUpdateTime = new Date();
+    const now = new Date();
+    metrics.lastUpdateTime = now;
 
-    // Create funding rate snapshots for APY estimation
+    // Track funding payments based on positions and funding rates
     for (const position of positions) {
       const fundingRate = fundingRates.find(
         (fr) => fr.symbol === position.symbol && fr.exchange === exchange
       );
       
       if (fundingRate) {
+        // Create funding rate snapshot for APY estimation
         this.fundingSnapshots.push({
           symbol: position.symbol,
           exchange,
           fundingRate: fundingRate.fundingRate,
           positionSize: position.size,
           positionValue: position.getPositionValue(),
+          positionSide: position.side === 'LONG' ? 'LONG' : 'SHORT',
           timestamp: new Date(),
         });
+
+        // Track position timestamp
+        const positionKey = this.getPositionKey(exchange, position.symbol, position.side);
+        if (!this.positionTimestamps.has(positionKey)) {
+          // New position - record timestamp
+          this.positionTimestamps.set(positionKey, position.timestamp || now);
+          this.lastFundingPaymentTime.set(positionKey, position.timestamp || now);
+        }
+
+        // Calculate funding payment per hour
+        // For LONG: positive funding rate = you pay (negative), negative = you receive (positive)
+        // For SHORT: negative funding rate = you receive (positive), positive = you pay (negative)
+        // Formula: funding_payment = position_value * funding_rate * (1 if LONG, -1 if SHORT)
+        // But actually: LONG pays when rate > 0, SHORT pays when rate < 0
+        const positionValue = position.getPositionValue();
+        let fundingPaymentPerHour: number;
+        if (position.side === 'LONG') {
+          // LONG: pay when rate positive, receive when negative
+          fundingPaymentPerHour = -fundingRate.fundingRate * positionValue;
+        } else {
+          // SHORT: receive when rate negative, pay when positive (same formula)
+          fundingPaymentPerHour = -fundingRate.fundingRate * positionValue;
+        }
+
+        // Check if we should record a funding payment (hourly)
+        const lastPaymentTime = this.lastFundingPaymentTime.get(positionKey)!;
+        const hoursSinceLastPayment = (now.getTime() - lastPaymentTime.getTime()) / (1000 * 60 * 60);
+        
+        // Record funding payment for each full hour that has passed
+        const fullHours = Math.floor(hoursSinceLastPayment);
+        if (fullHours >= 1) {
+          // Record funding for each hour
+          const totalFunding = fundingPaymentPerHour * fullHours;
+          if (Math.abs(totalFunding) > 0.0001) { // Only record if significant
+            this.recordFundingPayment(exchange, totalFunding);
+            // Update last payment time
+            const newLastPaymentTime = new Date(lastPaymentTime.getTime() + fullHours * 60 * 60 * 1000);
+            this.lastFundingPaymentTime.set(positionKey, newLastPaymentTime);
+          }
+        }
+      }
+    }
+
+    // Remove timestamps for positions that no longer exist
+    const activePositionKeys = new Set(
+      positions.map(p => this.getPositionKey(exchange, p.symbol, p.side))
+    );
+    for (const [key] of this.positionTimestamps.entries()) {
+      if (key.startsWith(`${exchange}:`) && !activePositionKeys.has(key)) {
+        this.positionTimestamps.delete(key);
+        this.lastFundingPaymentTime.delete(key);
       }
     }
 
@@ -228,18 +296,31 @@ export class PerpKeeperPerformanceLogger {
 
   /**
    * Calculate estimated APY based on current funding rates and positions
+   * 
+   * IMPORTANT: For SHORT positions, negative funding rates = positive returns (you receive funding)
+   * For LONG positions, positive funding rates = positive returns (you receive funding)
    */
   calculateEstimatedAPY(): number {
     if (this.fundingSnapshots.length === 0) return 0;
 
-    // Calculate weighted average funding rate
+    // Calculate weighted average funding rate, accounting for position side
     let totalValue = 0;
     let weightedFundingRate = 0;
 
     for (const snapshot of this.fundingSnapshots) {
       const value = snapshot.positionValue;
       totalValue += value;
-      weightedFundingRate += snapshot.fundingRate * value;
+      
+      // For SHORT positions: negative funding rate = positive return (flip sign)
+      // For LONG positions: positive funding rate = positive return (keep sign)
+      let effectiveFundingRate = snapshot.fundingRate;
+      if (snapshot.positionSide === 'SHORT') {
+        // Short positions receive funding when rate is negative
+        // So we flip the sign: negative rate becomes positive return
+        effectiveFundingRate = -snapshot.fundingRate;
+      }
+      
+      weightedFundingRate += effectiveFundingRate * value;
     }
 
     if (totalValue === 0) return 0;
@@ -247,9 +328,9 @@ export class PerpKeeperPerformanceLogger {
     const avgFundingRate = weightedFundingRate / totalValue;
 
     // Convert per-period rate to annualized APY
-    // Assuming 8-hour funding periods (3 per day)
-    const periodsPerDay = 3;
-    const periodsPerYear = periodsPerDay * 365;
+    // Assuming hourly funding periods (24 per day) for most exchanges
+    // Some exchanges use 8-hour periods (3 per day), but hourly is more common now
+    const periodsPerDay = 24; // Hourly funding (most exchanges)
     const dailyRate = avgFundingRate * periodsPerDay;
     const annualizedAPY = dailyRate * 365 * 100; // Convert to percentage
 

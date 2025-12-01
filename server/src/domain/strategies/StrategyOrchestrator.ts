@@ -3,6 +3,99 @@ import { IExecutableStrategy, StrategyExecutionResult } from './IExecutableStrat
 import { MarketDataContext, MarketDataAggregator, createEmptyContext } from '../services/MarketDataContext';
 
 /**
+ * Allowed assets with high liquidity - orchestrator will only process these
+ * Assets must be available on at least 2 perpetual exchanges
+ * Auto-discovered from Lighter + Hyperliquid (85 common assets)
+ */
+const ALLOWED_ASSETS = new Set([
+  '0G',
+  '2Z',
+  'AAVE',
+  'ADA',
+  'AERO',
+  'AI16Z',
+  'APEX',
+  'APT',
+  'ARB',
+  'ASTER',
+  'AVAX',
+  'AVNT',
+  'BCH',
+  'BERA',
+  'BNB',
+  'BTC',
+  'CC',
+  'CRV',
+  'DOGE',
+  'DOT',
+  'DYDX',
+  'EIGEN',
+  'ENA',
+  'ETH',
+  'ETHFI',
+  'FARTCOIN',
+  'FIL',
+  'GMX',
+  'GRASS',
+  'HBAR',
+  'HYPE',
+  'ICP',
+  'IP',
+  'JUP',
+  'KAITO',
+  'LAUNCHCOIN',
+  'LDO',
+  'LINEA',
+  'LINK',
+  'LTC',
+  'MEGA',
+  'MET',
+  'MKR',
+  'MNT',
+  'MON',
+  'MORPHO',
+  'NEAR',
+  'ONDO',
+  'OP',
+  'PAXG',
+  'PENDLE',
+  'PENGU',
+  'POL',
+  'POPCAT',
+  'PROVE',
+  'PUMP',
+  'PYTH',
+  'RESOLV',
+  'S',
+  'SEI',
+  'SKY',
+  'SOL',
+  'SPX',
+  'STBL',
+  'STRK',
+  'SUI',
+  'SYRUP',
+  'TAO',
+  'TIA',
+  'TON',
+  'TRUMP',
+  'TRX',
+  'UNI',
+  'VIRTUAL',
+  'VVV',
+  'WIF',
+  'WLD',
+  'WLFI',
+  'XPL',
+  'XRP',
+  'YZY',
+  'ZEC',
+  'ZK',
+  'ZORA',
+  'ZRO',
+]);
+
+/**
  * StrategyOrchestrator - Manages and executes multiple strategies
  * 
  * KEY PRINCIPLE: Fetch data ONCE, pass to ALL strategies
@@ -73,12 +166,18 @@ export class StrategyOrchestrator {
 
   /**
    * Get all unique assets required by registered strategies
+   * Filtered to only include allowed high-liquidity assets
    */
   getRequiredAssets(): string[] {
     const assets = new Set<string>();
     for (const strategy of this.strategies.values()) {
       for (const asset of strategy.requiredAssets || []) {
-        assets.add(asset);
+        // Only include assets that are in the allowed list
+        if (ALLOWED_ASSETS.has(asset.toUpperCase())) {
+          assets.add(asset);
+        } else {
+          this.logger.debug(`Filtering out asset ${asset} (not in allowed high-liquidity list)`);
+        }
       }
     }
     return Array.from(assets);

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpTransport, ExchangeClient, InfoClient } from '@nktkas/hyperliquid';
 import { SymbolConverter, formatSize, formatPrice } from '@nktkas/hyperliquid/utils';
 import { ethers } from 'ethers';
+import axios from 'axios';
 import { ExchangeConfig, ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
 import {
   PerpOrderRequest,
@@ -171,24 +172,20 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       const formattedSize = formatSize(request.size.toString(), szDecimals);
       
       // For market orders, Hyperliquid requires a limit price (uses IOC for market execution)
-      // Fetch current mark price if no price provided
+      // Use best bid/ask from order book for more accurate execution
       let orderPrice: number;
       if (request.price) {
         orderPrice = request.price;
       } else if (request.type === OrderType.MARKET) {
-        // Fetch current mark price for market orders
-        orderPrice = await this.getMarkPrice(request.symbol);
-        this.logger.debug(`Market order: using current mark price ${orderPrice} for ${request.symbol}`);
+        // Get best bid/ask from order book for accurate IOC execution
+        const { bestBid, bestAsk } = await this.getBestBidAsk(request.symbol);
+        // Use best ask for buy orders (we pay the ask), best bid for sell orders (we get the bid)
+        orderPrice = request.side === OrderSide.LONG ? bestAsk : bestBid;
+        this.logger.debug(
+          `Market order: using order book price ${orderPrice} (${request.side === OrderSide.LONG ? 'ask' : 'bid'}) for ${request.symbol}`
+        );
       } else {
         throw new Error('Price is required for LIMIT orders');
-      }
-
-      // Format price using utilities
-      const formattedPrice = formatPrice(orderPrice.toString(), szDecimals, isPerp);
-      
-      // Validate price is not zero
-      if (parseFloat(formattedPrice) <= 0) {
-        throw new Error(`Invalid order price: ${formattedPrice} (original: ${orderPrice})`);
       }
 
       // Determine time in force
@@ -212,27 +209,107 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         }
       }
 
-      // Use the order() method matching simple-hyperliquid-order.ts format
-      const result = await this.exchangeClient.order({
-        orders: [{
-          a: assetId,
-          b: isBuy,
-          p: formattedPrice,
-          r: request.reduceOnly || false,
-          s: formattedSize,
-          t: { limit: { tif } },
-        }],
-        grouping: 'na',
-      });
+      // Retry logic: up to 5 attempts with fresh order book prices
+      const MAX_RETRIES = 5;
+      let lastError: Error | null = null;
+      let result: any = null;
+      let formattedPrice: string;
+      
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          // For IOC orders, refresh order book price on retry to get latest market price
+          if (attempt > 0 && tif === 'Ioc' && request.type === OrderType.MARKET) {
+            // Clear cache to force fresh order book fetch
+            this.orderBookCache.delete(request.symbol);
+            const { bestBid, bestAsk } = await this.getBestBidAsk(request.symbol);
+            orderPrice = request.side === OrderSide.LONG ? bestAsk : bestBid;
+            
+            this.logger.debug(
+              `Retry ${attempt + 1}/${MAX_RETRIES}: Updated order book price ${orderPrice} for ${request.symbol}`
+            );
+            
+            // Small delay before retry
+            await new Promise(resolve => setTimeout(resolve, 200 * attempt));
+          }
+          
+          // Format price using utilities (re-format on each retry if price changed)
+          formattedPrice = formatPrice(orderPrice.toString(), szDecimals, isPerp);
+          
+          // Validate price is not zero
+          if (parseFloat(formattedPrice) <= 0) {
+            throw new Error(`Invalid order price: ${formattedPrice} (original: ${orderPrice})`);
+          }
+          
+          // Use the order() method matching simple-hyperliquid-order.ts format
+          result = await this.exchangeClient.order({
+            orders: [{
+              a: assetId,
+              b: isBuy,
+              p: formattedPrice,
+              r: request.reduceOnly || false,
+              s: formattedSize,
+              t: { limit: { tif } },
+            }],
+            grouping: 'na',
+          });
 
-      // Parse response matching the script format
+          // Parse response matching the script format
+          if (result.status === 'ok' && result.response?.type === 'order' && result.response?.data?.statuses) {
+            const status = result.response.data.statuses[0];
+            
+            if ('error' in status && status.error) {
+              const errorMsg = typeof status.error === 'string' ? status.error : JSON.stringify(status.error);
+              
+              // Check if error is retryable (order couldn't match)
+              const isRetryable = errorMsg.includes('could not immediately match') || 
+                                 errorMsg.includes('Order could not immediately match');
+              
+              if (isRetryable && attempt < MAX_RETRIES - 1) {
+                lastError = new Error(errorMsg);
+                this.logger.warn(
+                  `Order failed to match (attempt ${attempt + 1}/${MAX_RETRIES}): ${errorMsg}. Retrying with fresh price...`
+                );
+                continue; // Retry with fresh price
+              }
+              
+              // Non-retryable error or max retries reached
+              throw new Error(errorMsg);
+            }
+            
+            // Order succeeded (filled or resting)
+            break; // Exit retry loop
+          } else {
+            throw new Error(`Unexpected order response format: ${JSON.stringify(result).substring(0, 200)}`);
+          }
+        } catch (error: any) {
+          lastError = error;
+          const errorMsg = error?.message || error?.toString() || String(error);
+          
+          // Check if error is retryable
+          const isRetryable = errorMsg.includes('could not immediately match') || 
+                             errorMsg.includes('Order could not immediately match') ||
+                             (errorMsg.includes('match') && attempt < MAX_RETRIES - 1);
+          
+          if (isRetryable && attempt < MAX_RETRIES - 1) {
+            this.logger.warn(
+              `Order placement failed (attempt ${attempt + 1}/${MAX_RETRIES}): ${errorMsg}. Retrying...`
+            );
+            continue; // Retry
+          }
+          
+          // Non-retryable error or max retries reached
+          throw error;
+        }
+      }
+      
+      // If we get here, all retries failed
+      if (!result || (result.status !== 'ok')) {
+        throw lastError || new Error(`Order placement failed after ${MAX_RETRIES} attempts`);
+      }
+
+      // Parse successful response
       if (result.status === 'ok' && result.response?.type === 'order' && result.response?.data?.statuses) {
         const status = result.response.data.statuses[0];
-        
-        if ('error' in status && status.error) {
-          const errorMsg = typeof status.error === 'string' ? status.error : JSON.stringify(status.error);
-          throw new Error(errorMsg);
-        }
 
         let orderId: string;
         let orderStatus: OrderStatus;
@@ -311,11 +388,37 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
             const marginUsed = parseFloat(assetPos.position.marginUsed || '0');
             const liquidationPrice = parseFloat(assetPos.position.liquidationPx || '0') || undefined;
 
-            // Get coin name from asset index (coin can be number or string)
-            const coinIndex = typeof assetPos.position.coin === 'number' 
-              ? assetPos.position.coin 
-              : parseInt(String(assetPos.position.coin || '0'));
-            const coin = await this.getCoinFromAssetIndex(coinIndex);
+            // Get coin name - Hyperliquid API can return either:
+            // 1. Coin name directly as string (e.g., "RESOLV", "BTC", "ETH")
+            // 2. Asset index as number (e.g., 0, 1, 2)
+            // 3. Asset index as string (e.g., "0", "1", "2")
+            let coin: string;
+            if (typeof assetPos.position.coin === 'string') {
+              // Check if it's a numeric string (index) or coin name
+              const parsed = parseInt(assetPos.position.coin, 10);
+              if (!isNaN(parsed) && String(parsed) === assetPos.position.coin) {
+                // It's a numeric string, treat as index
+                coin = await this.getCoinFromAssetIndex(parsed);
+              } else {
+                // It's already a coin name (e.g., "RESOLV", "BTC")
+                coin = assetPos.position.coin;
+              }
+            } else if (typeof assetPos.position.coin === 'number') {
+              // It's a numeric index
+              coin = await this.getCoinFromAssetIndex(assetPos.position.coin);
+            } else {
+              this.logger.error(
+                `Invalid coin type for position: ${JSON.stringify(assetPos.position.coin)} (type: ${typeof assetPos.position.coin})`
+              );
+              continue; // Skip this position
+            }
+            
+            if (!coin || coin.startsWith('ASSET-')) {
+              this.logger.warn(
+                `Could not resolve coin name for position coin: ${JSON.stringify(assetPos.position.coin)}, skipping position`
+              );
+              continue; // Skip positions we can't identify
+            }
 
             positions.push(
               new PerpPosition(
@@ -351,6 +454,11 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
   private async getCoinFromAssetIndex(assetIndex: number): Promise<string> {
     try {
+      if (isNaN(assetIndex) || assetIndex < 0) {
+        this.logger.error(`Invalid asset index: ${assetIndex}`);
+        throw new Error(`Invalid asset index: ${assetIndex}`);
+      }
+      
       await this.ensureSymbolConverter();
       const meta = await this.infoClient.meta();
       
@@ -359,15 +467,22 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         // Asset index corresponds to position in universe array
         if (assetIndex >= 0 && assetIndex < meta.universe.length) {
           const asset = meta.universe[assetIndex];
-          return asset?.name || `ASSET-${assetIndex}`;
+          if (asset?.name) {
+            return asset.name;
+          }
         }
       }
       
       // Fallback: try to find by matching index
       const asset = meta.universe?.find((a: any, index: number) => index === assetIndex);
-      return asset?.name || `ASSET-${assetIndex}`;
-    } catch {
-      return `ASSET-${assetIndex}`;
+      if (asset?.name) {
+        return asset.name;
+      }
+      
+      throw new Error(`Asset not found for index ${assetIndex}`);
+    } catch (error: any) {
+      this.logger.error(`Failed to get coin from asset index ${assetIndex}: ${error.message}`);
+      throw new Error(`Could not find asset ID for index ${assetIndex}`);
     }
   }
 
@@ -487,6 +602,94 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
   // Price cache: key = symbol, value = { price: number, timestamp: number }
   private priceCache: Map<string, { price: number; timestamp: number }> = new Map();
   private readonly PRICE_CACHE_TTL = 10000; // 10 seconds cache
+
+  // Order book cache: key = symbol, value = { bestBid: number, bestAsk: number, timestamp: number }
+  private orderBookCache: Map<string, { bestBid: number; bestAsk: number; timestamp: number }> = new Map();
+  private readonly ORDER_BOOK_CACHE_TTL = 2000; // 2 seconds cache (very short for order execution)
+
+  /**
+   * Get best bid and ask prices from order book for more accurate IOC order execution
+   * Uses REST API l2Book endpoint to get current order book snapshot
+   */
+  async getBestBidAsk(symbol: string): Promise<{ bestBid: number; bestAsk: number }> {
+    await this.ensureSymbolConverter();
+    
+    const baseCoin = symbol.replace('USDT', '').replace('USDC', '').replace('-PERP', '');
+    const coin = this.formatCoin(symbol);
+    
+    // Check cache first (very short TTL for order execution)
+    const cached = this.orderBookCache.get(symbol);
+    if (cached && (Date.now() - cached.timestamp) < this.ORDER_BOOK_CACHE_TTL) {
+      return { bestBid: cached.bestBid, bestAsk: cached.bestAsk };
+    }
+
+    try {
+      // Use REST API l2Book endpoint directly to get order book snapshot
+      // Hyperliquid API: POST /info with { type: "l2Book", coin: "ETH" }
+      const baseUrl = this.config.baseUrl || 'https://api.hyperliquid.xyz';
+      const response = await axios.post(
+        `${baseUrl}/info`,
+        { type: 'l2Book', coin },
+        { timeout: 5000 }
+      );
+      
+      const l2Book = response.data;
+      
+      if (l2Book && l2Book.levels) {
+        const levels = l2Book.levels;
+        
+        // Hyperliquid l2Book format: { levels: [[px, sz], ...] }
+        // First half are bids (sorted descending), second half are asks (sorted ascending)
+        // Or format: { levels: { bids: [[px, sz], ...], asks: [[px, sz], ...] } }
+        let bestBid = 0;
+        let bestAsk = 0;
+        
+        if (Array.isArray(levels)) {
+          // Find midpoint - bids are first (descending), asks are second (ascending)
+          const midpoint = Math.floor(levels.length / 2);
+          if (midpoint > 0) {
+            // Best bid is the first (highest) bid
+            const topBid = levels[0];
+            bestBid = parseFloat(Array.isArray(topBid) ? topBid[0] : topBid.px || topBid);
+            
+            // Best ask is the first ask (lowest) after midpoint
+            const topAsk = levels[midpoint];
+            bestAsk = parseFloat(Array.isArray(topAsk) ? topAsk[0] : topAsk.px || topAsk);
+          }
+        } else if (levels.bids && levels.asks) {
+          // Format: { bids: [[px, sz], ...], asks: [[px, sz], ...] }
+          if (levels.bids.length > 0) {
+            const topBid = levels.bids[0];
+            bestBid = parseFloat(Array.isArray(topBid) ? topBid[0] : topBid.px || topBid);
+          }
+          if (levels.asks.length > 0) {
+            const topAsk = levels.asks[0];
+            bestAsk = parseFloat(Array.isArray(topAsk) ? topAsk[0] : topAsk.px || topAsk);
+          }
+        }
+        
+        if (bestBid > 0 && bestAsk > 0) {
+          // Cache the result
+          this.orderBookCache.set(symbol, { bestBid, bestAsk, timestamp: Date.now() });
+          this.logger.debug(`Order book for ${symbol}: bid=${bestBid.toFixed(4)}, ask=${bestAsk.toFixed(4)}`);
+          return { bestBid, bestAsk };
+        }
+      }
+      
+      throw new Error(`Could not parse order book data for ${symbol}: ${JSON.stringify(l2Book).substring(0, 200)}`);
+    } catch (error: any) {
+      this.logger.warn(`Failed to get order book for ${symbol}: ${error.message}. Falling back to mark price.`);
+      
+      // Fallback to mark price if order book fails
+      const markPrice = await this.getMarkPrice(symbol);
+      // Use mark price as both bid and ask (with small spread estimate)
+      const spread = markPrice * 0.001; // 0.1% spread estimate
+      return {
+        bestBid: markPrice - spread,
+        bestAsk: markPrice + spread,
+      };
+    }
+  }
 
   async getMarkPrice(symbol: string): Promise<number> {
     // Check cache first
@@ -653,6 +856,256 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
     } catch (error: any) {
       throw new ExchangeError(
         `Connection test failed: ${error.message}`,
+        ExchangeType.HYPERLIQUID,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  async transferInternal(amount: number, toPerp: boolean): Promise<string> {
+    try {
+      if (amount <= 0) {
+        throw new Error('Transfer amount must be greater than 0');
+      }
+
+      const direction = toPerp ? 'spot → perp margin' : 'perp margin → spot';
+      this.logger.log(`Transferring $${amount.toFixed(2)} ${direction} on Hyperliquid...`);
+
+      // Check if ExchangeClient has transfer method (may vary by SDK version)
+      // Try the method if it exists, otherwise use direct API call
+      if (typeof (this.exchangeClient as any).transferBetweenSpotAndPerp === 'function') {
+        const result = await (this.exchangeClient as any).transferBetweenSpotAndPerp(amount, toPerp);
+
+        if (result.status === 'ok') {
+          const txHash = result.response?.data?.txHash || result.response?.txHash || 'unknown';
+          this.logger.log(`✅ Transfer successful: ${direction} - TX: ${txHash}`);
+          return txHash;
+        } else {
+          const errorMsg = result.response?.data?.error || result.response?.error || 'Unknown error';
+          throw new Error(`Transfer failed: ${errorMsg}`);
+        }
+      } else {
+        // Fallback: Hyperliquid transfers may require signed actions
+        // For now, throw an error indicating the method is not available in this SDK version
+        // The transfer functionality may need to be implemented using the Hyperliquid action format
+        throw new Error(
+          `transferBetweenSpotAndPerp method not available in @nktkas/hyperliquid SDK. ` +
+          `Hyperliquid internal transfers require signed actions. ` +
+          `Please use the Hyperliquid web interface or implement using the action-based API. ` +
+          `See Hyperliquid documentation for transfer action format.`
+        );
+      }
+    } catch (error: any) {
+      this.logger.error(`Failed to transfer ${toPerp ? 'spot → perp' : 'perp → spot'}: ${error.message}`);
+      throw new ExchangeError(
+        `Failed to transfer: ${error.message}`,
+        ExchangeType.HYPERLIQUID,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  async depositExternal(amount: number, asset: string, destination?: string): Promise<string> {
+    try {
+      if (amount <= 0) {
+        throw new Error('Deposit amount must be greater than 0');
+      }
+
+      this.logger.log(`Depositing $${amount.toFixed(2)} ${asset} to Hyperliquid...`);
+
+      // Hyperliquid doesn't have a direct deposit API endpoint in the SDK
+      // Deposits are typically done by transferring funds to Hyperliquid's deposit address
+      // This would require on-chain interaction, which is outside the scope of the exchange adapter
+      // For now, we'll throw an error indicating this needs to be done externally
+      throw new Error(
+        'External deposits to Hyperliquid must be done by transferring funds to the deposit address on-chain. ' +
+        'This adapter does not support on-chain transactions. Please use a wallet or bridge contract.'
+      );
+    } catch (error: any) {
+      if (error instanceof ExchangeError) {
+        throw error;
+      }
+      this.logger.error(`Failed to deposit ${asset}: ${error.message}`);
+      throw new ExchangeError(
+        `Failed to deposit: ${error.message}`,
+        ExchangeType.HYPERLIQUID,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  async withdrawExternal(amount: number, asset: string, destination: string): Promise<string> {
+    try {
+      if (amount <= 0) {
+        throw new Error('Withdrawal amount must be greater than 0');
+      }
+
+      if (!destination || !destination.match(/^0x[a-fA-F0-9]{40}$/)) {
+        throw new Error('Invalid destination address. Must be a valid Ethereum address (0x followed by 40 hex characters)');
+      }
+
+      // Hyperliquid has a 1 USDC withdrawal fee that is deducted from the amount
+      // The fee is automatically deducted by Hyperliquid, so if you request $10, you'll receive $9
+      // We need to ensure the user has enough balance to cover both the amount and the fee
+      const WITHDRAWAL_FEE_USDC = 1.0;
+      const totalRequired = amount + WITHDRAWAL_FEE_USDC; // Amount + fee
+      const minWithdrawalAmount = WITHDRAWAL_FEE_USDC + 0.1; // Minimum to cover fee + small buffer
+      
+      if (amount < minWithdrawalAmount) {
+        throw new Error(
+          `Withdrawal amount must be at least $${minWithdrawalAmount.toFixed(2)} ` +
+          `(to cover $${WITHDRAWAL_FEE_USDC.toFixed(2)} withdrawal fee). ` +
+          `Requested: $${amount.toFixed(2)}`
+        );
+      }
+
+      this.logger.log(
+        `Withdrawing $${amount.toFixed(2)} ${asset} to ${destination} on Hyperliquid... ` +
+        `(Total required: $${totalRequired.toFixed(2)} including $${WITHDRAWAL_FEE_USDC.toFixed(2)} fee, ` +
+        `net amount received: $${(amount).toFixed(2)})`
+      );
+
+      // Step 1: Ensure funds are in perp account (withdrawals come from perp, not spot)
+      // According to Hyperliquid: "If you have USDC in your Spot Balances, transfer to Perps to make it available to withdraw"
+      try {
+        const clearinghouseState = await this.infoClient.clearinghouseState({ user: this.walletAddress });
+        const marginSummary = clearinghouseState.marginSummary;
+        const accountValue = parseFloat(marginSummary.accountValue || '0');
+        const totalMarginUsed = parseFloat(marginSummary.totalMarginUsed || '0');
+        const perpAvailable = accountValue - totalMarginUsed; // Available equity in perps (free collateral)
+        
+        this.logger.debug(
+          `Balance check: Perp Available=$${perpAvailable.toFixed(2)}, ` +
+          `Account Value=$${accountValue.toFixed(2)}, Margin Used=$${totalMarginUsed.toFixed(2)}, ` +
+          `Required=$${totalRequired.toFixed(2)}`
+        );
+
+        // Check if we have sufficient perp balance
+        if (perpAvailable < totalRequired) {
+          // Try to transfer from spot to perp if needed
+          // We don't know spot balance from marginSummary, so we'll try the transfer
+          // and let it fail if there's no spot balance
+          const transferAmount = totalRequired - perpAvailable + 1; // Transfer a bit extra for safety
+          this.logger.log(
+            `Insufficient perp balance ($${perpAvailable.toFixed(2)}). ` +
+            `Attempting to transfer $${transferAmount.toFixed(2)} from spot to perp margin...`
+          );
+          
+          try {
+            // Transfer from spot to perp margin using internal transfer
+            await this.transferInternal(transferAmount, true); // true = spot to perp
+            
+            // Wait a bit for transfer to settle
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Re-check perp balance after transfer
+            const updatedState = await this.infoClient.clearinghouseState({ user: this.walletAddress });
+            const updatedMarginSummary = updatedState.marginSummary;
+            const updatedAccountValue = parseFloat(updatedMarginSummary.accountValue || '0');
+            const updatedMarginUsed = parseFloat(updatedMarginSummary.totalMarginUsed || '0');
+            const updatedPerpAvailable = updatedAccountValue - updatedMarginUsed;
+            
+            if (updatedPerpAvailable < totalRequired) {
+              throw new Error(
+                `Insufficient perp balance after transfer. ` +
+                `Perp Available: $${updatedPerpAvailable.toFixed(2)}, ` +
+                `Required: $${totalRequired.toFixed(2)}. ` +
+                `Please ensure sufficient funds are available in spot or perp account.`
+              );
+            }
+          } catch (transferError: any) {
+            // Transfer failed - might be no spot balance or other error
+            throw new Error(
+              `Insufficient perp balance ($${perpAvailable.toFixed(2)}) and failed to transfer from spot: ${transferError.message}. ` +
+              `Required: $${totalRequired.toFixed(2)}. ` +
+              `Please ensure funds are available in perp account or transfer from spot manually.`
+            );
+          }
+        }
+      } catch (balanceError: any) {
+        this.logger.warn(`Failed to check/transfer balance before withdrawal: ${balanceError.message}`);
+        // Continue anyway - the withdrawal will fail if balance is insufficient
+      }
+
+      // Step 2: Use SDK's withdraw3 method for external withdrawals to Arbitrum
+      // The withdraw3 method handles the bridge to Arbitrum automatically
+      // Withdrawals come from perp account balance
+      // NOTE: spotSend (action type 3) only sends assets within Hyperliquid mainnet,
+      // it does NOT bridge to Arbitrum. We must use withdraw3 for external withdrawals.
+      if (asset.toUpperCase() !== 'USDC' && asset.toUpperCase() !== 'USDT') {
+        this.logger.warn(
+          `Asset ${asset} may not be supported for external withdrawal. ` +
+          `Only USDC withdrawals to Arbitrum are confirmed to work.`
+        );
+      }
+
+      this.logger.debug(
+        `Calling withdraw3: destination=${destination} (Arbitrum), amount=${amount} USDC`
+      );
+
+      // Check if ExchangeClient has withdraw3 method (this is the correct method name)
+      // withdraw3 expects an object with destination and amount properties
+      if (typeof (this.exchangeClient as any).withdraw3 === 'function') {
+        const result = await (this.exchangeClient as any).withdraw3({
+          destination: destination,
+          amount: amount,
+        });
+
+        if (result && result.status === 'ok') {
+          // Hyperliquid withdraw3 returns { status: 'ok', response: { type: 'default' } }
+          // The actual transaction hash may not be immediately available
+          // Generate a unique ID for tracking
+          const txHash = result.response?.txHash || 
+                        result.response?.data?.txHash || 
+                        result.response?.id || 
+                        `hyperliquid-withdraw-${Date.now()}`;
+          this.logger.log(
+            `✅ Withdrawal initiated successfully - ID: ${txHash}. ` +
+            `Amount requested: $${amount.toFixed(2)}, ` +
+            `Fee deducted: $${WITHDRAWAL_FEE_USDC.toFixed(2)}, ` +
+            `Net amount received: $${(amount).toFixed(2)} (fee deducted by Hyperliquid)`
+          );
+          return txHash;
+        } else {
+          const errorMsg = result?.response?.data?.error || 
+                          result?.response?.error || 
+                          JSON.stringify(result);
+          throw new Error(`Withdrawal failed: ${errorMsg}`);
+        }
+      } else {
+        // Cannot use spotSend as it only works within Hyperliquid mainnet, not for Arbitrum
+        throw new Error(
+          `withdraw3 method not found in Hyperliquid SDK. ` +
+          `External withdrawals to Arbitrum require the SDK's withdraw3 method. ` +
+          `Please ensure you're using a compatible version of @nktkas/hyperliquid SDK. ` +
+          `spotSend (action type 3) only transfers assets within Hyperliquid mainnet and cannot bridge to Arbitrum.`
+        );
+      }
+    } catch (error: any) {
+      if (error instanceof ExchangeError) {
+        throw error;
+      }
+      
+      // Provide helpful error messages
+      let errorMessage = error.message;
+      if (error.response?.status === 422) {
+        errorMessage = `Invalid withdrawal request (422): ${error.response?.data?.message || error.message}. ` +
+          `Check that: 1) Amount is sufficient (min $${(1.0 + 0.1).toFixed(2)} including $1.00 fee), ` +
+          `2) Destination address is valid, 3) You have sufficient balance on HyperCore spot.`;
+      }
+      
+      // Fix error message: Hyperliquid withdrawals use USDC, not USDT
+      const assetDisplay = asset.toUpperCase() === 'USDT' ? 'USDC' : asset;
+      this.logger.error(`Failed to withdraw ${assetDisplay} to ${destination}: ${errorMessage}`);
+      if (error.response?.data) {
+        this.logger.debug(`Hyperliquid API error response: ${JSON.stringify(error.response.data)}`);
+      }
+      
+      throw new ExchangeError(
+        `Failed to withdraw: ${errorMessage}`,
         ExchangeType.HYPERLIQUID,
         undefined,
         error,

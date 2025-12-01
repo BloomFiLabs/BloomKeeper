@@ -116,5 +116,35 @@ export interface IPerpExchangeAdapter {
    * @throws ExchangeError if connection test fails
    */
   testConnection(): Promise<void>;
+
+  /**
+   * Transfer funds between spot and perp margin accounts (internal transfer)
+   * @param amount Amount to transfer in USD
+   * @param toPerp True to transfer from spot to perp margin, false to transfer from perp margin to spot
+   * @returns Transaction hash or confirmation ID
+   * @throws ExchangeError if transfer fails
+   */
+  transferInternal(amount: number, toPerp: boolean): Promise<string>;
+
+  /**
+   * Deposit funds from external source (if supported by exchange)
+   * @param amount Amount to deposit in USD
+   * @param asset Asset symbol (e.g., 'USDT', 'USDC')
+   * @param destination Optional destination address or identifier
+   * @returns Transaction hash or deposit ID
+   * @throws ExchangeError if deposit fails
+   */
+  depositExternal(amount: number, asset: string, destination?: string): Promise<string>;
+
+  /**
+   * Withdraw funds to external wallet address
+   * @param amount Amount to withdraw in USD
+   * @param asset Asset symbol (e.g., 'USDT', 'USDC')
+   * @param destination Destination wallet address
+   * @returns Transaction hash or withdrawal ID
+   * @throws ExchangeError if withdrawal fails
+   */
+  withdrawExternal(amount: number, asset: string, destination: string): Promise<string>;
 }
+
 

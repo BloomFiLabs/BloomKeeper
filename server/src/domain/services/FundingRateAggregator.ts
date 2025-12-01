@@ -36,10 +36,10 @@ export interface FundingRateComparison {
  */
 export interface ArbitrageOpportunity {
   symbol: string;
-  longExchange: ExchangeType; // Exchange to go long on (receives funding)
-  shortExchange: ExchangeType; // Exchange to go short on (receives funding)
-  longRate: number;
-  shortRate: number;
+  longExchange: ExchangeType; // Exchange to go long on (should have negative funding rate to receive funding)
+  shortExchange: ExchangeType; // Exchange to go short on (should have positive funding rate to receive funding)
+  longRate: number; // Funding rate on long exchange (negative = we receive, positive = we pay)
+  shortRate: number; // Funding rate on short exchange (positive = we receive, negative = we pay)
   spread: number; // Absolute difference
   expectedReturn: number; // Annualized return estimate
   longMarkPrice?: number; // Mark price for long exchange (from funding rate data)
@@ -57,6 +57,99 @@ export interface ExchangeSymbolMapping {
   lighterSymbol?: string; // Lighter symbol name (e.g., "ETH")
   hyperliquidSymbol?: string; // Hyperliquid format (e.g., "ETH")
 }
+
+/**
+ * Allowed assets with high liquidity - orchestrator will only process these
+ * Assets must be available on at least 2 perpetual exchanges
+ * Auto-discovered from Lighter + Hyperliquid (85 common assets)
+ */
+const ALLOWED_ASSETS = new Set([
+  '0G',
+  '2Z',
+  'AAVE',
+  'ADA',
+  'AERO',
+  'AI16Z',
+  'APEX',
+  'APT',
+  'ARB',
+  'ASTER',
+  'AVAX',
+  'AVNT',
+  'BCH',
+  'BERA',
+  'BNB',
+  'BTC',
+  'CC',
+  'CRV',
+  'DOGE',
+  'DOT',
+  'DYDX',
+  'EIGEN',
+  'ENA',
+  'ETH',
+  'ETHFI',
+  'FARTCOIN',
+  'FIL',
+  'GMX',
+  'GRASS',
+  'HBAR',
+  'HYPE',
+  'ICP',
+  'IP',
+  'JUP',
+  'KAITO',
+  'LAUNCHCOIN',
+  'LDO',
+  'LINEA',
+  'LINK',
+  'LTC',
+  'MEGA',
+  'MET',
+  'MKR',
+  'MNT',
+  'MON',
+  'MORPHO',
+  'NEAR',
+  'ONDO',
+  'OP',
+  'PAXG',
+  'PENDLE',
+  'PENGU',
+  'POL',
+  'POPCAT',
+  'PROVE',
+  'PUMP',
+  'PYTH',
+  'RESOLV',
+  'S',
+  'SEI',
+  'SKY',
+  'SOL',
+  'SPX',
+  'STBL',
+  'STRK',
+  'SUI',
+  'SYRUP',
+  'TAO',
+  'TIA',
+  'TON',
+  'TRUMP',
+  'TRX',
+  'UNI',
+  'VIRTUAL',
+  'VVV',
+  'WIF',
+  'WLD',
+  'WLFI',
+  'XPL',
+  'XRP',
+  'YZY',
+  'ZEC',
+  'ZK',
+  'ZORA',
+  'ZRO',
+]);
 
 /**
  * FundingRateAggregator - Aggregates funding rates from all exchanges
@@ -151,18 +244,23 @@ export class FundingRateAggregator {
         if (mapping.hyperliquidSymbol) exchangeCount++;
 
         // Only include if available on at least 2 exchanges (required for arbitrage)
-        if (exchangeCount >= 2) {
+        // AND if it's in the allowed assets list
+        if (exchangeCount >= 2 && ALLOWED_ASSETS.has(normalized)) {
           commonAssets.push(normalized);
           this.logger.debug(
             `Mapped ${normalized}: Aster=${mapping.asterSymbol || 'N/A'}, ` +
             `Lighter=${mapping.lighterMarketIndex !== undefined ? `index ${mapping.lighterMarketIndex}` : 'N/A'}, ` +
             `Hyperliquid=${mapping.hyperliquidSymbol || 'N/A'}`
           );
+        } else if (exchangeCount >= 2) {
+          this.logger.debug(
+            `Skipping ${normalized} (not in allowed assets list)`
+          );
         }
       }
 
       this.logger.log(
-        `Discovered ${commonAssets.length} common assets available on 2+ exchanges: ${commonAssets.join(', ')}`
+        `Discovered ${commonAssets.length} common assets (filtered to high-liquidity assets): ${commonAssets.join(', ')}`
       );
 
       return commonAssets.sort();
@@ -391,16 +489,20 @@ export class FundingRateAggregator {
 
             const symbolOpportunities: ArbitrageOpportunity[] = [];
 
-            // Find best long opportunity (highest positive rate)
-            const positiveRates = comparison.rates.filter((r) => r.currentRate > 0);
-            const bestLong = positiveRates.length > 0 
-              ? positiveRates.reduce((best, current) => current.currentRate > best.currentRate ? current : best)
+            // Find best long opportunity (most negative rate)
+            // When funding rate is negative, longs RECEIVE funding (shorts pay longs)
+            // So we want to go LONG where rate is most negative (we receive the most)
+            const negativeRates = comparison.rates.filter((r) => r.currentRate < 0);
+            const bestLong = negativeRates.length > 0
+              ? negativeRates.reduce((best, current) => current.currentRate < best.currentRate ? current : best)
               : null;
 
-            // Find best short opportunity (lowest/most negative rate)
-            const negativeRates = comparison.rates.filter((r) => r.currentRate < 0);
-            const bestShort = negativeRates.length > 0
-              ? negativeRates.reduce((best, current) => current.currentRate < best.currentRate ? current : best)
+            // Find best short opportunity (highest positive rate)
+            // When funding rate is positive, shorts RECEIVE funding (longs pay shorts)
+            // So we want to go SHORT where rate is most positive (we receive the most)
+            const positiveRates = comparison.rates.filter((r) => r.currentRate > 0);
+            const bestShort = positiveRates.length > 0 
+              ? positiveRates.reduce((best, current) => current.currentRate > best.currentRate ? current : best)
               : null;
 
             // If we have both long and short opportunities, create arbitrage
@@ -429,7 +531,8 @@ export class FundingRateAggregator {
               }
             }
 
-            // Also check for simple spread arbitrage (long on highest, short on lowest)
+            // Also check for simple spread arbitrage (long on lowest/most negative, short on highest/most positive)
+            // Long on most negative rate (receive funding), Short on most positive rate (receive funding)
             if (comparison.highestRate && comparison.lowestRate && 
                 comparison.highestRate.exchange !== comparison.lowestRate.exchange) {
               const spread = comparison.highestRate.currentRate - comparison.lowestRate.currentRate;
@@ -440,21 +543,21 @@ export class FundingRateAggregator {
                 const periodsPerYear = periodsPerDay * 365;
                 const expectedReturn = spread * periodsPerYear;
 
-                const highestRate = comparison.highestRate;
-                const lowestRate = comparison.lowestRate;
+                const highestRate = comparison.highestRate; // Most positive (go SHORT here to receive)
+                const lowestRate = comparison.lowestRate;  // Most negative (go LONG here to receive)
                 const highestMarkPrice = highestRate.markPrice > 0 ? highestRate.markPrice : undefined;
                 const lowestMarkPrice = lowestRate.markPrice > 0 ? lowestRate.markPrice : undefined;
 
                 symbolOpportunities.push({
                   symbol,
-                  longExchange: highestRate.exchange,
-                  shortExchange: lowestRate.exchange,
-                  longRate: highestRate.currentRate,
-                  shortRate: lowestRate.currentRate,
+                  longExchange: lowestRate.exchange,   // Long on most negative (receive funding)
+                  shortExchange: highestRate.exchange, // Short on most positive (receive funding)
+                  longRate: lowestRate.currentRate,
+                  shortRate: highestRate.currentRate,
                   spread,
                   expectedReturn,
-                  longMarkPrice: highestMarkPrice,
-                  shortMarkPrice: lowestMarkPrice,
+                  longMarkPrice: lowestMarkPrice,
+                  shortMarkPrice: highestMarkPrice,
                   timestamp: new Date(),
                 });
               }

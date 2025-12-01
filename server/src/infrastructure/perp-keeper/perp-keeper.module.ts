@@ -13,6 +13,7 @@ import { HyperLiquidWebSocketProvider } from '../adapters/hyperliquid/HyperLiqui
 import { FundingRateAggregator } from '../../domain/services/FundingRateAggregator';
 import { FundingArbitrageStrategy } from '../../domain/services/FundingArbitrageStrategy';
 import { PerpKeeperOrchestrator } from '../../domain/services/PerpKeeperOrchestrator';
+import { ExchangeBalanceRebalancer } from '../../domain/services/ExchangeBalanceRebalancer';
 import { PerpKeeperController } from '../controllers/PerpKeeperController';
 import { FundingRateController } from '../controllers/FundingRateController';
 
@@ -45,6 +46,7 @@ import { FundingRateController } from '../controllers/FundingRateController';
     FundingRateAggregator,
     FundingArbitrageStrategy,
     PerpKeeperOrchestrator,
+    ExchangeBalanceRebalancer,
     
     // Application services
     PerpKeeperService,

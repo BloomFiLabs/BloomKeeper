@@ -101,11 +101,38 @@ export class PerpKeeperScheduler implements OnModuleInit {
   }
 
   /**
-   * Execute hourly at :00 minutes (funding rate clock)
-   * Adjust cron expression based on actual funding rate schedule
+   * Get next funding rate payment time
+   * Hyperliquid (and most exchanges) pay funding every hour on the hour (14:00, 15:00, 16:00, etc.)
+   * This computes the next payment time based on the global clock hour
    */
-  @Cron(CronExpression.EVERY_HOUR)
+  private getNextFundingPaymentTime(): Date {
+    const now = new Date();
+    const nextPayment = new Date(now);
+    
+    // Set to next hour at :00:00
+    nextPayment.setHours(now.getHours() + 1, 0, 0, 0);
+    
+    return nextPayment;
+  }
+
+  /**
+   * Execute at funding rate payment times
+   * Hyperliquid (and most exchanges) pay funding every hour on the hour (14:00, 15:00, 16:00, etc.)
+   * This cron runs at :00 of every hour to align with actual funding payments
+   * 
+   * Cron format: '0 * * * *' = every hour at :00 minutes
+   */
+  @Cron('0 * * * *') // Every hour at :00 (e.g., 14:00, 15:00, 16:00)
   async executeHourly() {
+    const nextPayment = this.getNextFundingPaymentTime();
+    const msUntilPayment = nextPayment.getTime() - Date.now();
+    const minutesUntil = Math.floor(msUntilPayment / 1000 / 60);
+    const secondsUntil = Math.floor((msUntilPayment / 1000) % 60);
+    
+    this.logger.log(
+      `⏰ Funding payment scheduled for ${nextPayment.toISOString()} ` +
+      `(${minutesUntil}m ${secondsUntil}s from now)`
+    );
     if (this.isRunning) {
       this.logger.warn('Previous execution still running, skipping this cycle');
       return;
@@ -144,6 +171,32 @@ export class PerpKeeperScheduler implements OnModuleInit {
       );
 
       this.logger.log(`Found ${opportunities.length} arbitrage opportunities`);
+
+      // Rebalance exchange balances based on opportunities
+      // Move funds from exchanges without opportunities to exchanges with opportunities
+      try {
+        this.logger.log('🔄 Rebalancing exchange balances based on opportunities...');
+        const rebalanceResult = await this.keeperService.rebalanceExchangeBalances(opportunities);
+        if (rebalanceResult.transfersExecuted > 0) {
+          this.logger.log(
+            `✅ Rebalanced ${rebalanceResult.transfersExecuted} transfers, ` +
+            `$${rebalanceResult.totalTransferred.toFixed(2)} total transferred ` +
+            `(moved funds from inactive exchanges to active ones)`
+          );
+          if (rebalanceResult.errors.length > 0) {
+            this.logger.warn(`⚠️ Rebalancing had ${rebalanceResult.errors.length} errors`);
+          }
+          
+          // Wait a bit for transfers to settle before executing trades
+          this.logger.log('⏳ Waiting 3 seconds for transfers to settle...');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        } else {
+          this.logger.log('✅ Exchange balances are balanced, no rebalancing needed');
+        }
+      } catch (error: any) {
+        this.logger.warn(`Failed to rebalance exchange balances: ${error.message}`);
+        // Don't fail the entire execution if rebalancing fails
+      }
 
       if (opportunities.length === 0) {
         this.logger.log('No opportunities found, skipping execution');
@@ -194,14 +247,14 @@ export class PerpKeeperScheduler implements OnModuleInit {
       
       // Get funding rate comparisons for all discovered symbols
       const symbols = await this.discoverAssetsIfNeeded();
-      const fundingComparisons: any[] = [];
+      const allFundingRates: Array<{ symbol: string; exchange: ExchangeType; fundingRate: number }> = [];
       for (const symbol of symbols) {
         try {
           const comparison = await this.orchestrator.compareFundingRates(symbol);
-          if (comparison) {
-            // Convert to array format expected by performance logger
+          if (comparison && comparison.rates) {
+            // Flatten funding rates from comparison
             for (const rate of comparison.rates) {
-              fundingComparisons.push({
+              allFundingRates.push({
                 symbol: rate.symbol,
                 exchange: rate.exchange,
                 fundingRate: rate.currentRate, // Use currentRate from ExchangeFundingRate
@@ -223,19 +276,10 @@ export class PerpKeeperScheduler implements OnModuleInit {
 
       // Update metrics for each exchange
       for (const [exchange, exchangePositions] of positionsByExchange.entries()) {
-        // Flatten funding rates from comparisons
-        const exchangeFundingRates: Array<{ symbol: string; exchange: ExchangeType; fundingRate: number }> = [];
-        for (const comparison of fundingComparisons) {
-            for (const rate of comparison.rates) {
-              if (rate.exchange === exchange) {
-                exchangeFundingRates.push({
-                  symbol: rate.symbol,
-                  exchange: rate.exchange,
-                  fundingRate: rate.currentRate, // Use currentRate, not fundingRate
-                });
-              }
-            }
-        }
+        // Filter funding rates for this exchange
+        const exchangeFundingRates = allFundingRates.filter(
+          (rate) => rate.exchange === exchange
+        );
         this.performanceLogger.updatePositionMetrics(exchange, exchangePositions, exchangeFundingRates);
       }
     } catch (error: any) {
@@ -274,6 +318,9 @@ export class PerpKeeperScheduler implements OnModuleInit {
   @Interval(60 * 1000) // Every minute
   async logCompactSummary() {
     try {
+      // Update metrics first to ensure we have current data
+      await this.updatePerformanceMetrics();
+      
       // Get total capital deployed
       let totalCapital = 0;
       for (const exchangeType of ['ASTER', 'LIGHTER', 'HYPERLIQUID'] as any[]) {
@@ -288,6 +335,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
       this.performanceLogger.logCompactSummary(totalCapital);
     } catch (error: any) {
       // Silently fail for compact summary to avoid spam
+      this.logger.debug(`Failed to log compact summary: ${error.message}`);
     }
   }
 

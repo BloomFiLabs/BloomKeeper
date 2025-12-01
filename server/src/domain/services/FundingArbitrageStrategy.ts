@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ExchangeType } from '../value-objects/ExchangeConfig';
 import { PerpOrderRequest, OrderSide, OrderType } from '../value-objects/PerpOrder';
+import { PerpPosition } from '../entities/PerpPosition';
 import { FundingRateAggregator, ArbitrageOpportunity, ExchangeSymbolMapping } from './FundingRateAggregator';
 import { IPerpExchangeAdapter } from '../ports/IPerpExchangeAdapter';
 
@@ -45,6 +47,7 @@ export class FundingArbitrageStrategy {
   private readonly DEFAULT_MIN_SPREAD = 0.0001; // 0.01% minimum spread
   private readonly MIN_POSITION_SIZE_USD = 10; // Minimum $10 to cover fees (very small for testing)
   private readonly BALANCE_USAGE_PERCENT = 0.9; // Use 90% of available balance (leave 10% buffer)
+  private readonly leverage: number; // Leverage multiplier (configurable via KEEPER_LEVERAGE env var)
 
   // Exchange-specific fee rates (taker fees for market orders)
   // Hyperliquid: Tier 0 (≤ $5M 14D volume) - Perps Taker: 0.0450%
@@ -56,7 +59,18 @@ export class FundingArbitrageStrategy {
     [ExchangeType.LIGHTER, 0],            // 0% fees (no trading fees)
   ]);
 
-  constructor(private readonly aggregator: FundingRateAggregator) {}
+  constructor(
+    private readonly aggregator: FundingRateAggregator,
+    private readonly configService: ConfigService,
+  ) {
+    // Get leverage from config, default to 2.0x
+    // Leverage improves net returns: 2x leverage = 2x funding returns, but fees stay same %
+    // Example: $100 capital, 2x leverage = $200 notional, 10% APY = $20/year vs $10/year (2x improvement)
+    this.leverage = parseFloat(
+      this.configService.get<string>('KEEPER_LEVERAGE') || '2.0'
+    );
+    this.logger.log(`Funding arbitrage strategy initialized with ${this.leverage}x leverage`);
+  }
 
   /**
    * Create execution plan for an arbitrage opportunity (with pre-fetched balances)
@@ -115,11 +129,26 @@ export class FundingArbitrageStrategy {
       const minBalance = Math.min(longBalance, shortBalance);
       const availableCapital = minBalance * this.BALANCE_USAGE_PERCENT; // Use 90% of minimum balance
       
-      // Apply max position size limit if specified
+      // Apply leverage to increase position size (and returns)
+      // Leverage multiplies both returns and position size, but fees stay the same percentage
+      // So net returns improve with leverage (e.g., 2x leverage = 2x returns, same fee %)
+      // Example: $100 capital, 2x leverage = $200 notional, 10% APY = $20/year vs $10/year (2x improvement)
+      const leveragedCapital = availableCapital * this.leverage;
+      
+      // Apply max position size limit if specified (this is the leveraged size)
       const maxSize = maxPositionSizeUsd || Infinity; // No default max, use whatever balance is available
       
       // Calculate position size - must be at least MIN_POSITION_SIZE_USD to cover fees
-      let positionSizeUsd = Math.min(availableCapital, maxSize);
+      // Note: positionSizeUsd is the NOTIONAL size (with leverage), not the collateral
+      let positionSizeUsd = Math.min(leveragedCapital, maxSize);
+      
+      // Log leverage usage for transparency
+      if (this.leverage > 1) {
+        this.logger.debug(
+          `Using ${this.leverage}x leverage for ${opportunity.symbol}: ` +
+          `Capital: $${availableCapital.toFixed(2)} → Notional: $${positionSizeUsd.toFixed(2)}`
+        );
+      }
       
       // Check if we have enough to cover minimum
       if (positionSizeUsd < this.MIN_POSITION_SIZE_USD) {
@@ -154,8 +183,11 @@ export class FundingArbitrageStrategy {
 
       // Calculate expected return (annualized, then convert to per-period)
       // Funding rates are typically hourly (e.g., 0.0013% per hour ≈ 10% annualized)
+      // With leverage, returns scale with leverage (2x leverage = 2x returns)
       const periodsPerDay = 24; // Hourly funding periods
       const periodsPerYear = periodsPerDay * 365;
+      // Returns scale with leverage: if we use 2x leverage, we get 2x the funding rate returns
+      // But fees are a percentage of notional, so they scale too, but net return still improves
       const expectedReturnPerPeriod = (opportunity.expectedReturn / periodsPerYear) * positionSizeUsd;
       const expectedNetReturn = expectedReturnPerPeriod - totalCosts;
 
@@ -377,6 +409,61 @@ export class FundingArbitrageStrategy {
         `Spread: ${(bestOpportunity.opportunity.spread * 100).toFixed(4)}%)`
       );
 
+      // STEP 1: Close any existing positions before opening new ones
+      // This ensures we don't have multiple positions open and properly close old positions
+      // if the best opportunity is different from the currently deployed one
+      this.logger.log('🔍 Checking for existing positions to close...');
+      const allPositions = await this.getAllPositions(adapters);
+      
+      if (allPositions.length > 0) {
+        this.logger.log(`Found ${allPositions.length} existing position(s) - closing before opening new opportunity...`);
+        
+        for (const position of allPositions) {
+          try {
+            const adapter = adapters.get(position.exchangeType);
+            if (!adapter) {
+              this.logger.warn(`No adapter found for ${position.exchangeType}, cannot close position`);
+              continue;
+            }
+
+            // Close position by placing opposite order
+            const closeOrder = new PerpOrderRequest(
+              position.symbol,
+              position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
+              OrderType.MARKET,
+              position.size,
+            );
+
+            this.logger.log(
+              `📤 Closing position: ${position.symbol} ${position.side} ${position.size.toFixed(4)} on ${position.exchangeType}`
+            );
+
+            const closeResponse = await adapter.placeOrder(closeOrder);
+            
+            if (closeResponse.isSuccess()) {
+              this.logger.log(`✅ Successfully closed position: ${position.symbol} on ${position.exchangeType}`);
+            } else {
+              this.logger.warn(
+                `⚠️ Failed to close position ${position.symbol} on ${position.exchangeType}: ${closeResponse.error || 'unknown error'}`
+              );
+              result.errors.push(`Failed to close position ${position.symbol} on ${position.exchangeType}`);
+            }
+
+            // Small delay between closes to avoid rate limits
+            await new Promise(resolve => setTimeout(resolve, 200));
+          } catch (error: any) {
+            this.logger.error(`Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
+            result.errors.push(`Error closing position ${position.symbol}: ${error.message}`);
+          }
+        }
+
+        // Wait a bit after closing positions before opening new ones
+        this.logger.log('⏳ Waiting 1 second after closing positions before opening new opportunity...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } else {
+        this.logger.log('✅ No existing positions to close');
+      }
+
       // Execute only the most profitable opportunity
       try {
         const { plan, opportunity } = bestOpportunity;
@@ -444,6 +531,45 @@ export class FundingArbitrageStrategy {
     }
 
     return result;
+  }
+
+  /**
+   * Get all positions across all exchanges
+   */
+  private async getAllPositions(adapters: Map<ExchangeType, IPerpExchangeAdapter>): Promise<PerpPosition[]> {
+    const allPositions: PerpPosition[] = [];
+
+    for (const [exchangeType, adapter] of adapters) {
+      try {
+        const positions = await adapter.getPositions();
+        allPositions.push(...positions);
+      } catch (error: any) {
+        this.logger.warn(`Failed to get positions from ${exchangeType}: ${error.message}`);
+      }
+    }
+
+    return allPositions;
+  }
+
+  /**
+   * Calculate next funding rate payment time
+   * Most perpetual exchanges pay funding every hour at :00 minutes (e.g., 1:00, 2:00, 3:00)
+   * Some pay every 8 hours at 00:00, 08:00, 16:00 UTC
+   * This function returns the next payment time assuming hourly payments at :00
+   */
+  static getNextFundingPaymentTime(): Date {
+    const now = new Date();
+    const nextHour = new Date(now);
+    nextHour.setHours(now.getHours() + 1, 0, 0, 0); // Next hour at :00:00
+    return nextHour;
+  }
+
+  /**
+   * Get milliseconds until next funding payment
+   */
+  static getMsUntilNextFundingPayment(): number {
+    const nextPayment = this.getNextFundingPaymentTime();
+    return nextPayment.getTime() - Date.now();
   }
 }
 

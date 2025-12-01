@@ -12,6 +12,8 @@ import { AsterExchangeAdapter } from '../../infrastructure/adapters/aster/AsterE
 import { LighterExchangeAdapter } from '../../infrastructure/adapters/lighter/LighterExchangeAdapter';
 import { HyperliquidExchangeAdapter } from '../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter';
 import { PerpKeeperPerformanceLogger } from '../../infrastructure/logging/PerpKeeperPerformanceLogger';
+import { ExchangeBalanceRebalancer, RebalanceResult } from '../../domain/services/ExchangeBalanceRebalancer';
+import { ArbitrageOpportunity } from '../../domain/services/FundingRateAggregator';
 
 /**
  * PerpKeeperService - Implements IPerpKeeperService
@@ -28,6 +30,7 @@ export class PerpKeeperService implements IPerpKeeperService {
     private readonly lighterAdapter: LighterExchangeAdapter,
     private readonly hyperliquidAdapter: HyperliquidExchangeAdapter,
     private readonly performanceLogger: PerpKeeperPerformanceLogger,
+    private readonly balanceRebalancer: ExchangeBalanceRebalancer,
   ) {
     // Initialize adapters map
     this.adapters.set(ExchangeType.ASTER, asterAdapter);
@@ -208,6 +211,17 @@ export class PerpKeeperService implements IPerpKeeperService {
     if (errors.length > 0) {
       throw new Error(`Connection test failed: ${errors.join(', ')}`);
     }
+  }
+
+  /**
+   * Rebalance balances across all exchanges
+   * Transfers funds from exchanges with excess balance to exchanges with deficit
+   * Prioritizes moving funds from inactive exchanges (no opportunities) to active exchanges (with opportunities)
+   * 
+   * @param opportunities Optional list of arbitrage opportunities to determine which exchanges are active
+   */
+  async rebalanceExchangeBalances(opportunities: ArbitrageOpportunity[] = []): Promise<RebalanceResult> {
+    return await this.balanceRebalancer.rebalance(this.adapters, opportunities);
   }
 }
 

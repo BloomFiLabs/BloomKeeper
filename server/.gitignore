@@ -1,0 +1,5 @@
+
+# Storage data directory (file-based storage)
+data/
+
+/generated/prisma
