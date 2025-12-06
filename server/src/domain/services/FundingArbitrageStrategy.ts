@@ -1,11 +1,25 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ExchangeType } from '../value-objects/ExchangeConfig';
-import { PerpOrderRequest, PerpOrderResponse, OrderSide, OrderType, TimeInForce, OrderStatus } from '../value-objects/PerpOrder';
+import {
+  PerpOrderRequest,
+  PerpOrderResponse,
+  OrderSide,
+  OrderType,
+  TimeInForce,
+  OrderStatus,
+} from '../value-objects/PerpOrder';
 import { PerpPosition } from '../entities/PerpPosition';
-import { FundingRateAggregator, ArbitrageOpportunity, ExchangeSymbolMapping } from './FundingRateAggregator';
+import {
+  FundingRateAggregator,
+  ArbitrageOpportunity,
+  ExchangeSymbolMapping,
+} from './FundingRateAggregator';
 import { IPerpExchangeAdapter } from '../ports/IPerpExchangeAdapter';
-import { HistoricalFundingRateService, HistoricalMetrics } from '../../infrastructure/services/HistoricalFundingRateService';
+import {
+  HistoricalFundingRateService,
+  HistoricalMetrics,
+} from '../../infrastructure/services/HistoricalFundingRateService';
 import { PositionLossTracker } from '../../infrastructure/services/PositionLossTracker';
 import { PerpKeeperPerformanceLogger } from '../../infrastructure/logging/PerpKeeperPerformanceLogger';
 import { PortfolioRiskAnalyzer } from '../../infrastructure/services/PortfolioRiskAnalyzer';
@@ -63,37 +77,53 @@ export class FundingArbitrageStrategy {
   // Lighter: 0% maker/taker fees (no trading fees)
   private readonly EXCHANGE_FEE_RATES: Map<ExchangeType, number> = new Map([
     [ExchangeType.HYPERLIQUID, 0.00015], // 0.0150% maker fee (tier 0)
-    [ExchangeType.ASTER, 0.00005],       // 0.0050% maker fee
-    [ExchangeType.LIGHTER, 0],            // 0% fees (no trading fees)
+    [ExchangeType.ASTER, 0.00005], // 0.0050% maker fee
+    [ExchangeType.LIGHTER, 0], // 0% fees (no trading fees)
   ]);
 
   // Taker fee rates (for market orders when completing asymmetric fills)
   private readonly TAKER_FEE_RATES: Map<ExchangeType, number> = new Map([
-    [ExchangeType.HYPERLIQUID, 0.0002],  // 0.0200% taker fee (tier 0)
-    [ExchangeType.ASTER, 0.0004],         // 0.0400% taker fee
-    [ExchangeType.LIGHTER, 0],            // 0% fees (no trading fees)
+    [ExchangeType.HYPERLIQUID, 0.0002], // 0.0200% taker fee (tier 0)
+    [ExchangeType.ASTER, 0.0004], // 0.0400% taker fee
+    [ExchangeType.LIGHTER, 0], // 0% fees (no trading fees)
   ]);
-  
+
   // Small price improvement to ensure limit orders fill quickly while remaining maker orders
   // 0.01% improvement makes orders competitive but still adds liquidity to the book
   private readonly LIMIT_ORDER_PRICE_IMPROVEMENT = 0.0001; // 0.01%
 
   // Asymmetric fill tracking: one leg filled, other on book
-  private readonly asymmetricFills: Map<string, {
-    symbol: string;
-    longFilled: boolean;
-    shortFilled: boolean;
-    longOrderId?: string;
-    shortOrderId?: string;
-    longExchange: ExchangeType;
-    shortExchange: ExchangeType;
-    positionSize: number;
-    opportunity: ArbitrageOpportunity;
-    timestamp: Date;
-  }> = new Map();
+  private readonly asymmetricFills: Map<
+    string,
+    {
+      symbol: string;
+      longFilled: boolean;
+      shortFilled: boolean;
+      longOrderId?: string;
+      shortOrderId?: string;
+      longExchange: ExchangeType;
+      shortExchange: ExchangeType;
+      positionSize: number;
+      opportunity: ArbitrageOpportunity;
+      timestamp: Date;
+    }
+  > = new Map();
 
-  // Timeout for asymmetric fills (10 minutes)
-  private readonly ASYMMETRIC_FILL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+  // Timeout for asymmetric fills (reduced from 10 minutes to 2 minutes)
+  private readonly ASYMMETRIC_FILL_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+  // Retry configuration for opening positions
+  private readonly MAX_EXECUTION_RETRIES = 3; // Total attempts: 1 initial + 2 retries
+  private readonly EXECUTION_RETRY_DELAYS = [5000, 10000]; // 5s, 10s
+
+  // Retry configuration for waiting on orders
+  private readonly MAX_ORDER_WAIT_RETRIES = 10; // Increased from 5 to 10
+  private readonly ORDER_WAIT_BASE_INTERVAL = 2000; // 2s
+  private readonly MAX_BACKOFF_DELAY_OPENING = 8000; // Cap at 8s for opening
+  private readonly MAX_BACKOFF_DELAY_CLOSING = 32000; // Cap at 32s for closing
+
+  // Balance requirements for partial fills
+  private readonly MIN_FILL_BALANCE = 0.95; // Both sides must be within 5% of each other (95% balance)
 
   constructor(
     private readonly aggregator: FundingRateAggregator,
@@ -101,16 +131,19 @@ export class FundingArbitrageStrategy {
     private readonly historicalService: HistoricalFundingRateService,
     private readonly lossTracker: PositionLossTracker,
     private readonly portfolioRiskAnalyzer: PortfolioRiskAnalyzer,
-    @Optional() private readonly performanceLogger?: PerpKeeperPerformanceLogger,
+    @Optional()
+    private readonly performanceLogger?: PerpKeeperPerformanceLogger,
     @Optional() private readonly balanceRebalancer?: ExchangeBalanceRebalancer,
   ) {
     // Get leverage from config, default to 2.0x
     // Leverage improves net returns: 2x leverage = 2x funding returns, but fees stay same %
     // Example: $100 capital, 2x leverage = $200 notional, 10% APY = $20/year vs $10/year (2x improvement)
     this.leverage = parseFloat(
-      this.configService.get<string>('KEEPER_LEVERAGE') || '2.0'
+      this.configService.get<string>('KEEPER_LEVERAGE') || '2.0',
     );
-    this.logger.log(`Funding arbitrage strategy initialized with ${this.leverage}x leverage`);
+    this.logger.log(
+      `Funding arbitrage strategy initialized with ${this.leverage}x leverage`,
+    );
   }
 
   /**
@@ -137,7 +170,9 @@ export class FundingArbitrageStrategy {
       const shortAdapter = adapters.get(opportunity.shortExchange);
 
       if (!longAdapter || !shortAdapter) {
-        this.logger.warn(`Missing adapters for opportunity: ${opportunity.symbol}`);
+        this.logger.warn(
+          `Missing adapters for opportunity: ${opportunity.symbol}`,
+        );
         return null;
       }
 
@@ -149,18 +184,26 @@ export class FundingArbitrageStrategy {
 
       if (!finalLongMarkPrice || finalLongMarkPrice === 0) {
         try {
-          finalLongMarkPrice = await longAdapter.getMarkPrice(opportunity.symbol);
+          finalLongMarkPrice = await longAdapter.getMarkPrice(
+            opportunity.symbol,
+          );
         } catch (error: any) {
-          this.logger.debug(`Failed to get mark price for ${opportunity.symbol} on ${opportunity.longExchange}: ${error.message}`);
+          this.logger.debug(
+            `Failed to get mark price for ${opportunity.symbol} on ${opportunity.longExchange}: ${error.message}`,
+          );
           return null; // Can't proceed without mark price
         }
       }
 
       if (!finalShortMarkPrice || finalShortMarkPrice === 0) {
         try {
-          finalShortMarkPrice = await shortAdapter.getMarkPrice(opportunity.symbol);
+          finalShortMarkPrice = await shortAdapter.getMarkPrice(
+            opportunity.symbol,
+          );
         } catch (error: any) {
-          this.logger.debug(`Failed to get mark price for ${opportunity.symbol} on ${opportunity.shortExchange}: ${error.message}`);
+          this.logger.debug(
+            `Failed to get mark price for ${opportunity.symbol} on ${opportunity.shortExchange}: ${error.message}`,
+          );
           return null; // Can't proceed without mark price
         }
       }
@@ -169,24 +212,28 @@ export class FundingArbitrageStrategy {
       // Use the minimum balance between the two exchanges (can't trade more than the smaller balance)
       const minBalance = Math.min(longBalance, shortBalance);
       const availableCapital = minBalance * this.BALANCE_USAGE_PERCENT; // Use 90% of minimum balance
-      
+
       // Apply leverage to increase position size (and returns)
       // Leverage multiplies both returns and position size, but fees stay the same percentage
       // So net returns improve with leverage (e.g., 2x leverage = 2x returns, same fee %)
       // Example: $100 capital, 2x leverage = $200 notional, 10% APY = $20/year vs $10/year (2x improvement)
       const leveragedCapital = availableCapital * this.leverage;
-      
+
       // Apply max position size limit if specified (this is the leveraged size)
       // If maxPositionSizeUsd is provided, use it as target allocation (for portfolio execution)
       // Otherwise use available capital
       const maxSize = maxPositionSizeUsd || Infinity; // No default max, use whatever balance is available
-      
+
       // Calculate position size - must be at least MIN_POSITION_SIZE_USD to cover fees
       // Note: positionSizeUsd is the NOTIONAL size (with leverage), not the collateral
       // If maxPositionSizeUsd is provided and valid, use it directly (portfolio allocation mode)
       // Otherwise calculate from available capital
       let positionSizeUsd: number;
-      if (maxPositionSizeUsd && maxPositionSizeUsd !== Infinity && maxPositionSizeUsd >= this.MIN_POSITION_SIZE_USD) {
+      if (
+        maxPositionSizeUsd &&
+        maxPositionSizeUsd !== Infinity &&
+        maxPositionSizeUsd >= this.MIN_POSITION_SIZE_USD
+      ) {
         // Portfolio allocation mode: use the allocation amount directly
         // But ensure we have enough balance to support it (need allocation / leverage as collateral)
         const requiredCollateral = maxPositionSizeUsd / this.leverage;
@@ -200,14 +247,14 @@ export class FundingArbitrageStrategy {
         // Standard mode: use available capital
         positionSizeUsd = Math.min(leveragedCapital, maxSize);
       }
-      
+
       // Check if we have enough to cover minimum
       if (positionSizeUsd < this.MIN_POSITION_SIZE_USD) {
         // Only log if we're close to having enough (within 20%) to reduce noise
         if (positionSizeUsd >= this.MIN_POSITION_SIZE_USD * 0.8) {
           this.logger.debug(
             `Insufficient balance for ${opportunity.symbol}: ` +
-            `Need $${this.MIN_POSITION_SIZE_USD}, have $${positionSizeUsd.toFixed(2)}`
+              `Need $${this.MIN_POSITION_SIZE_USD}, have $${positionSizeUsd.toFixed(2)}`,
           );
         }
         return null; // Skip this opportunity
@@ -219,40 +266,50 @@ export class FundingArbitrageStrategy {
 
       // Estimate costs using exchange-specific fee rates
       // Get fee rates for both exchanges (taker fees for market orders)
-      const longFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005; // Default 0.05% if unknown
-      const shortFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005; // Default 0.05% if unknown
-      
+      const longFeeRate =
+        this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005; // Default 0.05% if unknown
+      const shortFeeRate =
+        this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005; // Default 0.05% if unknown
+
       // Check liquidity (open interest) - ensure sufficient liquidity for our position size
       // For arbitrage, we need liquidity on BOTH sides (long exchange for long position, short exchange for short position)
       const longOI = opportunity.longOpenInterest || 0;
       const shortOI = opportunity.shortOpenInterest || 0;
-      
+
       // Reject opportunities where OI data is unavailable (N/A) - we need OI data to assess liquidity
-      if (opportunity.longOpenInterest === undefined || opportunity.longOpenInterest === null || longOI === 0) {
+      if (
+        opportunity.longOpenInterest === undefined ||
+        opportunity.longOpenInterest === null ||
+        longOI === 0
+      ) {
         return null;
       }
-      
-      if (opportunity.shortOpenInterest === undefined || opportunity.shortOpenInterest === null || shortOI === 0) {
+
+      if (
+        opportunity.shortOpenInterest === undefined ||
+        opportunity.shortOpenInterest === null ||
+        shortOI === 0
+      ) {
         return null;
       }
-      
+
       // Check liquidity on each side separately
       // We need liquidity on the long exchange for the long position
       if (longOI < this.MIN_OPEN_INTEREST_USD) {
         return null;
       }
-      
+
       // We need liquidity on the short exchange for the short position
       if (shortOI < this.MIN_OPEN_INTEREST_USD) {
         return null;
       }
-      
+
       // Adjust position size based on available liquidity (use minimum of both sides)
       // Position size should be < 5% of minimum OI to avoid market impact
       const minOI = Math.min(longOI || Infinity, shortOI || Infinity);
       if (minOI < Infinity && minOI > 0) {
         const maxPositionSizeFromOI = minOI * 0.05; // 5% of minimum OI
-        
+
         // Check if market can support the ACTUAL position size we want to trade
         // Ensure we don't exceed 5% of OI to avoid market impact
         if (positionSizeUsd > maxPositionSizeFromOI) {
@@ -261,33 +318,51 @@ export class FundingArbitrageStrategy {
           // Recalculate position size in base asset
           positionSize = positionSizeUsd / avgMarkPrice;
         }
-        
+
         // Only reject if reduced position size is below minimum viable size
         if (positionSizeUsd < this.MIN_POSITION_SIZE_USD) {
           return null;
         }
       }
-      
+
       // Get exchange-specific symbol formats for order placement (needed before bid/ask fetch)
       // Aster: needs "ETHUSDT" format
       // Lighter: needs normalized symbol, adapter will look up marketIndex
       // Hyperliquid: needs "ETH" format
-      const longExchangeSymbol = this.aggregator.getExchangeSymbol(opportunity.symbol, opportunity.longExchange);
-      const shortExchangeSymbol = this.aggregator.getExchangeSymbol(opportunity.symbol, opportunity.shortExchange);
-      
+      const longExchangeSymbol = this.aggregator.getExchangeSymbol(
+        opportunity.symbol,
+        opportunity.longExchange,
+      );
+      const shortExchangeSymbol = this.aggregator.getExchangeSymbol(
+        opportunity.symbol,
+        opportunity.shortExchange,
+      );
+
       // For Lighter (marketIndex is number), we still pass normalized symbol and adapter handles lookup
       // For Aster/Hyperliquid (string symbols), we use the exchange-specific format
-      const longSymbol = typeof longExchangeSymbol === 'string' 
-        ? longExchangeSymbol 
-        : opportunity.symbol; // For Lighter, use normalized symbol
-      const shortSymbol = typeof shortExchangeSymbol === 'string' 
-        ? shortExchangeSymbol 
-        : opportunity.symbol; // For Lighter, use normalized symbol
+      const longSymbol =
+        typeof longExchangeSymbol === 'string'
+          ? longExchangeSymbol
+          : opportunity.symbol; // For Lighter, use normalized symbol
+      const shortSymbol =
+        typeof shortExchangeSymbol === 'string'
+          ? shortExchangeSymbol
+          : opportunity.symbol; // For Lighter, use normalized symbol
 
       // Get best bid/ask prices for slippage calculation (needed before cost calculation)
-      const longBidAsk = await this.getBestBidAsk(longAdapter, longSymbol, opportunity.symbol, opportunity.longExchange);
-      const shortBidAsk = await this.getBestBidAsk(shortAdapter, shortSymbol, opportunity.symbol, opportunity.shortExchange);
-      
+      const longBidAsk = await this.getBestBidAsk(
+        longAdapter,
+        longSymbol,
+        opportunity.symbol,
+        opportunity.longExchange,
+      );
+      const shortBidAsk = await this.getBestBidAsk(
+        shortAdapter,
+        shortSymbol,
+        opportunity.symbol,
+        opportunity.shortExchange,
+      );
+
       // Calculate slippage costs for the ACTUAL position size we'll trade
       // Use actual positionSizeUsd (based on balances) for accurate cost calculation
       // This matches the logging calculation and ensures consistency
@@ -307,16 +382,16 @@ export class FundingArbitrageStrategy {
         OrderType.LIMIT,
       );
       const totalSlippageCost = longSlippage + shortSlippage;
-      
+
       // Calculate fees: entry fees on both exchanges (exit fees apply when closing, not included here)
       // We only account for entry fees since we're opening positions
       const longEntryFee = positionSizeUsd * longFeeRate;
       const shortEntryFee = positionSizeUsd * shortFeeRate;
       const totalEntryFees = longEntryFee + shortEntryFee;
-      
+
       // For exit fees, we'll estimate them the same way (when closing positions)
       const totalExitFees = totalEntryFees; // Same calculation for exit
-      
+
       // IMPORTANT: Only check entry fees + slippage for initial profitability check
       // Exit fees are paid later when closing, so we don't need to cover them upfront
       // This allows more opportunities to be considered profitable
@@ -329,7 +404,7 @@ export class FundingArbitrageStrategy {
       // With leverage, returns scale with leverage (2x leverage = 2x returns)
       const periodsPerDay = 24; // Hourly funding periods
       const periodsPerYear = periodsPerDay * 365; // 8760 hours per year
-      
+
       // Predict funding rate impact based on our position size relative to OI
       // Large positions can affect funding rate calculation by shifting OI-weighted premium
       // Impact is typically small unless position > 5-10% of OI
@@ -343,46 +418,66 @@ export class FundingArbitrageStrategy {
         opportunity.shortOpenInterest || 0,
         opportunity.shortRate,
       );
-      
+
       // Adjusted funding rates accounting for our position impact
       // Long position increases funding rate (more longs = higher premium)
       // Short position decreases funding rate (more shorts = lower premium)
       // Validate funding rates are valid numbers before calculation
-      const longRate = opportunity.longRate !== undefined && !isNaN(opportunity.longRate) ? opportunity.longRate : 0;
-      const shortRate = opportunity.shortRate !== undefined && !isNaN(opportunity.shortRate) ? opportunity.shortRate : 0;
-      
+      const longRate =
+        opportunity.longRate !== undefined && !isNaN(opportunity.longRate)
+          ? opportunity.longRate
+          : 0;
+      const shortRate =
+        opportunity.shortRate !== undefined && !isNaN(opportunity.shortRate)
+          ? opportunity.shortRate
+          : 0;
+
       const adjustedLongRate = longRate + longFundingImpact;
       const adjustedShortRate = shortRate - shortFundingImpact;
-      
+
       // Recalculate spread with adjusted rates
       const adjustedSpread = Math.abs(adjustedLongRate - adjustedShortRate);
       const adjustedExpectedReturn = adjustedSpread * periodsPerYear; // Annualized APY
-      
+
       // Note: opportunity.expectedReturn is already annualized (APY as decimal, e.g., 0.3625 = 36.25% APY)
       // APY calculation: spread * periodsPerYear (done in FundingRateAggregator)
       // To get hourly return: (APY / periodsPerYear) * positionSizeUsd
       // Returns scale with leverage: if we use 2x leverage, we get 2x the funding rate returns
       // But fees are a percentage of notional, so they scale too, but net return still improves
       // Use adjusted expected return if impact is significant (>1% of original spread) and valid
-      const useAdjusted = Math.abs(longFundingImpact + shortFundingImpact) > opportunity.spread * 0.01;
-      const effectiveExpectedReturn = (useAdjusted && !isNaN(adjustedExpectedReturn) && isFinite(adjustedExpectedReturn))
-        ? adjustedExpectedReturn
-        : (opportunity.expectedReturn !== undefined && !isNaN(opportunity.expectedReturn) ? opportunity.expectedReturn : 0);
-      
-      const expectedReturnPerPeriod = (effectiveExpectedReturn / periodsPerYear) * positionSizeUsd;
-      
+      const useAdjusted =
+        Math.abs(longFundingImpact + shortFundingImpact) >
+        opportunity.spread * 0.01;
+      const effectiveExpectedReturn =
+        useAdjusted &&
+        !isNaN(adjustedExpectedReturn) &&
+        isFinite(adjustedExpectedReturn)
+          ? adjustedExpectedReturn
+          : opportunity.expectedReturn !== undefined &&
+              !isNaN(opportunity.expectedReturn)
+            ? opportunity.expectedReturn
+            : 0;
+
+      const expectedReturnPerPeriod =
+        (effectiveExpectedReturn / periodsPerYear) * positionSizeUsd;
+
       // Calculate break-even hours: how many hours to cover all costs (entry + exit + slippage)
-      const totalCostsWithExit = totalEntryFees + totalExitFees + totalSlippageCost;
+      const totalCostsWithExit =
+        totalEntryFees + totalExitFees + totalSlippageCost;
       let breakEvenHours: number | null = null;
       let expectedNetReturn: number;
-      
+
       if (expectedReturnPerPeriod > 0) {
         breakEvenHours = totalCostsWithExit / expectedReturnPerPeriod;
-        
+
         // Amortize one-time costs over break-even period (capped at 24h) to determine profitability
         // This way, opportunities that break even quickly are considered profitable
-        const amortizationPeriods = Math.max(1, Math.min(24, Math.ceil(breakEvenHours))); // Amortize over break-even time, capped at 24h
-        const amortizedCostsPerPeriod = totalCostsWithExit / amortizationPeriods;
+        const amortizationPeriods = Math.max(
+          1,
+          Math.min(24, Math.ceil(breakEvenHours)),
+        ); // Amortize over break-even time, capped at 24h
+        const amortizedCostsPerPeriod =
+          totalCostsWithExit / amortizationPeriods;
         expectedNetReturn = expectedReturnPerPeriod - amortizedCostsPerPeriod;
       } else {
         // No expected return, so net return is negative (costs only)
@@ -391,42 +486,46 @@ export class FundingArbitrageStrategy {
 
       // Only proceed if net return is positive (after amortization)
       if (expectedNetReturn <= 0) {
-        const amortizedCosts = breakEvenHours !== null 
-          ? totalCostsWithExit / Math.max(1, Math.min(24, Math.ceil(breakEvenHours)))
-          : totalCostsWithExit / 24;
+        const amortizedCosts =
+          breakEvenHours !== null
+            ? totalCostsWithExit /
+              Math.max(1, Math.min(24, Math.ceil(breakEvenHours)))
+            : totalCostsWithExit / 24;
         this.logger.debug(
           `Opportunity ${opportunity.symbol} rejected (profitability): ` +
-          `Position: $${positionSizeUsd.toFixed(2)}, ` +
-          `Hourly return: $${expectedReturnPerPeriod.toFixed(4)}, ` +
-          `Entry fees: $${totalEntryFees.toFixed(4)}, ` +
-          `Exit fees: $${totalExitFees.toFixed(4)}, ` +
-          `Slippage: $${totalSlippageCost.toFixed(4)}, ` +
-          `Total costs: $${totalCostsWithExit.toFixed(4)}, ` +
-          `Break-even: ${breakEvenHours !== null ? breakEvenHours.toFixed(1) : 'N/A'}h, ` +
-          `Amortized costs/hour: $${amortizedCosts.toFixed(4)}, ` +
-          `Net return/hour: $${expectedNetReturn.toFixed(4)}`
+            `Position: $${positionSizeUsd.toFixed(2)}, ` +
+            `Hourly return: $${expectedReturnPerPeriod.toFixed(4)}, ` +
+            `Entry fees: $${totalEntryFees.toFixed(4)}, ` +
+            `Exit fees: $${totalExitFees.toFixed(4)}, ` +
+            `Slippage: $${totalSlippageCost.toFixed(4)}, ` +
+            `Total costs: $${totalCostsWithExit.toFixed(4)}, ` +
+            `Break-even: ${breakEvenHours !== null ? breakEvenHours.toFixed(1) : 'N/A'}h, ` +
+            `Amortized costs/hour: $${amortizedCosts.toFixed(4)}, ` +
+            `Net return/hour: $${expectedNetReturn.toFixed(4)}`,
         );
         return null;
       }
 
       this.logger.log(
         `✅ Execution plan created for ${opportunity.symbol}: ` +
-        `Position size: $${positionSizeUsd.toFixed(2)}, ` +
-        `Expected net return per period: $${expectedNetReturn.toFixed(4)}, ` +
-        `Spread: ${(opportunity.spread * 100).toFixed(4)}%`
+          `Position size: $${positionSizeUsd.toFixed(2)}, ` +
+          `Expected net return per period: $${expectedNetReturn.toFixed(4)}, ` +
+          `Spread: ${(opportunity.spread * 100).toFixed(4)}%`,
       );
 
       // Calculate limit prices using already-fetched bid/ask prices:
       // LONG: Place at best bid + 0.01% improvement (competitive but still maker)
       // SHORT: Place at best ask - 0.01% improvement (competitive but still maker)
-      const longLimitPrice = longBidAsk.bestBid * (1 + this.LIMIT_ORDER_PRICE_IMPROVEMENT);
-      const shortLimitPrice = shortBidAsk.bestAsk * (1 - this.LIMIT_ORDER_PRICE_IMPROVEMENT);
-      
+      const longLimitPrice =
+        longBidAsk.bestBid * (1 + this.LIMIT_ORDER_PRICE_IMPROVEMENT);
+      const shortLimitPrice =
+        shortBidAsk.bestAsk * (1 - this.LIMIT_ORDER_PRICE_IMPROVEMENT);
+
       this.logger.debug(
         `Limit order prices for ${opportunity.symbol}: ` +
-        `LONG @ ${longLimitPrice.toFixed(4)} (best bid: ${longBidAsk.bestBid.toFixed(4)}), ` +
-        `SHORT @ ${shortLimitPrice.toFixed(4)} (best ask: ${shortBidAsk.bestAsk.toFixed(4)}), ` +
-        `Slippage cost: $${totalSlippageCost.toFixed(2)}`
+          `LONG @ ${longLimitPrice.toFixed(4)} (best bid: ${longBidAsk.bestBid.toFixed(4)}), ` +
+          `SHORT @ ${shortLimitPrice.toFixed(4)} (best ask: ${shortBidAsk.bestAsk.toFixed(4)}), ` +
+          `Slippage cost: $${totalSlippageCost.toFixed(2)}`,
       );
 
       // Create LIMIT order requests with competitive prices (maker orders)
@@ -481,13 +580,14 @@ export class FundingArbitrageStrategy {
     const spread = bestAsk - bestBid;
     const midPrice = (bestBid + bestAsk) / 2;
     const spreadPercent = midPrice > 0 ? spread / midPrice : 0.001; // Default 0.1% if no price
-    
+
     // Base slippage: limit orders have minimal slippage (we're adding liquidity)
     // Market orders would pay half the spread
-    const baseSlippage = orderType === OrderType.MARKET 
-      ? spreadPercent / 2  // Pay half the spread for market orders
-      : 0.0001; // Minimal slippage for limit orders (0.01%)
-    
+    const baseSlippage =
+      orderType === OrderType.MARKET
+        ? spreadPercent / 2 // Pay half the spread for market orders
+        : 0.0001; // Minimal slippage for limit orders (0.01%)
+
     // Market impact: how much our order size affects price
     // Use open interest as proxy for liquidity
     // Position size should be < 5% of OI to avoid significant impact
@@ -497,14 +597,15 @@ export class FundingArbitrageStrategy {
       // Cap impact at 2% for very large orders
       const impactSlippage = Math.min(
         Math.sqrt(Math.min(liquidityRatio, 1)) * spreadPercent * 2,
-        0.02 // Cap at 2%
+        0.02, // Cap at 2%
       );
-      
+
       return positionSizeUsd * (baseSlippage + impactSlippage);
     }
-    
+
     // Fallback: use conservative estimate if no OI data
-    const conservativeSlippage = orderType === OrderType.MARKET ? 0.0005 : 0.0001;
+    const conservativeSlippage =
+      orderType === OrderType.MARKET ? 0.0005 : 0.0001;
     return positionSizeUsd * conservativeSlippage;
   }
 
@@ -519,11 +620,17 @@ export class FundingArbitrageStrategy {
     targetNetAPY: number = 0.35,
   ): number | null {
     const periodsPerYear = 24 * 365;
-    
+
     // Get historical weighted average rates (more robust than current snapshot)
-    const currentLongRate = opportunity.longRate !== undefined && !isNaN(opportunity.longRate) ? opportunity.longRate : 0;
-    const currentShortRate = opportunity.shortRate !== undefined && !isNaN(opportunity.shortRate) ? opportunity.shortRate : 0;
-    
+    const currentLongRate =
+      opportunity.longRate !== undefined && !isNaN(opportunity.longRate)
+        ? opportunity.longRate
+        : 0;
+    const currentShortRate =
+      opportunity.shortRate !== undefined && !isNaN(opportunity.shortRate)
+        ? opportunity.shortRate
+        : 0;
+
     const historicalLongRate = this.historicalService.getWeightedAverageRate(
       opportunity.symbol,
       opportunity.longExchange,
@@ -534,7 +641,7 @@ export class FundingArbitrageStrategy {
       opportunity.shortExchange,
       currentShortRate,
     );
-    
+
     // Get historical weighted average spread
     const historicalSpread = this.historicalService.getAverageSpread(
       opportunity.symbol,
@@ -544,45 +651,53 @@ export class FundingArbitrageStrategy {
       currentLongRate,
       currentShortRate,
     );
-    
+
     // Log historical data usage (debug level to avoid spam)
-    const longDataPoints = this.historicalService.getHistoricalData(opportunity.symbol, opportunity.longExchange).length;
-    const shortDataPoints = this.historicalService.getHistoricalData(opportunity.symbol, opportunity.shortExchange).length;
+    const longDataPoints = this.historicalService.getHistoricalData(
+      opportunity.symbol,
+      opportunity.longExchange,
+    ).length;
+    const shortDataPoints = this.historicalService.getHistoricalData(
+      opportunity.symbol,
+      opportunity.shortExchange,
+    ).length;
     const usingHistorical = longDataPoints > 0 || shortDataPoints > 0;
-    
+
     // Verbose logging removed - only log when maxPortfolio is calculated successfully
-    
+
     // Use historical spread for initial gross APY calculation
     const grossAPY = Math.abs(historicalSpread) * periodsPerYear;
-    
+
     if (grossAPY <= targetNetAPY) {
       return null; // Can't achieve target if gross APY is too low
     }
-    
+
     // Get OI data
     const longOI = opportunity.longOpenInterest || 0;
     const shortOI = opportunity.shortOpenInterest || 0;
     const minOI = Math.min(longOI, shortOI);
-    
+
     if (minOI <= 0) {
       return null; // Need OI data to calculate slippage
     }
-    
+
     // Get fee rates
-    const longFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
-    const shortFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
+    const longFeeRate =
+      this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
+    const shortFeeRate =
+      this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
     const totalFeeRate = (longFeeRate + shortFeeRate) * 2; // Entry + exit fees for both legs
-    
+
     // Binary search for max position size
     let low = 1000; // $1k minimum
     let high = Math.min(minOI * 0.1, 10000000); // Max 10% of OI or $10M
     let maxPortfolio: number | null = null;
     let finalEffectiveGrossAPY: number = 0; // Store for volatility adjustment
-    
+
     // Iterate to find max position size
     for (let iter = 0; iter < 50; iter++) {
       const testPosition = (low + high) / 2;
-      
+
       // Calculate slippage for this position size using existing method
       const longSlippage = this.calculateSlippageCost(
         testPosition,
@@ -604,12 +719,12 @@ export class FundingArbitrageStrategy {
       const entrySlippage = longSlippage + shortSlippage;
       const exitSlippage = entrySlippage; // Same when closing
       const totalSlippageCost = entrySlippage + exitSlippage;
-      
+
       // Calculate fees (entry + exit for both legs)
       const entryFees = testPosition * (longFeeRate + shortFeeRate);
       const exitFees = entryFees; // Same when closing
       const totalFees = entryFees + exitFees;
-      
+
       // Calculate funding rate impact for this position size (iterative)
       // Large positions affect funding rate calculation by shifting OI-weighted premium
       // Use historical rates as base (more robust than current snapshot)
@@ -623,31 +738,35 @@ export class FundingArbitrageStrategy {
         shortOI,
         historicalShortRate, // Use historical rate instead of current
       );
-      
+
       // Adjust funding rates based on our position impact
       // Long position increases funding rate (more longs = higher premium)
       // Short position decreases funding rate (more shorts = lower premium)
       // Use historical rates as base
       const adjustedLongRate = historicalLongRate + longFundingImpact;
       const adjustedShortRate = historicalShortRate - shortFundingImpact;
-      
+
       // Recalculate spread with adjusted rates
       const adjustedSpread = Math.abs(adjustedLongRate - adjustedShortRate);
       const adjustedGrossAPY = adjustedSpread * periodsPerYear;
-      
+
       // Use adjusted gross APY (accounts for funding rate impact)
       const effectiveGrossAPY = adjustedGrossAPY;
-      
+
       // Total one-time costs (slippage + fees) amortized over a year
       // These costs reduce effective return, so we amortize them hourly
       const totalOneTimeCosts = totalSlippageCost + totalFees;
       const amortizedCostsPerHour = totalOneTimeCosts / periodsPerYear;
-      
+
       // Calculate net return per hour using adjusted gross APY
-      const grossReturnPerHour = (effectiveGrossAPY / periodsPerYear) * testPosition;
+      const grossReturnPerHour =
+        (effectiveGrossAPY / periodsPerYear) * testPosition;
       const netReturnPerHour = grossReturnPerHour - amortizedCostsPerHour;
-      const netAPY = testPosition > 0 ? (netReturnPerHour * periodsPerYear) / testPosition : 0;
-      
+      const netAPY =
+        testPosition > 0
+          ? (netReturnPerHour * periodsPerYear) / testPosition
+          : 0;
+
       if (Math.abs(netAPY - targetNetAPY) < 0.001) {
         // Found it!
         maxPortfolio = testPosition;
@@ -662,29 +781,30 @@ export class FundingArbitrageStrategy {
         // Too large, reduce
         high = testPosition;
       }
-      
+
       if (high - low < 100) {
         // Converged
         break;
       }
     }
-    
+
     // Apply volatility-based portfolio size reduction
     // Higher volatility = smaller portfolio = faster break-even = less funding delta exposure
     if (maxPortfolio !== null && maxPortfolio > 0) {
-      const volatilityMetrics = this.historicalService.getSpreadVolatilityMetrics(
-        opportunity.symbol,
-        opportunity.longExchange,
-        opportunity.symbol,
-        opportunity.shortExchange,
-        30, // 30 days
-      );
-      
+      const volatilityMetrics =
+        this.historicalService.getSpreadVolatilityMetrics(
+          opportunity.symbol,
+          opportunity.longExchange,
+          opportunity.symbol,
+          opportunity.shortExchange,
+          30, // 30 days
+        );
+
       if (volatilityMetrics) {
         // Calculate break-even time for this position size
         // Use the final test position (maxPortfolio) to calculate break-even
         const finalTestPosition = maxPortfolio;
-        
+
         // Recalculate costs for final position size
         const finalLongSlippage = this.calculateSlippageCost(
           finalTestPosition,
@@ -707,52 +827,71 @@ export class FundingArbitrageStrategy {
         const finalExitFees = finalEntryFees;
         const finalTotalFees = finalEntryFees + finalExitFees;
         const finalTotalOneTimeCosts = finalTotalSlippageCost + finalTotalFees;
-        
+
         // Calculate hourly return for final position
-        const finalHourlyReturn = (finalEffectiveGrossAPY / periodsPerYear) * finalTestPosition;
-        const breakEvenHours = finalHourlyReturn > 0 ? finalTotalOneTimeCosts / finalHourlyReturn : Infinity;
-        
+        const finalHourlyReturn =
+          (finalEffectiveGrossAPY / periodsPerYear) * finalTestPosition;
+        const breakEvenHours =
+          finalHourlyReturn > 0
+            ? finalTotalOneTimeCosts / finalHourlyReturn
+            : Infinity;
+
         // Volatility-based portfolio reduction factors:
         // 1. Stability score penalty: Lower stability = smaller portfolio
         const stabilityPenalty = 1 - volatilityMetrics.stabilityScore; // 0-1, higher = more volatile
-        
+
         // 2. Break-even time penalty: Longer break-even = more exposure = smaller portfolio
         // Target: break-even < 24 hours for volatile spreads, < 48 hours for stable spreads
-        const maxBreakEvenHours = volatilityMetrics.stabilityScore < 0.5 ? 24 : 48;
-        const breakEvenPenalty = breakEvenHours > maxBreakEvenHours && breakEvenHours < Infinity
-          ? Math.min(0.5, (breakEvenHours - maxBreakEvenHours) / maxBreakEvenHours) // Up to 50% reduction
-          : 0;
-        
+        const maxBreakEvenHours =
+          volatilityMetrics.stabilityScore < 0.5 ? 24 : 48;
+        const breakEvenPenalty =
+          breakEvenHours > maxBreakEvenHours && breakEvenHours < Infinity
+            ? Math.min(
+                0.5,
+                (breakEvenHours - maxBreakEvenHours) / maxBreakEvenHours,
+              ) // Up to 50% reduction
+            : 0;
+
         // 3. Max hourly spread change penalty: Large changes = higher risk
-        const maxChangePenalty = volatilityMetrics.maxHourlySpreadChange > 0.0001 // 0.01%
-          ? Math.min(0.3, (volatilityMetrics.maxHourlySpreadChange - 0.0001) / 0.0002) // Up to 30% reduction
-          : 0;
-        
+        const maxChangePenalty =
+          volatilityMetrics.maxHourlySpreadChange > 0.0001 // 0.01%
+            ? Math.min(
+                0.3,
+                (volatilityMetrics.maxHourlySpreadChange - 0.0001) / 0.0002,
+              ) // Up to 30% reduction
+            : 0;
+
         // 4. Spread reversal penalty: More reversals = higher risk
-        const reversalPenalty = volatilityMetrics.spreadReversals > 5
-          ? Math.min(0.2, (volatilityMetrics.spreadReversals - 5) / 25) // Up to 20% reduction
-          : 0;
-        
+        const reversalPenalty =
+          volatilityMetrics.spreadReversals > 5
+            ? Math.min(0.2, (volatilityMetrics.spreadReversals - 5) / 25) // Up to 20% reduction
+            : 0;
+
         // Combine all penalties (weighted average)
-        const totalVolatilityPenalty = Math.min(0.7, 
-          stabilityPenalty * 0.4 + 
-          breakEvenPenalty * 0.3 + 
-          maxChangePenalty * 0.2 + 
-          reversalPenalty * 0.1
+        const totalVolatilityPenalty = Math.min(
+          0.7,
+          stabilityPenalty * 0.4 +
+            breakEvenPenalty * 0.3 +
+            maxChangePenalty * 0.2 +
+            reversalPenalty * 0.1,
         );
-        
+
         // Apply volatility reduction to max portfolio
-        const volatilityAdjustedMaxPortfolio = maxPortfolio * (1 - totalVolatilityPenalty);
-        
+        const volatilityAdjustedMaxPortfolio =
+          maxPortfolio * (1 - totalVolatilityPenalty);
+
         // Ensure minimum portfolio size ($1k)
-        const finalMaxPortfolio = Math.max(1000, volatilityAdjustedMaxPortfolio);
-        
+        const finalMaxPortfolio = Math.max(
+          1000,
+          volatilityAdjustedMaxPortfolio,
+        );
+
         // Verbose volatility adjustment logging removed - only log final result if significant adjustment
-        
+
         return finalMaxPortfolio;
       }
     }
-    
+
     return maxPortfolio;
   }
 
@@ -780,20 +919,20 @@ export class FundingArbitrageStrategy {
       opportunity.symbol,
       opportunity.shortExchange,
     );
-    
+
     // Target: 168+ hourly points (7 days) or 21+ Aster points (7 days at 8-hour intervals)
     const longExchange = opportunity.longExchange;
     const shortExchange = opportunity.shortExchange;
     const targetLongPoints = longExchange === ExchangeType.ASTER ? 21 : 168;
     const targetShortPoints = shortExchange === ExchangeType.ASTER ? 21 : 168;
-    
+
     // Calculate data quality score for each exchange (0-1)
     const longQuality = Math.min(1.0, longData.length / targetLongPoints);
     const shortQuality = Math.min(1.0, shortData.length / targetShortPoints);
-    
+
     // Use minimum quality (both exchanges need good data)
     const minQuality = Math.min(longQuality, shortQuality);
-    
+
     // Risk factor: 1.0 = full allocation (high quality), 0.3 = minimal allocation (very poor data)
     // Scale: 0-0.1 data points = 0.3 risk factor (70% reduction)
     //        0.1-0.5 data points = 0.3-0.7 risk factor (gradual increase)
@@ -804,12 +943,12 @@ export class FundingArbitrageStrategy {
       riskFactor = 0.3;
     } else if (minQuality < 0.5) {
       // Poor data (10-50% of target): 30-70% allocation (linear interpolation)
-      riskFactor = 0.3 + (minQuality - 0.1) * (0.7 - 0.3) / (0.5 - 0.1);
+      riskFactor = 0.3 + ((minQuality - 0.1) * (0.7 - 0.3)) / (0.5 - 0.1);
     } else {
       // Good data (50%+ of target): 70-100% allocation
-      riskFactor = 0.7 + (minQuality - 0.5) * (1.0 - 0.7) / (1.0 - 0.5);
+      riskFactor = 0.7 + ((minQuality - 0.5) * (1.0 - 0.7)) / (1.0 - 0.5);
     }
-    
+
     return Math.max(0.1, Math.min(1.0, riskFactor)); // Clamp between 0.1 and 1.0
   }
 
@@ -821,7 +960,7 @@ export class FundingArbitrageStrategy {
     // No minimum data point requirement - will use whatever historical data is available
     // Falls back to current rates if historical data is insufficient
     // Data-poor opportunities will be marked as risky and receive less allocation
-    
+
     // Only reject if spread is obviously invalid (negative or impossibly high)
     // Allow spreads from 0% to 50% (0 to 0.5) - very lenient
     const absSpread = Math.abs(historicalSpread);
@@ -831,13 +970,15 @@ export class FundingArbitrageStrategy {
         reason: `Invalid historical spread: ${(historicalSpread * 100).toFixed(4)}% (exceeds 50% threshold)`,
       };
     }
-    
+
     // Note: Negative spreads are allowed (they indicate reverse arbitrage opportunities)
     // The system will handle them appropriately in calculations
-    
+
     // Additional validation: Check if we have matched data points
     // If getAverageSpread returns the current spread (fallback), we don't have historical data
-    const currentSpread = Math.abs(opportunity.longRate - opportunity.shortRate);
+    const currentSpread = Math.abs(
+      opportunity.longRate - opportunity.shortRate,
+    );
     if (Math.abs(historicalSpread - currentSpread) < 0.0000001) {
       // Historical spread equals current spread - likely fallback, not real historical data
       return {
@@ -845,7 +986,7 @@ export class FundingArbitrageStrategy {
         reason: `No historical matched data (using current spread fallback)`,
       };
     }
-    
+
     return { isValid: true };
   }
 
@@ -866,18 +1007,30 @@ export class FundingArbitrageStrategy {
     dataQualityWarnings: string[];
   } {
     const dataQualityWarnings: string[] = [];
-    
+
     // Filter to only opportunities that can achieve target APY AND have valid historical data
     const validOpportunities = opportunities.filter((item) => {
       // Basic filter: must have maxPortfolioFor35APY
-      if (item.maxPortfolioFor35APY === null || item.maxPortfolioFor35APY === undefined || item.maxPortfolioFor35APY <= 0) {
+      if (
+        item.maxPortfolioFor35APY === null ||
+        item.maxPortfolioFor35APY === undefined ||
+        item.maxPortfolioFor35APY <= 0
+      ) {
         return false;
       }
-      
+
       // Validate historical data quality
-      const currentLongRate = item.opportunity.longRate !== undefined && !isNaN(item.opportunity.longRate) ? item.opportunity.longRate : 0;
-      const currentShortRate = item.opportunity.shortRate !== undefined && !isNaN(item.opportunity.shortRate) ? item.opportunity.shortRate : 0;
-      
+      const currentLongRate =
+        item.opportunity.longRate !== undefined &&
+        !isNaN(item.opportunity.longRate)
+          ? item.opportunity.longRate
+          : 0;
+      const currentShortRate =
+        item.opportunity.shortRate !== undefined &&
+        !isNaN(item.opportunity.shortRate)
+          ? item.opportunity.shortRate
+          : 0;
+
       const historicalSpread = this.historicalService.getAverageSpread(
         item.opportunity.symbol,
         item.opportunity.longExchange,
@@ -886,19 +1039,28 @@ export class FundingArbitrageStrategy {
         currentLongRate,
         currentShortRate,
       );
-      
-      const validation = this.validateHistoricalDataQuality(item.opportunity, historicalSpread);
+
+      const validation = this.validateHistoricalDataQuality(
+        item.opportunity,
+        historicalSpread,
+      );
       if (!validation.isValid) {
-        dataQualityWarnings.push(`${item.opportunity.symbol}: ${validation.reason}`);
+        dataQualityWarnings.push(
+          `${item.opportunity.symbol}: ${validation.reason}`,
+        );
         return false;
       }
-      
+
       return true;
     });
 
     if (validOpportunities.length === 0) {
-      this.logger.warn(`⚠️ No valid opportunities after filtering. ${dataQualityWarnings.length} opportunities excluded due to invalid spreads:`);
-      dataQualityWarnings.forEach(warning => this.logger.warn(`  - ${warning}`));
+      this.logger.warn(
+        `⚠️ No valid opportunities after filtering. ${dataQualityWarnings.length} opportunities excluded due to invalid spreads:`,
+      );
+      dataQualityWarnings.forEach((warning) =>
+        this.logger.warn(`  - ${warning}`),
+      );
       return {
         allocations: new Map(),
         totalPortfolio: 0,
@@ -907,24 +1069,31 @@ export class FundingArbitrageStrategy {
         dataQualityWarnings,
       };
     }
-    
+
     if (dataQualityWarnings.length > 0) {
-      this.logger.debug(`📊 Data Quality: ${dataQualityWarnings.length} opportunities excluded due to invalid spreads (data quality requirements relaxed - no minimum data points required)`);
-      dataQualityWarnings.forEach(warning => this.logger.debug(`  - ${warning}`));
+      this.logger.debug(
+        `📊 Data Quality: ${dataQualityWarnings.length} opportunities excluded due to invalid spreads (data quality requirements relaxed - no minimum data points required)`,
+      );
+      dataQualityWarnings.forEach((warning) =>
+        this.logger.debug(`  - ${warning}`),
+      );
     }
 
     const periodsPerYear = 24 * 365;
     const allocations = new Map<string, number>();
-    
+
     // Calculate max total portfolio (sum of all max portfolios)
     const maxTotalPortfolio = validOpportunities.reduce(
       (sum, item) => sum + (item.maxPortfolioFor35APY || 0),
-      0
+      0,
     );
 
     // Binary search for optimal total portfolio size
     let low = 0;
-    let high = totalCapital !== null ? Math.min(totalCapital, maxTotalPortfolio) : maxTotalPortfolio;
+    let high =
+      totalCapital !== null
+        ? Math.min(totalCapital, maxTotalPortfolio)
+        : maxTotalPortfolio;
     let bestTotalPortfolio = 0;
     let bestAllocations = new Map<string, number>();
     let bestAggregateAPY = 0;
@@ -936,13 +1105,14 @@ export class FundingArbitrageStrategy {
       const weights = new Map<string, number>();
       const totalMaxPortfolio = validOpportunities.reduce(
         (sum, item) => sum + (item.maxPortfolioFor35APY || 0),
-        0
+        0,
       );
 
       validOpportunities.forEach((item) => {
-        const weight = totalMaxPortfolio > 0
-          ? (item.maxPortfolioFor35APY || 0) / totalMaxPortfolio
-          : 1 / validOpportunities.length;
+        const weight =
+          totalMaxPortfolio > 0
+            ? (item.maxPortfolioFor35APY || 0) / totalMaxPortfolio
+            : 1 / validOpportunities.length;
         weights.set(item.opportunity.symbol, weight);
       });
 
@@ -955,13 +1125,15 @@ export class FundingArbitrageStrategy {
         const weight = weights.get(item.opportunity.symbol) || 0;
         const baseAllocation = Math.min(
           testTotalPortfolio * weight,
-          item.maxPortfolioFor35APY || 0
+          item.maxPortfolioFor35APY || 0,
         );
-        
+
         // Apply data quality risk factor: data-poor opportunities get less allocation
-        const dataQualityRiskFactor = this.calculateDataQualityRiskFactor(item.opportunity);
+        const dataQualityRiskFactor = this.calculateDataQualityRiskFactor(
+          item.opportunity,
+        );
         const allocation = baseAllocation * dataQualityRiskFactor;
-        
+
         testAllocations.set(item.opportunity.symbol, allocation);
         actualTotalPortfolio += allocation;
       });
@@ -970,7 +1142,7 @@ export class FundingArbitrageStrategy {
       // Since each opportunity's maxPortfolioFor35APY is calculated to achieve exactly 35% net APY,
       // and smaller allocations have higher net APY (less slippage/funding impact),
       // we need to estimate net APY for each allocation size.
-      // 
+      //
       // Conservative approach: Assume net APY scales linearly with allocation ratio
       // At maxPortfolio: net APY = 35%
       // At 0: net APY = gross APY (no costs)
@@ -980,12 +1152,22 @@ export class FundingArbitrageStrategy {
 
       testAllocations.forEach((allocation, symbol) => {
         if (allocation > 0) {
-          const item = validOpportunities.find((o) => o.opportunity.symbol === symbol);
+          const item = validOpportunities.find(
+            (o) => o.opportunity.symbol === symbol,
+          );
           if (item && item.maxPortfolioFor35APY) {
             // Use historical weighted average spread instead of current snapshot
-            const currentLongRate = item.opportunity.longRate !== undefined && !isNaN(item.opportunity.longRate) ? item.opportunity.longRate : 0;
-            const currentShortRate = item.opportunity.shortRate !== undefined && !isNaN(item.opportunity.shortRate) ? item.opportunity.shortRate : 0;
-            
+            const currentLongRate =
+              item.opportunity.longRate !== undefined &&
+              !isNaN(item.opportunity.longRate)
+                ? item.opportunity.longRate
+                : 0;
+            const currentShortRate =
+              item.opportunity.shortRate !== undefined &&
+              !isNaN(item.opportunity.shortRate)
+                ? item.opportunity.shortRate
+                : 0;
+
             const historicalSpread = this.historicalService.getAverageSpread(
               item.opportunity.symbol,
               item.opportunity.longExchange,
@@ -994,27 +1176,32 @@ export class FundingArbitrageStrategy {
               currentLongRate,
               currentShortRate,
             );
-            
+
             // Get spread volatility metrics for risk adjustment
-            const volatilityMetrics = this.historicalService.getSpreadVolatilityMetrics(
-              item.opportunity.symbol,
-              item.opportunity.longExchange,
-              item.opportunity.symbol,
-              item.opportunity.shortExchange,
-              30, // 30 days
-            );
-            
+            const volatilityMetrics =
+              this.historicalService.getSpreadVolatilityMetrics(
+                item.opportunity.symbol,
+                item.opportunity.longExchange,
+                item.opportunity.symbol,
+                item.opportunity.shortExchange,
+                30, // 30 days
+              );
+
             // Calculate gross APY from historical spread
             const grossAPY = Math.abs(historicalSpread) * periodsPerYear;
             const maxPortfolio = item.maxPortfolioFor35APY;
             const allocationRatio = Math.min(allocation / maxPortfolio, 1);
-            
+
             // IMPORTANT: Recalculate slippage and fees at actual allocation size
             // Slippage scales non-linearly (square root), so we can't use linear interpolation
-            const longFeeRate = this.EXCHANGE_FEE_RATES.get(item.opportunity.longExchange) || 0.0005;
-            const shortFeeRate = this.EXCHANGE_FEE_RATES.get(item.opportunity.shortExchange) || 0.0005;
+            const longFeeRate =
+              this.EXCHANGE_FEE_RATES.get(item.opportunity.longExchange) ||
+              0.0005;
+            const shortFeeRate =
+              this.EXCHANGE_FEE_RATES.get(item.opportunity.shortExchange) ||
+              0.0005;
             const totalFeeRate = (longFeeRate + shortFeeRate) * 2; // Entry + exit
-            
+
             // Calculate slippage at actual allocation size (not maxPortfolio)
             const longSlippage = this.calculateSlippageCost(
               allocation,
@@ -1031,19 +1218,21 @@ export class FundingArbitrageStrategy {
               OrderType.LIMIT,
             );
             const totalSlippageCost = (longSlippage + shortSlippage) * 2; // Entry + exit
-            
+
             // Calculate funding rate impact at actual allocation size
-            const historicalLongRate = this.historicalService.getWeightedAverageRate(
-              item.opportunity.symbol,
-              item.opportunity.longExchange,
-              item.opportunity.longRate || 0,
-            );
-            const historicalShortRate = this.historicalService.getWeightedAverageRate(
-              item.opportunity.symbol,
-              item.opportunity.shortExchange,
-              item.opportunity.shortRate || 0,
-            );
-            
+            const historicalLongRate =
+              this.historicalService.getWeightedAverageRate(
+                item.opportunity.symbol,
+                item.opportunity.longExchange,
+                item.opportunity.longRate || 0,
+              );
+            const historicalShortRate =
+              this.historicalService.getWeightedAverageRate(
+                item.opportunity.symbol,
+                item.opportunity.shortExchange,
+                item.opportunity.shortRate || 0,
+              );
+
             const longFundingImpact = this.predictFundingRateImpact(
               allocation,
               item.opportunity.longOpenInterest || 0,
@@ -1054,19 +1243,26 @@ export class FundingArbitrageStrategy {
               item.opportunity.shortOpenInterest || 0,
               historicalShortRate,
             );
-            
+
             const adjustedLongRate = historicalLongRate + longFundingImpact;
             const adjustedShortRate = historicalShortRate - shortFundingImpact;
-            const adjustedSpread = Math.abs(adjustedLongRate - adjustedShortRate);
+            const adjustedSpread = Math.abs(
+              adjustedLongRate - adjustedShortRate,
+            );
             const adjustedGrossAPY = adjustedSpread * periodsPerYear;
-            
+
             // Calculate net APY: gross APY minus costs (amortized over a year)
-            const totalOneTimeCosts = totalSlippageCost + (allocation * totalFeeRate);
+            const totalOneTimeCosts =
+              totalSlippageCost + allocation * totalFeeRate;
             const amortizedCostsPerHour = totalOneTimeCosts / periodsPerYear;
-            const grossReturnPerHour = (adjustedGrossAPY / periodsPerYear) * allocation;
+            const grossReturnPerHour =
+              (adjustedGrossAPY / periodsPerYear) * allocation;
             const netReturnPerHour = grossReturnPerHour - amortizedCostsPerHour;
-            let estimatedNetAPY = allocation > 0 ? (netReturnPerHour * periodsPerYear) / allocation : 0;
-            
+            let estimatedNetAPY =
+              allocation > 0
+                ? (netReturnPerHour * periodsPerYear) / allocation
+                : 0;
+
             // Apply volatility risk adjustment (additional discount beyond what's in maxPortfolio)
             // Note: maxPortfolio already includes volatility adjustment, but we apply additional discount
             // for the portfolio-level aggregation to account for correlation risk
@@ -1075,23 +1271,30 @@ export class FundingArbitrageStrategy {
               // Risk discount: (1 - stabilityScore) * riskPenaltyFactor
               // More volatile spreads get a larger discount
               const riskPenaltyFactor = 0.15; // Reduced from 0.3 since maxPortfolio already accounts for volatility
-              const riskDiscount = (1 - volatilityMetrics.stabilityScore) * riskPenaltyFactor;
-              
+              const riskDiscount =
+                (1 - volatilityMetrics.stabilityScore) * riskPenaltyFactor;
+
               // Additional penalty for spreads that drop to zero or reverse frequently
-              const zeroDropPenalty = volatilityMetrics.spreadDropsToZero > 0 ? 0.1 : 0; // Reduced from 0.15
-              const reversalPenalty = volatilityMetrics.spreadReversals > 10 ? 0.05 : 0; // Reduced from 0.1
-              
-              const totalRiskDiscount = Math.min(0.3, riskDiscount + zeroDropPenalty + reversalPenalty); // Cap at 30% (reduced from 50%)
+              const zeroDropPenalty =
+                volatilityMetrics.spreadDropsToZero > 0 ? 0.1 : 0; // Reduced from 0.15
+              const reversalPenalty =
+                volatilityMetrics.spreadReversals > 10 ? 0.05 : 0; // Reduced from 0.1
+
+              const totalRiskDiscount = Math.min(
+                0.3,
+                riskDiscount + zeroDropPenalty + reversalPenalty,
+              ); // Cap at 30% (reduced from 50%)
               estimatedNetAPY = estimatedNetAPY * (1 - totalRiskDiscount);
             }
-            
+
             totalWeightedReturn += allocation * estimatedNetAPY;
             totalAllocated += allocation;
           }
         }
       });
 
-      const aggregateAPY = totalAllocated > 0 ? totalWeightedReturn / totalAllocated : 0;
+      const aggregateAPY =
+        totalAllocated > 0 ? totalWeightedReturn / totalAllocated : 0;
 
       if (Math.abs(aggregateAPY - targetAggregateAPY) < 0.001) {
         // Found it!
@@ -1120,7 +1323,9 @@ export class FundingArbitrageStrategy {
     const MAX_REASONABLE_PORTFOLIO = 50_000_000; // $50M cap
     let finalPortfolio = bestTotalPortfolio;
     if (bestTotalPortfolio > MAX_REASONABLE_PORTFOLIO) {
-      this.logger.warn(`⚠️ Portfolio size ${bestTotalPortfolio.toLocaleString()} exceeds reasonable limit (${MAX_REASONABLE_PORTFOLIO.toLocaleString()}). This may indicate data quality issues.`);
+      this.logger.warn(
+        `⚠️ Portfolio size ${bestTotalPortfolio.toLocaleString()} exceeds reasonable limit (${MAX_REASONABLE_PORTFOLIO.toLocaleString()}). This may indicate data quality issues.`,
+      );
       finalPortfolio = MAX_REASONABLE_PORTFOLIO;
       // Scale down allocations proportionally
       const scaleFactor = MAX_REASONABLE_PORTFOLIO / bestTotalPortfolio;
@@ -1128,12 +1333,14 @@ export class FundingArbitrageStrategy {
         bestAllocations.set(symbol, amount * scaleFactor);
       });
     }
-    
+
     return {
       allocations: bestAllocations,
       totalPortfolio: finalPortfolio,
       aggregateAPY: bestAggregateAPY,
-      opportunityCount: Array.from(bestAllocations.values()).filter((v) => v > 0).length,
+      opportunityCount: Array.from(bestAllocations.values()).filter(
+        (v) => v > 0,
+      ).length,
       dataQualityWarnings,
     };
   }
@@ -1142,7 +1349,7 @@ export class FundingArbitrageStrategy {
    * Predict how our position size will affect the funding rate calculation
    * Funding rates are typically calculated based on OI-weighted premium index
    * Our position affects OI, which can shift the funding rate
-   * 
+   *
    * @param positionSizeUsd Our position size in USD
    * @param openInterest Current open interest in USD
    * @param currentFundingRate Current funding rate (as decimal, e.g., 0.0001 = 0.01%)
@@ -1156,34 +1363,38 @@ export class FundingArbitrageStrategy {
     if (openInterest <= 0) {
       return 0; // Can't predict impact without OI data
     }
-    
+
     // Validate funding rate is valid number
-    if (currentFundingRate === undefined || currentFundingRate === null || isNaN(currentFundingRate)) {
+    if (
+      currentFundingRate === undefined ||
+      currentFundingRate === null ||
+      isNaN(currentFundingRate)
+    ) {
       return 0; // Can't predict impact with invalid funding rate
     }
-    
+
     // Calculate our position as a percentage of OI
     const positionRatio = positionSizeUsd / openInterest;
-    
+
     // Funding rate impact is typically small unless position > 5% of OI
     // Model: impact scales with position ratio, but capped at reasonable levels
     // For long positions: increases funding rate (more longs = higher premium)
     // For short positions: decreases funding rate (more shorts = lower premium)
-    
+
     // Impact factor: how much our position affects the rate
     // Small positions (< 1% of OI): minimal impact (~0.1% of current rate)
     // Medium positions (1-5% of OI): moderate impact (~1-5% of current rate)
     // Large positions (> 5% of OI): significant impact (~5-10% of current rate)
     const impactFactor = Math.min(
       Math.sqrt(positionRatio) * 0.1, // Square root model, capped at 10% impact
-      0.1 // Maximum 10% impact on funding rate
+      0.1, // Maximum 10% impact on funding rate
     );
-    
+
     // Apply impact: long positions increase funding rate, short positions decrease it
     // Since we're taking a long position, it increases the rate
     // The impact is proportional to current rate magnitude
     const impact = currentFundingRate * impactFactor;
-    
+
     // Validate result is not NaN
     return isNaN(impact) ? 0 : impact;
   }
@@ -1200,22 +1411,30 @@ export class FundingArbitrageStrategy {
   ): Promise<{ bestBid: number; bestAsk: number }> {
     try {
       // Try to get best bid/ask from adapter if it has a getBestBidAsk method (Hyperliquid)
-      if ('getBestBidAsk' in adapter && typeof (adapter as any).getBestBidAsk === 'function') {
+      if (
+        'getBestBidAsk' in adapter &&
+        typeof (adapter as any).getBestBidAsk === 'function'
+      ) {
         return await (adapter as any).getBestBidAsk(exchangeSymbol);
       }
 
       // For Lighter: get order book details
       if (exchangeType === ExchangeType.LIGHTER) {
         try {
-          const marketIndex = this.aggregator.getExchangeSymbol(normalizedSymbol, exchangeType);
+          const marketIndex = this.aggregator.getExchangeSymbol(
+            normalizedSymbol,
+            exchangeType,
+          );
           if (typeof marketIndex === 'number') {
             const orderApi = (adapter as any).orderApi;
             if (orderApi) {
-              const response = await orderApi.getOrderBookDetails({ marketIndex } as any) as any;
+              const response = (await orderApi.getOrderBookDetails({
+                marketIndex,
+              } as any)) as any;
               const orderBook = response?.order_book_details || response;
               const bestBid = orderBook?.bestBid || orderBook?.best_bid;
               const bestAsk = orderBook?.bestAsk || orderBook?.best_ask;
-              
+
               if (bestBid?.price && bestAsk?.price) {
                 return {
                   bestBid: parseFloat(bestBid.price),
@@ -1225,17 +1444,19 @@ export class FundingArbitrageStrategy {
             }
           }
         } catch (error: any) {
-          this.logger.debug(`Failed to get Lighter order book: ${error.message}`);
+          this.logger.debug(
+            `Failed to get Lighter order book: ${error.message}`,
+          );
         }
       }
 
       // For Aster: try to get order book (may need to implement)
       // For now, fall back to mark price
-      
+
       // Fallback: use mark price and estimate bid/ask spread
       const markPrice = await adapter.getMarkPrice(exchangeSymbol);
       const estimatedSpread = markPrice * 0.001; // Assume 0.1% spread
-      
+
       return {
         bestBid: markPrice - estimatedSpread / 2,
         bestAsk: markPrice + estimatedSpread / 2,
@@ -1244,11 +1465,11 @@ export class FundingArbitrageStrategy {
       // Final fallback: use mark price with estimated spread
       const markPrice = await adapter.getMarkPrice(exchangeSymbol);
       const estimatedSpread = markPrice * 0.001; // Assume 0.1% spread
-      
+
       this.logger.warn(
-        `Could not get order book for ${normalizedSymbol} on ${exchangeType}, using mark price estimate: ${error.message}`
+        `Could not get order book for ${normalizedSymbol} on ${exchangeType}, using mark price estimate: ${error.message}`,
       );
-      
+
       return {
         bestBid: markPrice - estimatedSpread / 2,
         bestAsk: markPrice + estimatedSpread / 2,
@@ -1275,7 +1496,9 @@ export class FundingArbitrageStrategy {
     const shortAdapter = adapters.get(opportunity.shortExchange);
 
     if (!longAdapter || !shortAdapter) {
-      this.logger.warn(`Missing adapters for opportunity: ${opportunity.symbol}`);
+      this.logger.warn(
+        `Missing adapters for opportunity: ${opportunity.symbol}`,
+      );
       return null;
     }
 
@@ -1324,7 +1547,9 @@ export class FundingArbitrageStrategy {
 
       result.opportunitiesEvaluated = opportunities.length;
 
-      this.logger.debug(`Found ${opportunities.length} arbitrage opportunities`);
+      this.logger.debug(
+        `Found ${opportunities.length} arbitrage opportunities`,
+      );
 
       if (opportunities.length === 0) {
         return result;
@@ -1333,23 +1558,27 @@ export class FundingArbitrageStrategy {
       // Pre-fetch balances for all unique exchanges to reduce API calls
       // This batches balance calls instead of calling for each opportunity
       const uniqueExchanges = new Set<ExchangeType>();
-      opportunities.forEach(opp => {
+      opportunities.forEach((opp) => {
         uniqueExchanges.add(opp.longExchange);
         uniqueExchanges.add(opp.shortExchange);
       });
 
       // Fetch existing positions FIRST to account for already-deployed margin
       const existingPositions = await this.getAllPositions(adapters);
-      
+
       // Calculate margin used per exchange from existing positions
       // Margin used = positionValue / leverage (since leverage multiplies position size)
       const marginUsedPerExchange = new Map<ExchangeType, number>();
       for (const position of existingPositions) {
         const positionValue = position.getPositionValue();
         // Margin used = position value / leverage (collateral backing the position)
-        const marginUsed = position.marginUsed ?? (positionValue / this.leverage);
-        const currentMargin = marginUsedPerExchange.get(position.exchangeType) ?? 0;
-        marginUsedPerExchange.set(position.exchangeType, currentMargin + marginUsed);
+        const marginUsed = position.marginUsed ?? positionValue / this.leverage;
+        const currentMargin =
+          marginUsedPerExchange.get(position.exchangeType) ?? 0;
+        marginUsedPerExchange.set(
+          position.exchangeType,
+          currentMargin + marginUsed,
+        );
       }
 
       const exchangeBalances = new Map<ExchangeType, number>();
@@ -1362,19 +1591,21 @@ export class FundingArbitrageStrategy {
             // Available balance = total balance - margin already used in existing positions
             const availableBalance = Math.max(0, totalBalance - marginUsed);
             exchangeBalances.set(exchange, availableBalance);
-            
+
             if (marginUsed > 0) {
               this.logger.debug(
                 `${exchange}: Total balance: $${totalBalance.toFixed(2)}, ` +
-                `Margin used: $${marginUsed.toFixed(2)}, ` +
-                `Available: $${availableBalance.toFixed(2)}`
+                  `Margin used: $${marginUsed.toFixed(2)}, ` +
+                  `Available: $${availableBalance.toFixed(2)}`,
               );
             }
-            
+
             // Small delay between balance calls to avoid rate limits
-            await new Promise(resolve => setTimeout(resolve, 50));
+            await new Promise((resolve) => setTimeout(resolve, 50));
           } catch (error: any) {
-            this.logger.warn(`Failed to get balance for ${exchange}: ${error.message}`);
+            this.logger.warn(
+              `Failed to get balance for ${exchange}: ${error.message}`,
+            );
             // Set to 0 so opportunities using this exchange will be skipped
             exchangeBalances.set(exchange, 0);
           }
@@ -1385,9 +1616,12 @@ export class FundingArbitrageStrategy {
       // Process sequentially with delays to avoid rate limits
       // Mark prices are already included in the opportunity object from funding rate data
       // Then select the MOST PROFITABLE one (highest expected return)
-      const executionPlans: Array<{ plan: ArbitrageExecutionPlan; opportunity: ArbitrageOpportunity }> = [];
-      const allEvaluatedOpportunities: Array<{ 
-        opportunity: ArbitrageOpportunity; 
+      const executionPlans: Array<{
+        plan: ArbitrageExecutionPlan;
+        opportunity: ArbitrageOpportunity;
+      }> = [];
+      const allEvaluatedOpportunities: Array<{
+        opportunity: ArbitrageOpportunity;
         plan: ArbitrageExecutionPlan | null;
         netReturn: number;
         positionValueUsd: number;
@@ -1417,12 +1651,24 @@ export class FundingArbitrageStrategy {
           let netReturn = -Infinity;
           let breakEvenHours: number | null = null;
           let maxPortfolioFor35APY: number | null = null;
-          
+
           // Fetch bid/ask data for max portfolio calculation (needed for all opportunities)
-          const longExchangeSymbol = this.aggregator.getExchangeSymbol(opportunity.symbol, opportunity.longExchange);
-          const shortExchangeSymbol = this.aggregator.getExchangeSymbol(opportunity.symbol, opportunity.shortExchange);
-          const longSymbol = typeof longExchangeSymbol === 'string' ? longExchangeSymbol : opportunity.symbol;
-          const shortSymbol = typeof shortExchangeSymbol === 'string' ? shortExchangeSymbol : opportunity.symbol;
+          const longExchangeSymbol = this.aggregator.getExchangeSymbol(
+            opportunity.symbol,
+            opportunity.longExchange,
+          );
+          const shortExchangeSymbol = this.aggregator.getExchangeSymbol(
+            opportunity.symbol,
+            opportunity.shortExchange,
+          );
+          const longSymbol =
+            typeof longExchangeSymbol === 'string'
+              ? longExchangeSymbol
+              : opportunity.symbol;
+          const shortSymbol =
+            typeof shortExchangeSymbol === 'string'
+              ? shortExchangeSymbol
+              : opportunity.symbol;
           const longBidAsk = await this.getBestBidAsk(
             adapters.get(opportunity.longExchange)!,
             longSymbol,
@@ -1435,7 +1681,7 @@ export class FundingArbitrageStrategy {
             opportunity.symbol,
             opportunity.shortExchange,
           );
-          
+
           // Calculate max portfolio for 35% APY (uses historical weighted averages)
           maxPortfolioFor35APY = this.calculateMaxPortfolioForTargetAPY(
             opportunity,
@@ -1443,50 +1689,66 @@ export class FundingArbitrageStrategy {
             shortBidAsk,
             0.35,
           );
-          
+
           // Log result with historical context
           if (maxPortfolioFor35APY !== null) {
-            const longDataPoints = this.historicalService.getHistoricalData(opportunity.symbol, opportunity.longExchange).length;
-            const shortDataPoints = this.historicalService.getHistoricalData(opportunity.symbol, opportunity.shortExchange).length;
+            const longDataPoints = this.historicalService.getHistoricalData(
+              opportunity.symbol,
+              opportunity.longExchange,
+            ).length;
+            const shortDataPoints = this.historicalService.getHistoricalData(
+              opportunity.symbol,
+              opportunity.shortExchange,
+            ).length;
             const hasHistoricalData = longDataPoints > 0 || shortDataPoints > 0;
             this.logger.debug(
               `✅ Max Portfolio (${opportunity.symbol}): $${(maxPortfolioFor35APY / 1000).toFixed(1)}k ` +
-              `(${hasHistoricalData ? 'historical' : 'current'} rates)`
+                `(${hasHistoricalData ? 'historical' : 'current'} rates)`,
             );
           }
-          
+
           if (plan) {
-            const avgMarkPrice = opportunity.longMarkPrice && opportunity.shortMarkPrice
-              ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
-              : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
+            const avgMarkPrice =
+              opportunity.longMarkPrice && opportunity.shortMarkPrice
+                ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
+                : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
             positionValueUsd = plan.positionSize * avgMarkPrice;
             netReturn = plan.expectedNetReturn;
           } else {
             // Calculate metrics even for unprofitable opportunities
-            const longBalance = exchangeBalances.get(opportunity.longExchange) ?? 0;
-            const shortBalance = exchangeBalances.get(opportunity.shortExchange) ?? 0;
+            const longBalance =
+              exchangeBalances.get(opportunity.longExchange) ?? 0;
+            const shortBalance =
+              exchangeBalances.get(opportunity.shortExchange) ?? 0;
             const minBalance = Math.min(longBalance, shortBalance);
             const availableCapital = minBalance * this.BALANCE_USAGE_PERCENT;
             const leveragedCapital = availableCapital * this.leverage;
             const maxSize = maxPositionSizeUsd || Infinity;
             const positionSizeUsd = Math.min(leveragedCapital, maxSize);
-            
+
             if (positionSizeUsd >= this.MIN_POSITION_SIZE_USD) {
-              const avgMarkPrice = opportunity.longMarkPrice && opportunity.shortMarkPrice
-                ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
-                : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
-              
+              const avgMarkPrice =
+                opportunity.longMarkPrice && opportunity.shortMarkPrice
+                  ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
+                  : opportunity.longMarkPrice ||
+                    opportunity.shortMarkPrice ||
+                    0;
+
               if (avgMarkPrice > 0) {
                 positionValueUsd = positionSizeUsd;
-                
+
                 // Calculate costs and returns
-                const longFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
-                const shortFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
+                const longFeeRate =
+                  this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) ||
+                  0.0005;
+                const shortFeeRate =
+                  this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) ||
+                  0.0005;
                 const longEntryFee = positionSizeUsd * longFeeRate;
                 const shortEntryFee = positionSizeUsd * shortFeeRate;
                 const totalEntryFees = longEntryFee + shortEntryFee;
                 const totalExitFees = totalEntryFees;
-                
+
                 // Estimate slippage cost for the ACTUAL position size we'll trade
                 // Use actual slippage calculation method, but with conservative parameters
                 // This ensures break-even accounts for slippage at the actual scale we'll trade
@@ -1507,26 +1769,34 @@ export class FundingArbitrageStrategy {
                   OrderType.LIMIT,
                 );
                 const estimatedSlippageCost = longSlippage + shortSlippage;
-                
+
                 // Only check entry fees + slippage for initial profitability (exit fees paid later)
-                const totalOneTimeCosts = totalEntryFees + estimatedSlippageCost;
-                
+                const totalOneTimeCosts =
+                  totalEntryFees + estimatedSlippageCost;
+
                 const periodsPerDay = 24;
                 const periodsPerYear = periodsPerDay * 365;
                 // Note: opportunity.expectedReturn is already annualized (APY as decimal, e.g., 0.3625 = 36.25% APY)
                 // We convert to hourly dollar return: (APY / periodsPerYear) * positionSize
-                const expectedReturnPerPeriod = (opportunity.expectedReturn / periodsPerYear) * positionSizeUsd;
-                
+                const expectedReturnPerPeriod =
+                  (opportunity.expectedReturn / periodsPerYear) *
+                  positionSizeUsd;
+
                 // Calculate break-even hours: how many hours to cover all costs (entry + exit + slippage)
-                const totalCostsWithExit = totalEntryFees + totalExitFees + estimatedSlippageCost;
+                const totalCostsWithExit =
+                  totalEntryFees + totalExitFees + estimatedSlippageCost;
                 if (expectedReturnPerPeriod > 0) {
                   breakEvenHours = totalCostsWithExit / expectedReturnPerPeriod;
-                  
+
                   // Net return per period: hourly return minus amortized costs
                   // Amortize one-time costs over break-even period (capped at 24h) to show true hourly profitability
                   // This way, opportunities that break even quickly show positive net return
-                  const amortizationPeriods = Math.max(1, Math.min(24, Math.ceil(breakEvenHours))); // Amortize over break-even time, capped at 24h
-                  const amortizedCostsPerPeriod = totalCostsWithExit / amortizationPeriods;
+                  const amortizationPeriods = Math.max(
+                    1,
+                    Math.min(24, Math.ceil(breakEvenHours)),
+                  ); // Amortize over break-even time, capped at 24h
+                  const amortizedCostsPerPeriod =
+                    totalCostsWithExit / amortizationPeriods;
                   netReturn = expectedReturnPerPeriod - amortizedCostsPerPeriod;
                 } else {
                   // No expected return, so net return is negative (costs only)
@@ -1535,7 +1805,7 @@ export class FundingArbitrageStrategy {
               }
             }
           }
-          
+
           // Track ALL opportunities (even unprofitable ones) for logging
           allEvaluatedOpportunities.push({
             opportunity,
@@ -1552,19 +1822,28 @@ export class FundingArbitrageStrategy {
             executionPlans.push({ plan, opportunity });
           }
         } catch (error: any) {
-          result.errors.push(`Error evaluating ${opportunity.symbol}: ${error.message}`);
-          this.logger.debug(`Failed to evaluate opportunity ${opportunity.symbol}: ${error.message}`);
+          result.errors.push(
+            `Error evaluating ${opportunity.symbol}: ${error.message}`,
+          );
+          this.logger.debug(
+            `Failed to evaluate opportunity ${opportunity.symbol}: ${error.message}`,
+          );
         }
 
         // Add delay between opportunity evaluations to avoid rate limits (except for last one)
         if (i < opportunities.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 50)); // Reduced delay since balances are cached
+          await new Promise((resolve) => setTimeout(resolve, 50)); // Reduced delay since balances are cached
         }
       }
 
       // Calculate optimal portfolio allocation across all opportunities
       const portfolioOptimizationData = allEvaluatedOpportunities
-        .filter((item) => item.maxPortfolioFor35APY !== null && item.longBidAsk !== null && item.shortBidAsk !== null)
+        .filter(
+          (item) =>
+            item.maxPortfolioFor35APY !== null &&
+            item.longBidAsk !== null &&
+            item.shortBidAsk !== null,
+        )
         .map((item) => ({
           opportunity: item.opportunity,
           maxPortfolioFor35APY: item.maxPortfolioFor35APY!,
@@ -1573,7 +1852,10 @@ export class FundingArbitrageStrategy {
         }));
 
       // Calculate total available capital
-      const totalCapital = Array.from(exchangeBalances.values()).reduce((sum, balance) => sum + balance, 0);
+      const totalCapital = Array.from(exchangeBalances.values()).reduce(
+        (sum, balance) => sum + balance,
+        0,
+      );
 
       const optimalPortfolio = this.calculateOptimalPortfolioAllocation(
         portfolioOptimizationData,
@@ -1583,55 +1865,81 @@ export class FundingArbitrageStrategy {
 
       // Sort ALL evaluated opportunities by net return (highest first) for logging
       allEvaluatedOpportunities.sort((a, b) => b.netReturn - a.netReturn);
-      
+
       // Filter out opportunities with N/A open interest (undefined, null, or 0)
-      const opportunitiesWithValidOI = allEvaluatedOpportunities.filter((item) => {
-        const longOI = item.opportunity.longOpenInterest;
-        const shortOI = item.opportunity.shortOpenInterest;
-        return (longOI !== undefined && longOI !== null && longOI > 0) &&
-               (shortOI !== undefined && shortOI !== null && shortOI > 0);
-      });
-      
+      const opportunitiesWithValidOI = allEvaluatedOpportunities.filter(
+        (item) => {
+          const longOI = item.opportunity.longOpenInterest;
+          const shortOI = item.opportunity.shortOpenInterest;
+          return (
+            longOI !== undefined &&
+            longOI !== null &&
+            longOI > 0 &&
+            shortOI !== undefined &&
+            shortOI !== null &&
+            shortOI > 0
+          );
+        },
+      );
+
       // Log top opportunities only (top 5 profitable + top 3 unprofitable for reference)
-      const profitable = opportunitiesWithValidOI.filter(item => item.plan !== null).slice(0, 5);
-      const unprofitable = opportunitiesWithValidOI.filter(item => item.plan === null).slice(0, 3);
-      
+      const profitable = opportunitiesWithValidOI
+        .filter((item) => item.plan !== null)
+        .slice(0, 5);
+      const unprofitable = opportunitiesWithValidOI
+        .filter((item) => item.plan === null)
+        .slice(0, 3);
+
       if (profitable.length > 0 || unprofitable.length > 0) {
-        this.logger.log(`\n📊 Top Opportunities: ${profitable.length} profitable, ${unprofitable.length} unprofitable (showing top ${profitable.length + unprofitable.length} of ${opportunitiesWithValidOI.length} total)`);
+        this.logger.log(
+          `\n📊 Top Opportunities: ${profitable.length} profitable, ${unprofitable.length} unprofitable (showing top ${profitable.length + unprofitable.length} of ${opportunitiesWithValidOI.length} total)`,
+        );
         [...profitable, ...unprofitable].forEach((item, index) => {
           const isProfitable = item.plan !== null;
           const prefix = isProfitable ? `  ${index + 1}.` : '  ⚠️';
-        const maxPortfolioInfo = item.maxPortfolioFor35APY !== null && item.maxPortfolioFor35APY !== undefined
-            ? ` | Max: $${(item.maxPortfolioFor35APY / 1000).toFixed(1)}k`
-            : '';
-        this.logger.log(
-          `${prefix} ${item.opportunity.symbol}: ` +
-          `APY: ${(item.opportunity.expectedReturn * 100).toFixed(2)}% | ` +
-            `Net: $${item.netReturn !== -Infinity ? item.netReturn.toFixed(4) : 'N/A'}/period${maxPortfolioInfo}`
-        );
-      });
+          const maxPortfolioInfo =
+            item.maxPortfolioFor35APY !== null &&
+            item.maxPortfolioFor35APY !== undefined
+              ? ` | Max: $${(item.maxPortfolioFor35APY / 1000).toFixed(1)}k`
+              : '';
+          this.logger.log(
+            `${prefix} ${item.opportunity.symbol}: ` +
+              `APY: ${(item.opportunity.expectedReturn * 100).toFixed(2)}% | ` +
+              `Net: $${item.netReturn !== -Infinity ? item.netReturn.toFixed(4) : 'N/A'}/period${maxPortfolioInfo}`,
+          );
+        });
       }
 
       // Log optimal portfolio allocation results
       if (optimalPortfolio.opportunityCount > 0) {
-        this.logger.log('\n📊 Optimal Portfolio Allocation (Aggregate 35% APY):');
+        this.logger.log(
+          '\n📊 Optimal Portfolio Allocation (Aggregate 35% APY):',
+        );
         if (optimalPortfolio.dataQualityWarnings.length > 0) {
-          this.logger.debug(`   📊 Data Quality: ${optimalPortfolio.dataQualityWarnings.length} opportunities excluded due to invalid spreads (data quality requirements relaxed)`);
+          this.logger.debug(
+            `   📊 Data Quality: ${optimalPortfolio.dataQualityWarnings.length} opportunities excluded due to invalid spreads (data quality requirements relaxed)`,
+          );
         }
-        this.logger.log(`   Total Portfolio: $${optimalPortfolio.totalPortfolio.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-        this.logger.log(`   Aggregate APY: ${(optimalPortfolio.aggregateAPY * 100).toFixed(2)}%`);
-        this.logger.log(`   Opportunities Used: ${optimalPortfolio.opportunityCount}`);
+        this.logger.log(
+          `   Total Portfolio: $${optimalPortfolio.totalPortfolio.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        );
+        this.logger.log(
+          `   Aggregate APY: ${(optimalPortfolio.aggregateAPY * 100).toFixed(2)}%`,
+        );
+        this.logger.log(
+          `   Opportunities Used: ${optimalPortfolio.opportunityCount}`,
+        );
         this.logger.log(`   Allocations:`);
         optimalPortfolio.allocations.forEach((amount, symbol) => {
           if (amount > 0) {
             // Find the opportunity to get data quality risk factor
             const opportunity = allEvaluatedOpportunities.find(
-              (item) => item.opportunity.symbol === symbol
+              (item) => item.opportunity.symbol === symbol,
             );
             const dataQualityRiskFactor = opportunity
               ? this.calculateDataQualityRiskFactor(opportunity.opportunity)
               : 1.0;
-            
+
             // Get data point counts for context
             const longData = opportunity
               ? this.historicalService.getHistoricalData(
@@ -1645,13 +1953,14 @@ export class FundingArbitrageStrategy {
                   opportunity.opportunity.shortExchange,
                 )
               : [];
-            
-            const riskInfo = dataQualityRiskFactor < 1.0
-              ? ` (Data Quality Risk: ${(dataQualityRiskFactor * 100).toFixed(0)}% - ${longData.length}/${shortData.length}pts)`
-              : ` (Data Quality: Good - ${longData.length}/${shortData.length}pts)`;
-            
+
+            const riskInfo =
+              dataQualityRiskFactor < 1.0
+                ? ` (Data Quality Risk: ${(dataQualityRiskFactor * 100).toFixed(0)}% - ${longData.length}/${shortData.length}pts)`
+                : ` (Data Quality: Good - ${longData.length}/${shortData.length}pts)`;
+
             this.logger.log(
-              `     ${symbol}: $${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${riskInfo}`
+              `     ${symbol}: $${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${riskInfo}`,
             );
           }
         });
@@ -1659,48 +1968,63 @@ export class FundingArbitrageStrategy {
 
         // Calculate comprehensive risk metrics
         try {
-          const riskMetrics = await this.portfolioRiskAnalyzer.calculatePortfolioRiskMetrics({
-            allocations: optimalPortfolio.allocations,
-            opportunities: allEvaluatedOpportunities
-              .filter((item) => optimalPortfolio.allocations.has(item.opportunity.symbol))
-              .map((item) => ({
-                opportunity: item.opportunity,
-                maxPortfolioFor35APY: item.maxPortfolioFor35APY,
-                volatilityMetrics: this.historicalService.getSpreadVolatilityMetrics(
-                  item.opportunity.symbol,
-                  item.opportunity.longExchange,
-                  item.opportunity.symbol,
-                  item.opportunity.shortExchange,
-                  30,
-                ),
-              })),
-            aggregateAPY: optimalPortfolio.aggregateAPY,
-            totalPortfolio: optimalPortfolio.totalPortfolio,
-          });
+          const riskMetrics =
+            await this.portfolioRiskAnalyzer.calculatePortfolioRiskMetrics({
+              allocations: optimalPortfolio.allocations,
+              opportunities: allEvaluatedOpportunities
+                .filter((item) =>
+                  optimalPortfolio.allocations.has(item.opportunity.symbol),
+                )
+                .map((item) => ({
+                  opportunity: item.opportunity,
+                  maxPortfolioFor35APY: item.maxPortfolioFor35APY,
+                  volatilityMetrics:
+                    this.historicalService.getSpreadVolatilityMetrics(
+                      item.opportunity.symbol,
+                      item.opportunity.longExchange,
+                      item.opportunity.symbol,
+                      item.opportunity.shortExchange,
+                      30,
+                    ),
+                })),
+              aggregateAPY: optimalPortfolio.aggregateAPY,
+              totalPortfolio: optimalPortfolio.totalPortfolio,
+            });
 
           // Log comprehensive investor report
           this.logInvestorReport(riskMetrics, optimalPortfolio);
         } catch (error: any) {
-          this.logger.error(`Failed to calculate portfolio risk metrics: ${error.message}`);
+          this.logger.error(
+            `Failed to calculate portfolio risk metrics: ${error.message}`,
+          );
           this.logger.debug(`Risk analysis error: ${error.stack || error}`);
         }
       } else {
-        this.logger.log('\n📊 Optimal Portfolio Allocation: No opportunities available for 35% APY portfolio');
-        
+        this.logger.log(
+          '\n📊 Optimal Portfolio Allocation: No opportunities available for 35% APY portfolio',
+        );
+
         // Show what-if scenario: what if we relaxed data quality requirements?
         const opportunitiesWithMaxPortfolio = portfolioOptimizationData.filter(
-          (item) => item.maxPortfolioFor35APY !== null && item.maxPortfolioFor35APY !== undefined && item.maxPortfolioFor35APY > 0
+          (item) =>
+            item.maxPortfolioFor35APY !== null &&
+            item.maxPortfolioFor35APY !== undefined &&
+            item.maxPortfolioFor35APY > 0,
         );
-        
+
         // What-if analysis moved to debug level (not actionable)
         if (opportunitiesWithMaxPortfolio.length > 0) {
-          this.logger.debug(`What-If Analysis: ${opportunitiesWithMaxPortfolio.length} opportunities with maxPortfolioFor35APY available`);
+          this.logger.debug(
+            `What-If Analysis: ${opportunitiesWithMaxPortfolio.length} opportunities with maxPortfolioFor35APY available`,
+          );
         }
       }
 
       if (executionPlans.length === 0) {
-        this.logger.warn('No profitable execution plans created from opportunities');
-        
+        this.logger.warn(
+          'No profitable execution plans created from opportunities',
+        );
+
         // Try worst-case scenario selection if no profitable opportunities exist
         // Only consider opportunities with valid OI data (exclude N/A OI)
         const worstCaseResult = await this.selectWorstCaseOpportunity(
@@ -1709,73 +2033,100 @@ export class FundingArbitrageStrategy {
           maxPositionSizeUsd,
           exchangeBalances,
         );
-        
+
         if (worstCaseResult) {
           // Execute worst-case opportunity
-          return await this.executeWorstCaseOpportunity(worstCaseResult, adapters, result);
+          return await this.executeWorstCaseOpportunity(
+            worstCaseResult,
+            adapters,
+            result,
+          );
         }
-        
+
         return result;
       }
 
       // MULTI-POSITION PORTFOLIO EXECUTION
       // Greedily fill positions at maxPortfolioFor35APY until we run out of capital
       // Number of positions = how many positions we can afford to max out
-      
+
       // Calculate total available capital
-      const totalAvailableCapital = Array.from(exchangeBalances.values()).reduce((sum, balance) => sum + balance, 0);
-      
+      const totalAvailableCapital = Array.from(
+        exchangeBalances.values(),
+      ).reduce((sum, balance) => sum + balance, 0);
+
       // Get opportunities with maxPortfolioFor35APY and sort by maxPortfolio (best opportunities first)
       // Filter to only include opportunities where we have sufficient balance on BOTH exchanges
       // Sort by expected return first, then by maxPortfolio as tiebreaker
       const opportunitiesWithMaxPortfolio = allEvaluatedOpportunities
         .filter((item) => {
           // Must have valid maxPortfolioFor35APY and plan
-          if (item.maxPortfolioFor35APY === null || 
-              item.maxPortfolioFor35APY === undefined || 
-              item.maxPortfolioFor35APY <= 0 ||
-              item.plan === null) {
+          if (
+            item.maxPortfolioFor35APY === null ||
+            item.maxPortfolioFor35APY === undefined ||
+            item.maxPortfolioFor35APY <= 0 ||
+            item.plan === null
+          ) {
             return false;
           }
-          
+
           // Check if we have sufficient balance on BOTH exchanges for this opportunity
           const requiredCollateral = item.maxPortfolioFor35APY / this.leverage;
-          const longBalance = exchangeBalances.get(item.opportunity.longExchange) ?? 0;
-          const shortBalance = exchangeBalances.get(item.opportunity.shortExchange) ?? 0;
-          
+          const longBalance =
+            exchangeBalances.get(item.opportunity.longExchange) ?? 0;
+          const shortBalance =
+            exchangeBalances.get(item.opportunity.shortExchange) ?? 0;
+
           // Both exchanges must have sufficient balance
-          return longBalance >= requiredCollateral && shortBalance >= requiredCollateral;
+          return (
+            longBalance >= requiredCollateral &&
+            shortBalance >= requiredCollateral
+          );
         })
         .sort((a, b) => {
           // First sort by expected return (highest first)
-          const returnDiff = (b.opportunity.expectedReturn || 0) - (a.opportunity.expectedReturn || 0);
+          const returnDiff =
+            (b.opportunity.expectedReturn || 0) -
+            (a.opportunity.expectedReturn || 0);
           if (Math.abs(returnDiff) > 0.001) return returnDiff;
           // Then by maxPortfolio as tiebreaker
           return (b.maxPortfolioFor35APY || 0) - (a.maxPortfolioFor35APY || 0);
         });
-      
+
       if (opportunitiesWithMaxPortfolio.length === 0) {
-        this.logger.warn('No opportunities with maxPortfolioFor35APY available for portfolio execution');
+        this.logger.warn(
+          'No opportunities with maxPortfolioFor35APY available for portfolio execution',
+        );
         // Fall back to single best opportunity
-      executionPlans.sort((a, b) => b.plan.expectedNetReturn - a.plan.expectedNetReturn);
-      const bestOpportunity = executionPlans[0];
-        return await this.executeSinglePosition(bestOpportunity, adapters, result, this.lossTracker);
+        executionPlans.sort(
+          (a, b) => b.plan.expectedNetReturn - a.plan.expectedNetReturn,
+        );
+        const bestOpportunity = executionPlans[0];
+        return await this.executeSinglePosition(
+          bestOpportunity,
+          adapters,
+          result,
+          this.lossTracker,
+        );
       }
-      
+
       // Ladder allocation: Fill positions sequentially, completely filling each before moving to the next
       // Position 1: $0 to position1Max, Position 2: position1Max+1 to position2Max, etc.
       // Each position requires maxPortfolioFor35APY / leverage as collateral
       // First, check existing positions and calculate where we are in the ladder
       const currentPositions = await this.getAllPositions(adapters);
-      
+
       // Map existing positions by symbol (for arbitrage pairs, we need both long and short)
-      const existingPositionsBySymbol = new Map<string, {
-        long?: PerpPosition;
-        short?: PerpPosition;
-        currentValue: number; // Total position value (long + short)
-        currentCollateral: number; // Current collateral deployed
-      }>();
-      
+      const existingPositionsBySymbol = new Map<
+        string,
+        {
+          long?: PerpPosition;
+          short?: PerpPosition;
+          currentValue: number; // Total position value (long + short)
+          currentCollateral: number; // Current collateral deployed
+        }
+      >();
+
       for (const position of currentPositions) {
         if (!existingPositionsBySymbol.has(position.symbol)) {
           existingPositionsBySymbol.set(position.symbol, {
@@ -1790,10 +2141,11 @@ export class FundingArbitrageStrategy {
           pair.short = position;
         }
         pair.currentValue += position.getPositionValue();
-        const marginUsed = position.marginUsed ?? (position.getPositionValue() / this.leverage);
+        const marginUsed =
+          position.marginUsed ?? position.getPositionValue() / this.leverage;
         pair.currentCollateral += marginUsed;
       }
-      
+
       const selectedOpportunities: Array<{
         opportunity: ArbitrageOpportunity;
         plan: ArbitrageExecutionPlan | null;
@@ -1805,9 +2157,11 @@ export class FundingArbitrageStrategy {
       }> = [];
       let remainingCapital = totalAvailableCapital;
       let cumulativeCapitalUsed = 0;
-      
-      this.logger.log(`\n📊 Ladder Allocation: $${totalAvailableCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital, ${existingPositionsBySymbol.size} existing position(s)`);
-      
+
+      this.logger.log(
+        `\n📊 Ladder Allocation: $${totalAvailableCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital, ${existingPositionsBySymbol.size} existing position(s)`,
+      );
+
       // First pass: Top up existing positions that are below their max
       for (let i = 0; i < opportunitiesWithMaxPortfolio.length; i++) {
         const item = opportunitiesWithMaxPortfolio[i];
@@ -1815,23 +2169,29 @@ export class FundingArbitrageStrategy {
         const existingPair = existingPositionsBySymbol.get(symbol);
         const maxPortfolio = item.maxPortfolioFor35APY || 0;
         const maxCollateral = maxPortfolio / this.leverage;
-        
+
         if (existingPair && existingPair.currentCollateral > 0) {
           // We have an existing position for this opportunity
           const currentCollateral = existingPair.currentCollateral;
           const additionalCollateralNeeded = maxCollateral - currentCollateral;
-          
-          if (additionalCollateralNeeded > 0.01) { // Need at least $0.01 more
+
+          if (additionalCollateralNeeded > 0.01) {
+            // Need at least $0.01 more
             // Position exists but is below max - calculate how much we can top up
             const capitalRangeStart = cumulativeCapitalUsed;
-            const topUpAmount = Math.min(additionalCollateralNeeded, remainingCapital);
-            
-            if (topUpAmount >= 0.01) { // Can top up at least $0.01
+            const topUpAmount = Math.min(
+              additionalCollateralNeeded,
+              remainingCapital,
+            );
+
+            if (topUpAmount >= 0.01) {
+              // Can top up at least $0.01
               cumulativeCapitalUsed += topUpAmount;
               const capitalRangeEnd = cumulativeCapitalUsed;
-              
+
               // Create a scaled opportunity for the top-up
-              const scaledMaxPortfolio = (currentCollateral + topUpAmount) * this.leverage;
+              const scaledMaxPortfolio =
+                (currentCollateral + topUpAmount) * this.leverage;
               selectedOpportunities.push({
                 ...item,
                 maxPortfolioFor35APY: scaledMaxPortfolio,
@@ -1840,15 +2200,16 @@ export class FundingArbitrageStrategy {
                 currentCollateral: currentCollateral,
                 additionalCollateralNeeded: topUpAmount,
               });
-              
+
               remainingCapital -= topUpAmount;
-              
-              const isFullyFilled = topUpAmount >= additionalCollateralNeeded - 0.01;
-      this.logger.log(
+
+              const isFullyFilled =
+                topUpAmount >= additionalCollateralNeeded - 0.01;
+              this.logger.log(
                 `   🔼 ${symbol}: Adding $${topUpAmount.toFixed(2)} ` +
-                `(${isFullyFilled ? 'FULL' : 'PARTIAL'}) | Remaining: $${remainingCapital.toFixed(2)}`
+                  `(${isFullyFilled ? 'FULL' : 'PARTIAL'}) | Remaining: $${remainingCapital.toFixed(2)}`,
               );
-              
+
               // If we've topped up to max, we can move to next position
               if (isFullyFilled) {
                 cumulativeCapitalUsed = capitalRangeStart + maxCollateral; // Set to full max
@@ -1869,14 +2230,15 @@ export class FundingArbitrageStrategy {
         } else {
           // No existing position - fill it partially with whatever capital we have
           // This is Position 1 in the ladder - we fill it until it's maxed, then move to Position 2
-          if (remainingCapital > 0.01) { // Need at least $0.01
+          if (remainingCapital > 0.01) {
+            // Need at least $0.01
             const capitalRangeStart = cumulativeCapitalUsed;
             const partialCollateral = Math.min(remainingCapital, maxCollateral);
             const partialMaxPortfolio = partialCollateral * this.leverage;
-            
+
             cumulativeCapitalUsed += partialCollateral;
             const capitalRangeEnd = cumulativeCapitalUsed;
-            
+
             selectedOpportunities.push({
               ...item,
               maxPortfolioFor35APY: partialMaxPortfolio,
@@ -1884,14 +2246,14 @@ export class FundingArbitrageStrategy {
               additionalCollateralNeeded: partialCollateral,
             });
             remainingCapital -= partialCollateral;
-            
+
             const isFullyFilled = partialCollateral >= maxCollateral - 0.01;
-          this.logger.log(
+            this.logger.log(
               `   ${isFullyFilled ? '✅' : '🔄'} ${symbol}: NEW $${partialMaxPortfolio.toFixed(2)} ` +
-              `($${partialCollateral.toFixed(2)}/${maxCollateral.toFixed(2)} collateral, ${isFullyFilled ? 'FULL' : 'PARTIAL'}) | ` +
-              `Remaining: $${remainingCapital.toFixed(2)}`
+                `($${partialCollateral.toFixed(2)}/${maxCollateral.toFixed(2)} collateral, ${isFullyFilled ? 'FULL' : 'PARTIAL'}) | ` +
+                `Remaining: $${remainingCapital.toFixed(2)}`,
             );
-            
+
             // If this position is fully filled, we can move to the next position
             // Otherwise, we stop here and wait for more capital
             if (!isFullyFilled) {
@@ -1903,58 +2265,62 @@ export class FundingArbitrageStrategy {
           }
         }
       }
-      
+
       const totalMaxPortfolio = opportunitiesWithMaxPortfolio.reduce(
         (sum, item) => sum + (item.maxPortfolioFor35APY || 0),
-        0
+        0,
       );
       const selectedMaxPortfolio = selectedOpportunities.reduce(
         (sum, item) => sum + (item.maxPortfolioFor35APY || 0),
-        0
+        0,
       );
-      
+
       if (selectedOpportunities.length === 0) {
         this.logger.warn('⚠️ Insufficient capital to open any positions');
-          return result;
-        }
-        
-        this.logger.log(
+        return result;
+      }
+
+      this.logger.log(
         `\n📊 Allocation: ${selectedOpportunities.length} positions, ` +
-        `$${(totalAvailableCapital - remainingCapital).toFixed(2)} used, ` +
-        `$${remainingCapital.toFixed(2)} remaining`
+          `$${(totalAvailableCapital - remainingCapital).toFixed(2)} used, ` +
+          `$${remainingCapital.toFixed(2)} remaining`,
       );
-      
+
       // Only close positions that are NOT being topped up (positions we're replacing with new ones)
       const positionsToClose: PerpPosition[] = [];
       const symbolsBeingToppedUp = new Set(
         selectedOpportunities
-          .filter(item => item.isExisting)
-          .map(item => item.opportunity.symbol)
+          .filter((item) => item.isExisting)
+          .map((item) => item.opportunity.symbol),
       );
-      
+
       for (const position of currentPositions) {
         if (!symbolsBeingToppedUp.has(position.symbol)) {
           positionsToClose.push(position);
         }
       }
-      
+
       // Handle asymmetric fills from previous execution cycles
       await this.handleAsymmetricFills(adapters, result);
 
       if (positionsToClose.length > 0) {
         this.logger.log(`🔄 Closing ${positionsToClose.length} position(s)...`);
-        const closeResult = await this.closeAllPositions(positionsToClose, adapters, result);
-        
+        const closeResult = await this.closeAllPositions(
+          positionsToClose,
+          adapters,
+          result,
+        );
+
         if (closeResult.stillOpen.length > 0) {
           this.logger.warn(
             `⚠️ ${closeResult.stillOpen.length} position(s) failed to close and still exist. ` +
-            `Their margin remains locked: ${closeResult.stillOpen.map(p => `${p.symbol} on ${p.exchangeType}`).join(', ')}`
+              `Their margin remains locked: ${closeResult.stillOpen.map((p) => `${p.symbol} on ${p.exchangeType}`).join(', ')}`,
           );
         }
-        
-        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      
+
       // Refresh balances after closing positions (they may have changed)
       // This accounts for positions that failed to close (their margin is still locked)
       for (const [exchange, adapter] of adapters) {
@@ -1962,21 +2328,23 @@ export class FundingArbitrageStrategy {
           const allPositions = await adapter.getPositions();
           const marginUsed = allPositions.reduce((sum, pos) => {
             const posValue = pos.getPositionValue();
-            return sum + (pos.marginUsed ?? (posValue / this.leverage));
+            return sum + (pos.marginUsed ?? posValue / this.leverage);
           }, 0);
           const totalBalance = await adapter.getBalance();
           const availableBalance = Math.max(0, totalBalance - marginUsed);
           exchangeBalances.set(exchange, availableBalance);
-          
+
           if (marginUsed > 0) {
             this.logger.debug(
               `${exchange}: Total: $${totalBalance.toFixed(2)}, ` +
-              `Margin locked: $${marginUsed.toFixed(2)}, ` +
-              `Available: $${availableBalance.toFixed(2)}`
+                `Margin locked: $${marginUsed.toFixed(2)}, ` +
+                `Available: $${availableBalance.toFixed(2)}`,
             );
           }
         } catch (error: any) {
-          this.logger.debug(`Failed to refresh balance for ${exchange}: ${error.message}`);
+          this.logger.debug(
+            `Failed to refresh balance for ${exchange}: ${error.message}`,
+          );
         }
       }
 
@@ -1985,18 +2353,18 @@ export class FundingArbitrageStrategy {
         selectedOpportunities,
         adapters,
         exchangeBalances,
-        result
+        result,
       );
-      
+
       result.opportunitiesExecuted = executionResults.successfulExecutions;
       result.ordersPlaced = executionResults.totalOrders;
       result.totalExpectedReturn = executionResults.totalExpectedReturn;
-      
+
       // Log comprehensive performance metrics after execution
       await this.logComprehensivePerformanceMetrics(
         selectedOpportunities,
         adapters,
-        executionResults.successfulExecutions
+        executionResults.successfulExecutions,
       );
 
       // Strategy is successful if it completes execution, even with some errors
@@ -2014,7 +2382,9 @@ export class FundingArbitrageStrategy {
   /**
    * Get all positions across all exchanges
    */
-  private async getAllPositions(adapters: Map<ExchangeType, IPerpExchangeAdapter>): Promise<PerpPosition[]> {
+  private async getAllPositions(
+    adapters: Map<ExchangeType, IPerpExchangeAdapter>,
+  ): Promise<PerpPosition[]> {
     const allPositions: PerpPosition[] = [];
 
     for (const [exchangeType, adapter] of adapters) {
@@ -2022,7 +2392,9 @@ export class FundingArbitrageStrategy {
         const positions = await adapter.getPositions();
         allPositions.push(...positions);
       } catch (error: any) {
-        this.logger.warn(`Failed to get positions from ${exchangeType}: ${error.message}`);
+        this.logger.warn(
+          `Failed to get positions from ${exchangeType}: ${error.message}`,
+        );
       }
     }
 
@@ -2040,30 +2412,32 @@ export class FundingArbitrageStrategy {
   ): Promise<{ closed: PerpPosition[]; stillOpen: PerpPosition[] }> {
     const closed: PerpPosition[] = [];
     const stillOpen: PerpPosition[] = [];
-    
+
     for (const position of positions) {
-          try {
-            const adapter = adapters.get(position.exchangeType);
-            if (!adapter) {
-              this.logger.warn(`No adapter found for ${position.exchangeType}, cannot close position`);
+      try {
+        const adapter = adapters.get(position.exchangeType);
+        if (!adapter) {
+          this.logger.warn(
+            `No adapter found for ${position.exchangeType}, cannot close position`,
+          );
           stillOpen.push(position);
-              continue;
-            }
+          continue;
+        }
 
-            // Close position by placing opposite order
-            const closeOrder = new PerpOrderRequest(
-              position.symbol,
-              position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
-              OrderType.MARKET,
-              position.size,
-            );
+        // Close position by placing opposite order
+        const closeOrder = new PerpOrderRequest(
+          position.symbol,
+          position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
+          OrderType.MARKET,
+          position.size,
+        );
 
-            this.logger.log(
-              `📤 Closing position: ${position.symbol} ${position.side} ${position.size.toFixed(4)} on ${position.exchangeType}`
-            );
+        this.logger.log(
+          `📤 Closing position: ${position.symbol} ${position.side} ${position.size.toFixed(4)} on ${position.exchangeType}`,
+        );
 
-            const closeResponse = await adapter.placeOrder(closeOrder);
-            
+        const closeResponse = await adapter.placeOrder(closeOrder);
+
         // Wait and retry if order didn't fill immediately
         let finalResponse = closeResponse;
         if (!closeResponse.isFilled() && closeResponse.orderId) {
@@ -2073,63 +2447,78 @@ export class FundingArbitrageStrategy {
             position.symbol,
             position.exchangeType,
             position.size,
-            5, // maxRetries
-            2000, // pollIntervalMs
+            this.MAX_ORDER_WAIT_RETRIES, // 10 retries
+            this.ORDER_WAIT_BASE_INTERVAL, // 2s base
+            true, // isClosingPosition = true (enables longer backoff up to 32s)
           );
         }
-        
+
         // Verify position is actually closed by checking positions again
         // This is important because some exchanges (like Lighter) don't have reliable order status
-        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay for position to update
+        await new Promise((resolve) => setTimeout(resolve, 500)); // Small delay for position to update
         const currentPositions = await adapter.getPositions();
         const positionStillExists = currentPositions.some(
-          p => p.symbol === position.symbol && 
-               p.exchangeType === position.exchangeType &&
-               Math.abs(p.size) > 0.0001 // Position still exists if size > 0
+          (p) =>
+            p.symbol === position.symbol &&
+            p.exchangeType === position.exchangeType &&
+            Math.abs(p.size) > 0.0001, // Position still exists if size > 0
         );
-        
-        if (finalResponse.isSuccess() && finalResponse.isFilled() && !positionStillExists) {
-              // Record position exit in loss tracker
-              const exitFeeRate = this.EXCHANGE_FEE_RATES.get(position.exchangeType) || 0.0005;
-              const positionValueUsd = position.size * (position.markPrice || 0);
-              const exitCost = exitFeeRate * positionValueUsd;
-              
-              // Calculate realized loss (simplified - assumes break-even if no P&L data)
-              const realizedLoss = -exitCost; // Exit cost is a loss
-              
-              this.lossTracker.recordPositionExit(
-                position.symbol,
-                position.exchangeType,
-                exitCost,
-                realizedLoss,
-              );
-              
-              this.logger.log(`✅ Successfully closed position: ${position.symbol} on ${position.exchangeType}`);
+
+        if (
+          finalResponse.isSuccess() &&
+          finalResponse.isFilled() &&
+          !positionStillExists
+        ) {
+          // Record position exit in loss tracker
+          const exitFeeRate =
+            this.EXCHANGE_FEE_RATES.get(position.exchangeType) || 0.0005;
+          const positionValueUsd = position.size * (position.markPrice || 0);
+          const exitCost = exitFeeRate * positionValueUsd;
+
+          // Calculate realized loss (simplified - assumes break-even if no P&L data)
+          const realizedLoss = -exitCost; // Exit cost is a loss
+
+          this.lossTracker.recordPositionExit(
+            position.symbol,
+            position.exchangeType,
+            exitCost,
+            realizedLoss,
+          );
+
+          this.logger.log(
+            `✅ Successfully closed position: ${position.symbol} on ${position.exchangeType}`,
+          );
           closed.push(position);
-            } else {
+        } else {
           if (positionStillExists) {
-              this.logger.warn(
+            this.logger.warn(
               `⚠️ Position ${position.symbol} on ${position.exchangeType} still exists after close attempt. ` +
-              `Margin remains locked. Will account for this in balance calculations.`
-              );
+                `Margin remains locked. Will account for this in balance calculations.`,
+            );
           } else {
             this.logger.warn(
-              `⚠️ Failed to close position ${position.symbol} on ${position.exchangeType}: ${finalResponse.error || 'order not filled'}`
+              `⚠️ Failed to close position ${position.symbol} on ${position.exchangeType}: ${finalResponse.error || 'order not filled'}`,
             );
           }
-              result.errors.push(`Failed to close position ${position.symbol} on ${position.exchangeType}`);
+          result.errors.push(
+            `Failed to close position ${position.symbol} on ${position.exchangeType}`,
+          );
           stillOpen.push(position);
-            }
+        }
 
-            // Small delay between closes to avoid rate limits
-            await new Promise(resolve => setTimeout(resolve, 200));
-          } catch (error: any) {
-            this.logger.error(`Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
-            result.errors.push(`Error closing position ${position.symbol}: ${error.message}`);
+        // Small delay between closes to avoid rate limits
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      } catch (error: any) {
+        this.logger.error(
+          `Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`,
+        );
+        result.errors.push(
+          `Error closing position ${position.symbol}: ${error.message}`,
+        );
         stillOpen.push(position);
       }
     }
-    
+
     return { closed, stillOpen };
   }
 
@@ -2143,46 +2532,68 @@ export class FundingArbitrageStrategy {
     symbol: string,
     exchangeType: ExchangeType,
     expectedSize: number,
-    maxRetries: number = 5,
+    maxRetries: number = 10,
     pollIntervalMs: number = 2000,
+    isClosingPosition: boolean = false,
   ): Promise<PerpOrderResponse> {
+    const operationType = isClosingPosition ? 'CLOSE' : 'OPEN';
+
     this.logger.log(
-      `⏳ Waiting for order ${orderId} to fill on ${exchangeType} (${symbol})...`
+      `⏳ Waiting for ${operationType} order ${orderId} to fill on ${exchangeType} (${symbol})...`,
     );
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         // Wait before polling (except first attempt)
         if (attempt > 0) {
-          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+          // Exponential backoff with different caps for opening vs closing
+          const maxBackoff = isClosingPosition
+            ? this.MAX_BACKOFF_DELAY_CLOSING // 32s for closing
+            : this.MAX_BACKOFF_DELAY_OPENING; // 8s for opening
+
+          // Calculate: 2s, 4s, 8s, 16s, 32s, then cap
+          const exponentialDelay = pollIntervalMs * Math.pow(2, attempt - 1);
+          const backoffDelay = Math.min(exponentialDelay, maxBackoff);
+
+          this.logger.debug(
+            `   Waiting ${(backoffDelay / 1000).toFixed(1)}s before attempt ${attempt + 1}/${maxRetries}...`,
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, backoffDelay));
         }
 
         const statusResponse = await adapter.getOrderStatus(orderId, symbol);
-        
+
         if (statusResponse.isFilled()) {
           this.logger.log(
-            `✅ Order ${orderId} filled on attempt ${attempt + 1}/${maxRetries} ` +
-            `(filled: ${statusResponse.filledSize || expectedSize})`
+            `✅ ${operationType} order ${orderId} filled on attempt ${attempt + 1}/${maxRetries} ` +
+              `(filled: ${statusResponse.filledSize || expectedSize})`,
           );
           return statusResponse;
         }
 
-        if (statusResponse.status === OrderStatus.CANCELLED || statusResponse.error) {
+        if (
+          statusResponse.status === OrderStatus.CANCELLED ||
+          statusResponse.error
+        ) {
           this.logger.warn(
-            `⚠️ Order ${orderId} was cancelled or has error: ${statusResponse.error || 'cancelled'}`
+            `⚠️ ${operationType} order ${orderId} was cancelled or has error: ` +
+              `${statusResponse.error || 'cancelled'}`,
           );
           return statusResponse;
         }
 
         // Order is still resting/submitted - continue polling
         this.logger.debug(
-          `   Order ${orderId} still ${statusResponse.status} (attempt ${attempt + 1}/${maxRetries})...`
+          `   ${operationType} order ${orderId} still ${statusResponse.status} ` +
+            `(attempt ${attempt + 1}/${maxRetries})...`,
         );
       } catch (error: any) {
         this.logger.warn(
-          `   Failed to check order status for ${orderId} (attempt ${attempt + 1}/${maxRetries}): ${error.message}`
+          `   Failed to check ${operationType} order status for ${orderId} ` +
+            `(attempt ${attempt + 1}/${maxRetries}): ${error.message}`,
         );
-        
+
         // If this is the last attempt, return error response
         if (attempt === maxRetries - 1) {
           return new PerpOrderResponse(
@@ -2200,11 +2611,17 @@ export class FundingArbitrageStrategy {
     }
 
     // Max retries reached - order still not filled
-    this.logger.warn(
-      `⚠️ Order ${orderId} did not fill after ${maxRetries} attempts (${(maxRetries * pollIntervalMs) / 1000}s). ` +
-      `Order may still be resting on the order book.`
+    const totalTime = this.calculateTotalWaitTime(
+      maxRetries,
+      pollIntervalMs,
+      isClosingPosition,
     );
-    
+
+    this.logger.warn(
+      `⚠️ ${operationType} order ${orderId} did not fill after ${maxRetries} attempts ` +
+        `(~${Math.round(totalTime / 1000)}s). Order may still be resting on the order book.`,
+    );
+
     // Return a response indicating the order is still pending
     return new PerpOrderResponse(
       orderId,
@@ -2214,8 +2631,29 @@ export class FundingArbitrageStrategy {
       undefined,
       undefined,
       undefined,
-      `Order did not fill within ${(maxRetries * pollIntervalMs) / 1000} seconds`,
+      `Order did not fill within ${Math.round(totalTime / 1000)} seconds`,
     );
+  }
+
+  /**
+   * Calculate total wait time for exponential backoff
+   */
+  private calculateTotalWaitTime(
+    maxRetries: number,
+    baseInterval: number,
+    isClosing: boolean,
+  ): number {
+    let total = 0;
+    const maxBackoff = isClosing
+      ? this.MAX_BACKOFF_DELAY_CLOSING
+      : this.MAX_BACKOFF_DELAY_OPENING;
+
+    for (let i = 1; i < maxRetries; i++) {
+      const exponentialDelay = baseInterval * Math.pow(2, i - 1);
+      total += Math.min(exponentialDelay, maxBackoff);
+    }
+
+    return total;
   }
 
   /**
@@ -2225,46 +2663,154 @@ export class FundingArbitrageStrategy {
     opportunity: ArbitrageOpportunity,
     positionSizeUsd: number,
   ): { profitable: boolean; expectedNetReturn: number } {
-    const longMakerFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
-    const shortTakerFeeRate = this.TAKER_FEE_RATES.get(opportunity.shortExchange) || 0.0004;
-    
+    const longMakerFeeRate =
+      this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
+    const shortTakerFeeRate =
+      this.TAKER_FEE_RATES.get(opportunity.shortExchange) || 0.0004;
+
     // One side already filled (maker fee), other will use taker fee
     const longEntryFee = positionSizeUsd * longMakerFeeRate;
     const shortEntryFee = positionSizeUsd * shortTakerFeeRate;
     const totalEntryFees = longEntryFee + shortEntryFee;
-    
+
     // Estimate slippage for market order (conservative)
     const marketSlippage = 0.0005; // 0.05% slippage for market orders
     const slippageCost = positionSizeUsd * marketSlippage;
-    
+
     // Exit fees (both sides will pay maker fees when closing)
-    const longExitFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
-    const shortExitFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
-    const totalExitFees = positionSizeUsd * (longExitFeeRate + shortExitFeeRate);
-    
+    const longExitFeeRate =
+      this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
+    const shortExitFeeRate =
+      this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
+    const totalExitFees =
+      positionSizeUsd * (longExitFeeRate + shortExitFeeRate);
+
     const totalCosts = totalEntryFees + totalExitFees + slippageCost;
-    
+
     // Calculate expected return
     const periodsPerDay = 24;
     const periodsPerYear = periodsPerDay * 365;
-    const expectedReturnPerPeriod = (opportunity.expectedReturn / periodsPerYear) * positionSizeUsd;
-    
+    const expectedReturnPerPeriod =
+      (opportunity.expectedReturn / periodsPerYear) * positionSizeUsd;
+
     if (expectedReturnPerPeriod > 0) {
       const breakEvenHours = totalCosts / expectedReturnPerPeriod;
-      const amortizationPeriods = Math.max(1, Math.min(24, Math.ceil(breakEvenHours)));
+      const amortizationPeriods = Math.max(
+        1,
+        Math.min(24, Math.ceil(breakEvenHours)),
+      );
       const amortizedCostsPerPeriod = totalCosts / amortizationPeriods;
-      const expectedNetReturn = expectedReturnPerPeriod - amortizedCostsPerPeriod;
-      
+      const expectedNetReturn =
+        expectedReturnPerPeriod - amortizedCostsPerPeriod;
+
       return {
         profitable: expectedNetReturn > 0,
         expectedNetReturn,
       };
     }
-    
+
     return {
       profitable: false,
       expectedNetReturn: -totalCosts,
     };
+  }
+
+  /**
+   * Immediately attempt to complete asymmetric fill with market order
+   * Called right after detecting asymmetric fill (before timeout)
+   */
+  private async attemptImmediateCompletion(
+    fill: {
+      symbol: string;
+      longFilled: boolean;
+      shortFilled: boolean;
+      longOrderId?: string;
+      shortOrderId?: string;
+      longExchange: ExchangeType;
+      shortExchange: ExchangeType;
+      positionSize: number;
+      opportunity: ArbitrageOpportunity;
+    },
+    adapters: Map<ExchangeType, IPerpExchangeAdapter>,
+  ): Promise<boolean> {
+    const {
+      symbol,
+      longFilled,
+      shortFilled,
+      longOrderId,
+      shortOrderId,
+      longExchange,
+      shortExchange,
+      positionSize,
+      opportunity,
+    } = fill;
+
+    const longAdapter = adapters.get(longExchange);
+    const shortAdapter = adapters.get(shortExchange);
+
+    if (!longAdapter || !shortAdapter) {
+      return false;
+    }
+
+    // Determine which side needs to be filled
+    const unfilledOrderId = longFilled ? shortOrderId : longOrderId;
+    const unfilledAdapter = longFilled ? shortAdapter : longAdapter;
+    const unfilledSide = longFilled ? OrderSide.SHORT : OrderSide.LONG;
+
+    // Check if still profitable with taker fees
+    const markPrice = longFilled
+      ? opportunity.longMarkPrice || 0
+      : opportunity.shortMarkPrice || 0;
+    const positionSizeUsd = positionSize * markPrice;
+
+    const profitability = this.checkProfitabilityWithTakerFees(
+      opportunity,
+      positionSizeUsd,
+    );
+
+    if (!profitability.profitable) {
+      this.logger.debug(
+        `${symbol}: Not completing asymmetric fill - no longer profitable with taker fees`,
+      );
+      return false;
+    }
+
+    this.logger.log(
+      `🚀 ${symbol}: Immediately completing asymmetric fill with market order ` +
+        `(profitable: $${profitability.expectedNetReturn.toFixed(4)}/period)...`,
+    );
+
+    // Cancel the GTC order first
+    if (unfilledOrderId) {
+      try {
+        await unfilledAdapter.cancelOrder(unfilledOrderId, symbol);
+        this.logger.debug(`Cancelled GTC order ${unfilledOrderId}`);
+      } catch (error: any) {
+        this.logger.warn(`Failed to cancel GTC order: ${error.message}`);
+      }
+    }
+
+    // Place market order
+    const marketOrder = new PerpOrderRequest(
+      symbol,
+      unfilledSide,
+      OrderType.MARKET,
+      positionSize,
+    );
+
+    const response = await unfilledAdapter.placeOrder(marketOrder);
+
+    if (response.isSuccess() && response.isFilled()) {
+      this.logger.log(
+        `✅ ${symbol}: Asymmetric fill completed immediately with market order`,
+      );
+      return true;
+    }
+
+    this.logger.warn(
+      `⚠️ ${symbol}: Market order failed, will wait for GTC to fill`,
+    );
+    return false;
   }
 
   /**
@@ -2295,18 +2841,30 @@ export class FundingArbitrageStrategy {
     }
 
     this.logger.warn(
-      `⚠️ Handling ${fillsToHandle.length} asymmetric fill(s) that exceeded timeout...`
+      `⚠️ Handling ${fillsToHandle.length} asymmetric fill(s) that exceeded timeout...`,
     );
 
     for (const { key, fill } of fillsToHandle) {
       try {
-        const { symbol, longFilled, shortFilled, longOrderId, shortOrderId, longExchange, shortExchange, positionSize, opportunity } = fill;
-        
+        const {
+          symbol,
+          longFilled,
+          shortFilled,
+          longOrderId,
+          shortOrderId,
+          longExchange,
+          shortExchange,
+          positionSize,
+          opportunity,
+        } = fill;
+
         const longAdapter = adapters.get(longExchange);
         const shortAdapter = adapters.get(shortExchange);
-        
+
         if (!longAdapter || !shortAdapter) {
-          this.logger.warn(`Missing adapters for ${symbol}, skipping asymmetric fill handling`);
+          this.logger.warn(
+            `Missing adapters for ${symbol}, skipping asymmetric fill handling`,
+          );
           this.asymmetricFills.delete(key);
           continue;
         }
@@ -2318,33 +2876,40 @@ export class FundingArbitrageStrategy {
         const filledAdapter = longFilled ? longAdapter : shortAdapter;
         const unfilledExchange = longFilled ? shortExchange : longExchange;
         const filledExchange = longFilled ? longExchange : shortExchange;
-        
+
         // Check current profitability with taker fees
-        const markPrice = longFilled 
-          ? (opportunity.longMarkPrice || 0)
-          : (opportunity.shortMarkPrice || 0);
+        const markPrice = longFilled
+          ? opportunity.longMarkPrice || 0
+          : opportunity.shortMarkPrice || 0;
         const positionSizeUsd = positionSize * markPrice;
-        
-        const profitability = this.checkProfitabilityWithTakerFees(opportunity, positionSizeUsd);
-        
+
+        const profitability = this.checkProfitabilityWithTakerFees(
+          opportunity,
+          positionSizeUsd,
+        );
+
         if (profitability.profitable) {
           // Option 2: Cancel GTC order and place market order to complete arbitrage
           this.logger.log(
             `📋 ${symbol}: Arbitrage still profitable with taker fees ` +
-            `($${profitability.expectedNetReturn.toFixed(4)}/period). ` +
-            `Cancelling GTC order and placing market order to complete pair...`
+              `($${profitability.expectedNetReturn.toFixed(4)}/period). ` +
+              `Cancelling GTC order and placing market order to complete pair...`,
           );
-          
+
           // Cancel unfilled GTC order
           if (unfilledOrderId) {
             try {
               await unfilledAdapter.cancelOrder(unfilledOrderId, symbol);
-              this.logger.log(`✅ Cancelled GTC order ${unfilledOrderId} on ${unfilledExchange}`);
+              this.logger.log(
+                `✅ Cancelled GTC order ${unfilledOrderId} on ${unfilledExchange}`,
+              );
             } catch (error: any) {
-              this.logger.warn(`Failed to cancel GTC order ${unfilledOrderId}: ${error.message}`);
+              this.logger.warn(
+                `Failed to cancel GTC order ${unfilledOrderId}: ${error.message}`,
+              );
             }
           }
-          
+
           // Place market order to complete the pair
           const marketOrder = new PerpOrderRequest(
             symbol,
@@ -2352,49 +2917,71 @@ export class FundingArbitrageStrategy {
             OrderType.MARKET,
             positionSize,
           );
-          
+
           const marketResponse = await unfilledAdapter.placeOrder(marketOrder);
-          
+
           if (marketResponse.isSuccess() && marketResponse.isFilled()) {
             this.logger.log(
               `✅ ${symbol}: Market order filled, arbitrage pair complete. ` +
-              `Net return: $${profitability.expectedNetReturn.toFixed(4)}/period`
+                `Net return: $${profitability.expectedNetReturn.toFixed(4)}/period`,
             );
             this.asymmetricFills.delete(key);
           } else {
             this.logger.warn(
               `⚠️ ${symbol}: Market order failed to fill. ` +
-              `Falling back to closing filled position...`
+                `Falling back to closing filled position...`,
             );
             // Fall through to Option 1
-            await this.closeFilledPosition(filledAdapter, symbol, filledSide, positionSize, filledExchange, result);
+            await this.closeFilledPosition(
+              filledAdapter,
+              symbol,
+              filledSide,
+              positionSize,
+              filledExchange,
+              result,
+            );
             this.asymmetricFills.delete(key);
           }
         } else {
           // Option 1: Cancel unfilled order and close filled position
           this.logger.warn(
             `⚠️ ${symbol}: Arbitrage no longer profitable with taker fees ` +
-            `($${profitability.expectedNetReturn.toFixed(4)}/period). ` +
-            `Cancelling GTC order and closing filled position...`
+              `($${profitability.expectedNetReturn.toFixed(4)}/period). ` +
+              `Cancelling GTC order and closing filled position...`,
           );
-          
+
           // Cancel unfilled GTC order
           if (unfilledOrderId) {
             try {
               await unfilledAdapter.cancelOrder(unfilledOrderId, symbol);
-              this.logger.log(`✅ Cancelled GTC order ${unfilledOrderId} on ${unfilledExchange}`);
+              this.logger.log(
+                `✅ Cancelled GTC order ${unfilledOrderId} on ${unfilledExchange}`,
+              );
             } catch (error: any) {
-              this.logger.warn(`Failed to cancel GTC order ${unfilledOrderId}: ${error.message}`);
+              this.logger.warn(
+                `Failed to cancel GTC order ${unfilledOrderId}: ${error.message}`,
+              );
             }
           }
-          
+
           // Close filled position
-          await this.closeFilledPosition(filledAdapter, symbol, filledSide, positionSize, filledExchange, result);
+          await this.closeFilledPosition(
+            filledAdapter,
+            symbol,
+            filledSide,
+            positionSize,
+            filledExchange,
+            result,
+          );
           this.asymmetricFills.delete(key);
         }
       } catch (error: any) {
-        this.logger.error(`Error handling asymmetric fill ${fill.symbol}: ${error.message}`);
-        result.errors.push(`Failed to handle asymmetric fill ${fill.symbol}: ${error.message}`);
+        this.logger.error(
+          `Error handling asymmetric fill ${fill.symbol}: ${error.message}`,
+        );
+        result.errors.push(
+          `Failed to handle asymmetric fill ${fill.symbol}: ${error.message}`,
+        );
       }
     }
   }
@@ -2417,11 +3004,13 @@ export class FundingArbitrageStrategy {
         OrderType.MARKET,
         size,
       );
-      
-      this.logger.log(`📤 Closing ${side} position: ${symbol} ${size.toFixed(4)}`);
-      
+
+      this.logger.log(
+        `📤 Closing ${side} position: ${symbol} ${size.toFixed(4)}`,
+      );
+
       const closeResponse = await adapter.placeOrder(closeOrder);
-      
+
       if (!closeResponse.isFilled() && closeResponse.orderId) {
         await this.waitForOrderFill(
           adapter,
@@ -2431,7 +3020,7 @@ export class FundingArbitrageStrategy {
           size,
         );
       }
-      
+
       if (closeResponse.isSuccess() && closeResponse.isFilled()) {
         this.logger.log(`✅ Successfully closed ${side} position: ${symbol}`);
       } else {
@@ -2439,8 +3028,12 @@ export class FundingArbitrageStrategy {
         result.errors.push(`Failed to close ${side} position ${symbol}`);
       }
     } catch (error: any) {
-      this.logger.error(`Error closing filled position ${symbol}: ${error.message}`);
-      result.errors.push(`Error closing filled position ${symbol}: ${error.message}`);
+      this.logger.error(
+        `Error closing filled position ${symbol}: ${error.message}`,
+      );
+      result.errors.push(
+        `Error closing filled position ${symbol}: ${error.message}`,
+      );
     }
   }
 
@@ -2458,28 +3051,31 @@ export class FundingArbitrageStrategy {
     const shortAdapter = adapters.get(opportunity.shortExchange);
 
     if (!longAdapter || !shortAdapter) {
-      this.logger.warn(`Missing adapters for opportunity: ${opportunity.symbol}`);
+      this.logger.warn(
+        `Missing adapters for opportunity: ${opportunity.symbol}`,
+      );
       return null;
     }
 
     // Get balances and positions to calculate available balance (accounting for locked margin)
-    const [longBalance, shortBalance, longPositions, shortPositions] = await Promise.all([
-      longAdapter.getBalance(),
-      shortAdapter.getBalance(),
-      longAdapter.getPositions(),
-      shortAdapter.getPositions(),
-    ]);
-    
+    const [longBalance, shortBalance, longPositions, shortPositions] =
+      await Promise.all([
+        longAdapter.getBalance(),
+        shortAdapter.getBalance(),
+        longAdapter.getPositions(),
+        shortAdapter.getPositions(),
+      ]);
+
     // Calculate margin used from existing positions
     const longMarginUsed = longPositions.reduce((sum, pos) => {
       const posValue = pos.getPositionValue();
-      return sum + (pos.marginUsed ?? (posValue / this.leverage));
+      return sum + (pos.marginUsed ?? posValue / this.leverage);
     }, 0);
     const shortMarginUsed = shortPositions.reduce((sum, pos) => {
       const posValue = pos.getPositionValue();
-      return sum + (pos.marginUsed ?? (posValue / this.leverage));
+      return sum + (pos.marginUsed ?? posValue / this.leverage);
     }, 0);
-    
+
     // Available balance = total balance - margin locked in existing positions
     let longAvailable = Math.max(0, longBalance - longMarginUsed);
     let shortAvailable = Math.max(0, shortBalance - shortMarginUsed);
@@ -2488,65 +3084,87 @@ export class FundingArbitrageStrategy {
     // Allocation is the notional size (with leverage), so we need allocation / leverage as collateral
     // For arbitrage, we need sufficient balance on BOTH exchanges (not just the minimum)
     const requiredCollateral = allocationUsd / this.leverage;
-    
+
     // Check both exchanges have sufficient AVAILABLE balance (not just total balance)
-    if (longAvailable < requiredCollateral || shortAvailable < requiredCollateral) {
+    if (
+      longAvailable < requiredCollateral ||
+      shortAvailable < requiredCollateral
+    ) {
       const minAvailable = Math.min(longAvailable, shortAvailable);
       this.logger.warn(
         `Insufficient available balance for ${opportunity.symbol}: ` +
-        `Need $${requiredCollateral.toFixed(2)} collateral on BOTH exchanges, ` +
-        `${opportunity.longExchange}: $${longAvailable.toFixed(2)} available ` +
-        `(total: $${longBalance.toFixed(2)}, margin locked: $${longMarginUsed.toFixed(2)}), ` +
-        `${opportunity.shortExchange}: $${shortAvailable.toFixed(2)} available ` +
-        `(total: $${shortBalance.toFixed(2)}, margin locked: $${shortMarginUsed.toFixed(2)}) ` +
-        `(min available: $${minAvailable.toFixed(2)})`
+          `Need $${requiredCollateral.toFixed(2)} collateral on BOTH exchanges, ` +
+          `${opportunity.longExchange}: $${longAvailable.toFixed(2)} available ` +
+          `(total: $${longBalance.toFixed(2)}, margin locked: $${longMarginUsed.toFixed(2)}), ` +
+          `${opportunity.shortExchange}: $${shortAvailable.toFixed(2)} available ` +
+          `(total: $${shortBalance.toFixed(2)}, margin locked: $${shortMarginUsed.toFixed(2)}) ` +
+          `(min available: $${minAvailable.toFixed(2)})`,
       );
-      
+
       // Attempt to rebalance capital to meet requirements
       const rebalanceSuccess = await this.attemptRebalanceForOpportunity(
         opportunity,
         adapters,
         requiredCollateral,
         longAvailable,
-        shortAvailable
+        shortAvailable,
       );
-      
+
       if (!rebalanceSuccess) {
-        this.logger.warn(`Rebalancing failed for ${opportunity.symbol}, skipping opportunity`);
+        this.logger.warn(
+          `Rebalancing failed for ${opportunity.symbol}, skipping opportunity`,
+        );
         return null;
       }
-      
+
       // Re-check balances and positions after rebalancing
-      const [updatedLongBalance, updatedShortBalance, updatedLongPositions, updatedShortPositions] = await Promise.all([
+      const [
+        updatedLongBalance,
+        updatedShortBalance,
+        updatedLongPositions,
+        updatedShortPositions,
+      ] = await Promise.all([
         longAdapter.getBalance(),
         shortAdapter.getBalance(),
         longAdapter.getPositions(),
         shortAdapter.getPositions(),
       ]);
-      
+
       const updatedLongMarginUsed = updatedLongPositions.reduce((sum, pos) => {
         const posValue = pos.getPositionValue();
-        return sum + (pos.marginUsed ?? (posValue / this.leverage));
+        return sum + (pos.marginUsed ?? posValue / this.leverage);
       }, 0);
-      const updatedShortMarginUsed = updatedShortPositions.reduce((sum, pos) => {
-        const posValue = pos.getPositionValue();
-        return sum + (pos.marginUsed ?? (posValue / this.leverage));
-      }, 0);
-      
-      const updatedLongAvailable = Math.max(0, updatedLongBalance - updatedLongMarginUsed);
-      const updatedShortAvailable = Math.max(0, updatedShortBalance - updatedShortMarginUsed);
-      
-      if (updatedLongAvailable < requiredCollateral || updatedShortAvailable < requiredCollateral) {
+      const updatedShortMarginUsed = updatedShortPositions.reduce(
+        (sum, pos) => {
+          const posValue = pos.getPositionValue();
+          return sum + (pos.marginUsed ?? posValue / this.leverage);
+        },
+        0,
+      );
+
+      const updatedLongAvailable = Math.max(
+        0,
+        updatedLongBalance - updatedLongMarginUsed,
+      );
+      const updatedShortAvailable = Math.max(
+        0,
+        updatedShortBalance - updatedShortMarginUsed,
+      );
+
+      if (
+        updatedLongAvailable < requiredCollateral ||
+        updatedShortAvailable < requiredCollateral
+      ) {
         this.logger.warn(
           `Still insufficient available balance after rebalancing for ${opportunity.symbol}: ` +
-          `${opportunity.longExchange}: $${updatedLongAvailable.toFixed(2)} available ` +
-          `(total: $${updatedLongBalance.toFixed(2)}, margin locked: $${updatedLongMarginUsed.toFixed(2)}), ` +
-          `${opportunity.shortExchange}: $${updatedShortAvailable.toFixed(2)} available ` +
-          `(total: $${updatedShortBalance.toFixed(2)}, margin locked: $${updatedShortMarginUsed.toFixed(2)})`
+            `${opportunity.longExchange}: $${updatedLongAvailable.toFixed(2)} available ` +
+            `(total: $${updatedLongBalance.toFixed(2)}, margin locked: $${updatedLongMarginUsed.toFixed(2)}), ` +
+            `${opportunity.shortExchange}: $${updatedShortAvailable.toFixed(2)} available ` +
+            `(total: $${updatedShortBalance.toFixed(2)}, margin locked: $${updatedShortMarginUsed.toFixed(2)})`,
         );
         return null;
       }
-      
+
       // Use updated available balances
       longAvailable = updatedLongAvailable;
       shortAvailable = updatedShortAvailable;
@@ -2580,7 +3198,9 @@ export class FundingArbitrageStrategy {
     shortBalance: number,
   ): Promise<boolean> {
     if (!this.balanceRebalancer) {
-      this.logger.warn('ExchangeBalanceRebalancer not available, cannot rebalance');
+      this.logger.warn(
+        'ExchangeBalanceRebalancer not available, cannot rebalance',
+      );
       return false;
     }
 
@@ -2594,17 +3214,24 @@ export class FundingArbitrageStrategy {
     }
 
     this.logger.debug(
-      `Rebalancing for ${opportunity.symbol}: Need $${requiredCollateral.toFixed(2)} on both exchanges`
+      `Rebalancing for ${opportunity.symbol}: Need $${requiredCollateral.toFixed(2)} on both exchanges`,
     );
 
     // Get all exchange balances to identify unused exchanges
-    const allBalances = await this.balanceRebalancer.getExchangeBalances(adapters);
+    const allBalances =
+      await this.balanceRebalancer.getExchangeBalances(adapters);
     const unusedExchanges: ExchangeType[] = [];
-    
+
     for (const [exchange, balance] of allBalances) {
-      if (exchange !== longExchange && exchange !== shortExchange && balance > 0) {
+      if (
+        exchange !== longExchange &&
+        exchange !== shortExchange &&
+        balance > 0
+      ) {
         unusedExchanges.push(exchange);
-        this.logger.debug(`   Found unused exchange ${exchange} with $${balance.toFixed(2)}`);
+        this.logger.debug(
+          `   Found unused exchange ${exchange} with $${balance.toFixed(2)}`,
+        );
       }
     }
 
@@ -2614,7 +3241,9 @@ export class FundingArbitrageStrategy {
     const totalDeficit = longDeficit + shortDeficit;
 
     if (totalDeficit === 0) {
-      this.logger.debug('No rebalancing needed - both exchanges have sufficient balance');
+      this.logger.debug(
+        'No rebalancing needed - both exchanges have sufficient balance',
+      );
       return true;
     }
 
@@ -2628,14 +3257,20 @@ export class FundingArbitrageStrategy {
     if (totalAvailableFromUnused > 0 && totalDeficit > 0) {
       this.logger.debug(
         `Rebalancing: $${totalAvailableFromUnused.toFixed(2)} available from unused exchanges, ` +
-        `need $${totalDeficit.toFixed(2)}`
+          `need $${totalDeficit.toFixed(2)}`,
       );
 
       // Distribute unused funds proportionally to deficits
       const longShare = totalDeficit > 0 ? longDeficit / totalDeficit : 0;
       const shortShare = totalDeficit > 0 ? shortDeficit / totalDeficit : 0;
-      const longNeeded = Math.min(longDeficit, totalAvailableFromUnused * longShare);
-      const shortNeeded = Math.min(shortDeficit, totalAvailableFromUnused * shortShare);
+      const longNeeded = Math.min(
+        longDeficit,
+        totalAvailableFromUnused * longShare,
+      );
+      const shortNeeded = Math.min(
+        shortDeficit,
+        totalAvailableFromUnused * shortShare,
+      );
 
       // Transfer from unused exchanges to needed exchanges
       let remainingLongNeeded = longNeeded;
@@ -2654,20 +3289,24 @@ export class FundingArbitrageStrategy {
         if (remainingLongNeeded > 0 && unusedBalance > 0) {
           const transferAmount = Math.min(remainingLongNeeded, unusedBalance);
           try {
-            this.logger.debug(`Transferring $${transferAmount.toFixed(2)} from ${unusedExchange} to ${longExchange}`);
+            this.logger.debug(
+              `Transferring $${transferAmount.toFixed(2)} from ${unusedExchange} to ${longExchange}`,
+            );
             await (this.balanceRebalancer as any).transferBetweenExchanges(
               unusedExchange,
               longExchange,
               transferAmount,
               unusedAdapter,
-              longAdapter
+              longAdapter,
             );
             remainingLongNeeded -= transferAmount;
             unusedBalance -= transferAmount;
             allBalances.set(unusedExchange, unusedBalance);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for transfer to settle
+            await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait for transfer to settle
           } catch (error: any) {
-            this.logger.warn(`Failed to transfer from ${unusedExchange} to ${longExchange}: ${error.message}`);
+            this.logger.warn(
+              `Failed to transfer from ${unusedExchange} to ${longExchange}: ${error.message}`,
+            );
           }
         }
 
@@ -2675,18 +3314,22 @@ export class FundingArbitrageStrategy {
         if (remainingShortNeeded > 0 && unusedBalance > 0) {
           const transferAmount = Math.min(remainingShortNeeded, unusedBalance);
           try {
-            this.logger.debug(`Transferring $${transferAmount.toFixed(2)} from ${unusedExchange} to ${shortExchange}`);
+            this.logger.debug(
+              `Transferring $${transferAmount.toFixed(2)} from ${unusedExchange} to ${shortExchange}`,
+            );
             await (this.balanceRebalancer as any).transferBetweenExchanges(
               unusedExchange,
               shortExchange,
               transferAmount,
               unusedAdapter,
-              shortAdapter
+              shortAdapter,
             );
             remainingShortNeeded -= transferAmount;
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for transfer to settle
+            await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait for transfer to settle
           } catch (error: any) {
-            this.logger.warn(`Failed to transfer from ${unusedExchange} to ${shortExchange}: ${error.message}`);
+            this.logger.warn(
+              `Failed to transfer from ${unusedExchange} to ${shortExchange}: ${error.message}`,
+            );
           }
         }
       }
@@ -2698,27 +3341,39 @@ export class FundingArbitrageStrategy {
       longAdapter.getBalance(),
       shortAdapter.getBalance(),
     ]);
-    
+
     // Get positions to calculate locked margin
     const [updatedLongPositions, updatedShortPositions] = await Promise.all([
       longAdapter.getPositions(),
       shortAdapter.getPositions(),
     ]);
-    
+
     const updatedLongMarginUsed = updatedLongPositions.reduce((sum, pos) => {
       const posValue = pos.getPositionValue();
-      return sum + (pos.marginUsed ?? (posValue / this.leverage));
+      return sum + (pos.marginUsed ?? posValue / this.leverage);
     }, 0);
     const updatedShortMarginUsed = updatedShortPositions.reduce((sum, pos) => {
       const posValue = pos.getPositionValue();
-      return sum + (pos.marginUsed ?? (posValue / this.leverage));
+      return sum + (pos.marginUsed ?? posValue / this.leverage);
     }, 0);
-    
-    const updatedLongAvailable = Math.max(0, updatedLongBalance - updatedLongMarginUsed);
-    const updatedShortAvailable = Math.max(0, updatedShortBalance - updatedShortMarginUsed);
-    
-    const updatedLongDeficit = Math.max(0, requiredCollateral - updatedLongAvailable);
-    const updatedShortDeficit = Math.max(0, requiredCollateral - updatedShortAvailable);
+
+    const updatedLongAvailable = Math.max(
+      0,
+      updatedLongBalance - updatedLongMarginUsed,
+    );
+    const updatedShortAvailable = Math.max(
+      0,
+      updatedShortBalance - updatedShortMarginUsed,
+    );
+
+    const updatedLongDeficit = Math.max(
+      0,
+      requiredCollateral - updatedLongAvailable,
+    );
+    const updatedShortDeficit = Math.max(
+      0,
+      requiredCollateral - updatedShortAvailable,
+    );
 
     if (updatedLongDeficit > 0 && updatedShortAvailable > requiredCollateral) {
       // Short has excess, transfer to long
@@ -2726,36 +3381,47 @@ export class FundingArbitrageStrategy {
       const transferAmount = Math.min(updatedLongDeficit, excess);
       if (transferAmount > 0) {
         try {
-          this.logger.debug(`Rebalancing: $${transferAmount.toFixed(2)} from ${shortExchange} to ${longExchange}`);
+          this.logger.debug(
+            `Rebalancing: $${transferAmount.toFixed(2)} from ${shortExchange} to ${longExchange}`,
+          );
           await (this.balanceRebalancer as any).transferBetweenExchanges(
             shortExchange,
             longExchange,
             transferAmount,
             shortAdapter,
-            longAdapter
+            longAdapter,
           );
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for transfer to settle
+          await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait for transfer to settle
         } catch (error: any) {
-          this.logger.warn(`Failed to transfer between exchanges: ${error.message}`);
+          this.logger.warn(
+            `Failed to transfer between exchanges: ${error.message}`,
+          );
         }
       }
-    } else if (updatedShortDeficit > 0 && updatedLongAvailable > requiredCollateral) {
+    } else if (
+      updatedShortDeficit > 0 &&
+      updatedLongAvailable > requiredCollateral
+    ) {
       // Long has excess, transfer to short
       const excess = updatedLongAvailable - requiredCollateral;
       const transferAmount = Math.min(updatedShortDeficit, excess);
       if (transferAmount > 0) {
         try {
-          this.logger.debug(`Rebalancing: $${transferAmount.toFixed(2)} from ${longExchange} to ${shortExchange}`);
+          this.logger.debug(
+            `Rebalancing: $${transferAmount.toFixed(2)} from ${longExchange} to ${shortExchange}`,
+          );
           await (this.balanceRebalancer as any).transferBetweenExchanges(
             longExchange,
             shortExchange,
             transferAmount,
             longAdapter,
-            shortAdapter
+            shortAdapter,
           );
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for transfer to settle
+          await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait for transfer to settle
         } catch (error: any) {
-          this.logger.warn(`Failed to transfer between exchanges: ${error.message}`);
+          this.logger.warn(
+            `Failed to transfer between exchanges: ${error.message}`,
+          );
         }
       }
     }
@@ -2765,38 +3431,50 @@ export class FundingArbitrageStrategy {
       longAdapter.getBalance(),
       shortAdapter.getBalance(),
     ]);
-    
+
     // Get positions to calculate locked margin
     const [finalLongPositions, finalShortPositions] = await Promise.all([
       longAdapter.getPositions(),
       shortAdapter.getPositions(),
     ]);
-    
+
     const finalLongMarginUsed = finalLongPositions.reduce((sum, pos) => {
       const posValue = pos.getPositionValue();
-      return sum + (pos.marginUsed ?? (posValue / this.leverage));
+      return sum + (pos.marginUsed ?? posValue / this.leverage);
     }, 0);
     const finalShortMarginUsed = finalShortPositions.reduce((sum, pos) => {
       const posValue = pos.getPositionValue();
-      return sum + (pos.marginUsed ?? (posValue / this.leverage));
+      return sum + (pos.marginUsed ?? posValue / this.leverage);
     }, 0);
-    
-    const finalLongAvailable = Math.max(0, finalLongBalance - finalLongMarginUsed);
-    const finalShortAvailable = Math.max(0, finalShortBalance - finalShortMarginUsed);
-    
-    const finalLongDeficit = Math.max(0, requiredCollateral - finalLongAvailable);
-    const finalShortDeficit = Math.max(0, requiredCollateral - finalShortAvailable);
+
+    const finalLongAvailable = Math.max(
+      0,
+      finalLongBalance - finalLongMarginUsed,
+    );
+    const finalShortAvailable = Math.max(
+      0,
+      finalShortBalance - finalShortMarginUsed,
+    );
+
+    const finalLongDeficit = Math.max(
+      0,
+      requiredCollateral - finalLongAvailable,
+    );
+    const finalShortDeficit = Math.max(
+      0,
+      requiredCollateral - finalShortAvailable,
+    );
 
     if (finalLongDeficit === 0 && finalShortDeficit === 0) {
       this.logger.debug(
         `Rebalancing successful: ${longExchange}: $${finalLongAvailable.toFixed(2)}, ` +
-        `${shortExchange}: $${finalShortAvailable.toFixed(2)}`
+          `${shortExchange}: $${finalShortAvailable.toFixed(2)}`,
       );
       return true;
-      } else {
+    } else {
       this.logger.warn(
         `Rebalancing insufficient: ${longExchange}: $${finalLongAvailable.toFixed(2)} (need $${requiredCollateral.toFixed(2)}), ` +
-        `${shortExchange}: $${finalShortAvailable.toFixed(2)} (need $${requiredCollateral.toFixed(2)})`
+          `${shortExchange}: $${finalShortAvailable.toFixed(2)} (need $${requiredCollateral.toFixed(2)})`,
       );
       return false;
     }
@@ -2831,373 +3509,629 @@ export class FundingArbitrageStrategy {
 
     for (let i = 0; i < opportunities.length; i++) {
       const item = opportunities[i];
-      
+
       if (!item.plan) {
         this.logger.warn(`Skipping ${item.opportunity.symbol}: invalid plan`);
         continue;
       }
 
-      try {
-        let allocation: number;
-        let isTopUp = false;
-        let collateralNeeded = 0;
-        
-        if (item.isExisting && item.additionalCollateralNeeded && item.additionalCollateralNeeded > 0) {
-          // This is a top-up - calculate additional size needed
-          // Additional collateral * leverage = additional notional size
-          allocation = item.additionalCollateralNeeded * this.leverage;
-          collateralNeeded = item.additionalCollateralNeeded;
-          isTopUp = true;
-          this.logger.log(
-            `🔼 [${i + 1}/${opportunities.length}] Topping up ${item.opportunity.symbol}: ` +
-            `Adding $${allocation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-            `($${item.additionalCollateralNeeded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} collateral) ` +
-            `to existing position of $${(item.currentValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-          );
-        } else {
-          // New position - use full allocation
-          allocation = item.maxPortfolioFor35APY || 0;
-          collateralNeeded = allocation / this.leverage;
-          if (allocation <= 0) {
-            this.logger.warn(`Skipping ${item.opportunity.symbol}: invalid allocation`);
-            continue;
-          }
-        }
+      // Retry loop for this opportunity
+      let executionAttempt = 0;
+      let executionSuccess = false;
 
-        const { opportunity } = item;
-        
-        // Get adapters
-        const [longAdapter, shortAdapter] = [
-          adapters.get(opportunity.longExchange),
-          adapters.get(opportunity.shortExchange),
-        ];
+      while (
+        executionAttempt < this.MAX_EXECUTION_RETRIES &&
+        !executionSuccess
+      ) {
+        executionAttempt++;
 
-        if (!longAdapter || !shortAdapter) {
-          result.errors.push(`Missing adapters for ${opportunity.symbol}`);
-          continue;
-        }
-
-        // Refresh balances before execution to ensure we have accurate data
-        // This is critical after rebalancing or previous executions
         try {
-          const [longBalance, shortBalance] = await Promise.all([
-            longAdapter.getBalance(),
-            shortAdapter.getBalance(),
-          ]);
-          
-          // Get current positions to calculate locked margin
-          const [longPositions, shortPositions] = await Promise.all([
-            longAdapter.getPositions(),
-            shortAdapter.getPositions(),
-          ]);
-          
-          const longMarginUsed = longPositions.reduce((sum, pos) => {
-            const posValue = pos.getPositionValue();
-            return sum + (pos.marginUsed ?? (posValue / this.leverage));
-          }, 0);
-          const shortMarginUsed = shortPositions.reduce((sum, pos) => {
-            const posValue = pos.getPositionValue();
-            return sum + (pos.marginUsed ?? (posValue / this.leverage));
-          }, 0);
-          
-          const longAvailable = Math.max(0, longBalance - longMarginUsed);
-          const shortAvailable = Math.max(0, shortBalance - shortMarginUsed);
-          
-          exchangeBalances.set(opportunity.longExchange, longAvailable);
-          exchangeBalances.set(opportunity.shortExchange, shortAvailable);
-          
-          // Check if we still have sufficient balance after refresh
-          if (longAvailable < collateralNeeded || shortAvailable < collateralNeeded) {
-            this.logger.warn(
-              `⚠️ Insufficient balance after refresh for ${opportunity.symbol}: ` +
-              `${opportunity.longExchange}: $${longAvailable.toFixed(2)} (need $${collateralNeeded.toFixed(2)}), ` +
-              `${opportunity.shortExchange}: $${shortAvailable.toFixed(2)} (need $${collateralNeeded.toFixed(2)})`
+          let allocation: number;
+          let isTopUp = false;
+          let collateralNeeded = 0;
+
+          if (
+            item.isExisting &&
+            item.additionalCollateralNeeded &&
+            item.additionalCollateralNeeded > 0
+          ) {
+            // This is a top-up - calculate additional size needed
+            // Additional collateral * leverage = additional notional size
+            allocation = item.additionalCollateralNeeded * this.leverage;
+            collateralNeeded = item.additionalCollateralNeeded;
+            isTopUp = true;
+            this.logger.log(
+              `🔼 [${i + 1}/${opportunities.length}] Topping up ${item.opportunity.symbol}: ` +
+                `Adding $${allocation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
+                `($${item.additionalCollateralNeeded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} collateral) ` +
+                `to existing position of $${(item.currentValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
             );
-            
-            // Attempt rebalancing one more time with fresh balances
-            const rebalanceSuccess = await this.attemptRebalanceForOpportunity(
-              opportunity,
-              adapters,
-              collateralNeeded,
-              longAvailable,
-              shortAvailable
-            );
-            
-            if (!rebalanceSuccess) {
-              this.logger.warn(`Skipping ${opportunity.symbol}: insufficient balance even after rebalancing`);
-              result.errors.push(
-                `Insufficient balance for ${opportunity.symbol} even after rebalancing: ` +
-                `${opportunity.longExchange}: $${longAvailable.toFixed(2)}, ` +
-                `${opportunity.shortExchange}: $${shortAvailable.toFixed(2)}`
+          } else {
+            // New position - use full allocation
+            allocation = item.maxPortfolioFor35APY || 0;
+            collateralNeeded = allocation / this.leverage;
+            if (allocation <= 0) {
+              this.logger.warn(
+                `Skipping ${item.opportunity.symbol}: invalid allocation`,
               );
-              continue; // Skip this opportunity, capital remains available for next
-            }
-            
-            // Re-check balances after rebalancing
-            const [updatedLongBalance, updatedShortBalance] = await Promise.all([
-              longAdapter.getBalance(),
-              shortAdapter.getBalance(),
-            ]);
-            const [updatedLongPositions, updatedShortPositions] = await Promise.all([
-              longAdapter.getPositions(),
-              shortAdapter.getPositions(),
-            ]);
-            const updatedLongMarginUsed = updatedLongPositions.reduce((sum, pos) => {
-              const posValue = pos.getPositionValue();
-              return sum + (pos.marginUsed ?? (posValue / this.leverage));
-            }, 0);
-            const updatedShortMarginUsed = updatedShortPositions.reduce((sum, pos) => {
-              const posValue = pos.getPositionValue();
-              return sum + (pos.marginUsed ?? (posValue / this.leverage));
-            }, 0);
-            const updatedLongAvailable = Math.max(0, updatedLongBalance - updatedLongMarginUsed);
-            const updatedShortAvailable = Math.max(0, updatedShortBalance - updatedShortMarginUsed);
-            
-            if (updatedLongAvailable < collateralNeeded || updatedShortAvailable < collateralNeeded) {
-              this.logger.warn(`Still insufficient balance after rebalancing for ${opportunity.symbol}, skipping`);
               continue;
             }
-            
-            exchangeBalances.set(opportunity.longExchange, updatedLongAvailable);
-            exchangeBalances.set(opportunity.shortExchange, updatedShortAvailable);
           }
-        } catch (error: any) {
-          this.logger.warn(`Failed to refresh balances before execution: ${error.message}`);
-          // Continue anyway - might still work
-        }
 
-        // Create execution plan with the specific allocation amount
-        const plan = await this.createExecutionPlanWithAllocation(
-          item.opportunity,
-          adapters,
-          allocation,
-          item.opportunity.longMarkPrice,
-          item.opportunity.shortMarkPrice,
-        );
+          const { opportunity } = item;
 
-        if (!plan) {
-          this.logger.warn(`Failed to create execution plan for ${item.opportunity.symbol} with allocation $${allocation.toFixed(2)}`);
-          continue; // Capital remains available for next opportunity
-        }
+          // Get adapters
+          const [longAdapter, shortAdapter] = [
+            adapters.get(opportunity.longExchange),
+            adapters.get(opportunity.shortExchange),
+          ];
 
-        // Place orders (in parallel for speed)
-        const actionType = isTopUp ? 'Topping up' : 'Opening';
-        this.logger.log(
-          `📤 [${i + 1}/${opportunities.length}] ${actionType} ${opportunity.symbol}: ` +
-          `$${allocation.toFixed(2)} (${plan.positionSize.toFixed(4)} size)`
-        );
-
-        const [longResponse, shortResponse] = await Promise.all([
-          longAdapter.placeOrder(plan.longOrder),
-          shortAdapter.placeOrder(plan.shortOrder),
-        ]);
-
-        // Wait for orders to fill if they're not immediately filled
-        let finalLongResponse = longResponse;
-        let finalShortResponse = shortResponse;
-        
-        if (!longResponse.isFilled() && longResponse.orderId) {
-          finalLongResponse = await this.waitForOrderFill(
-            longAdapter,
-            longResponse.orderId,
-            opportunity.symbol,
-            opportunity.longExchange,
-            plan.positionSize,
-          );
-        }
-        
-        if (!shortResponse.isFilled() && shortResponse.orderId) {
-          finalShortResponse = await this.waitForOrderFill(
-            shortAdapter,
-            shortResponse.orderId,
-            opportunity.symbol,
-            opportunity.shortExchange,
-            plan.positionSize,
-          );
-        }
-
-        // Track volume for filled orders
-        if (this.performanceLogger) {
-          if (finalLongResponse.isFilled() && finalLongResponse.filledSize && finalLongResponse.averageFillPrice) {
-            const longVolume = finalLongResponse.filledSize * finalLongResponse.averageFillPrice;
-            this.performanceLogger.recordTradeVolume(longVolume);
+          if (!longAdapter || !shortAdapter) {
+            result.errors.push(`Missing adapters for ${opportunity.symbol}`);
+            continue;
           }
-          if (finalShortResponse.isFilled() && finalShortResponse.filledSize && finalShortResponse.averageFillPrice) {
-            const shortVolume = finalShortResponse.filledSize * finalShortResponse.averageFillPrice;
-            this.performanceLogger.recordTradeVolume(shortVolume);
-          }
-        }
 
-        // Check if both orders succeeded
-        // For GTC LIMIT orders, SUBMITTED status is fine - they're on the book
-        // Only treat as failure if REJECTED, CANCELLED, or has error
-        const longIsGTC = plan.longOrder.timeInForce === TimeInForce.GTC;
-        const shortIsGTC = plan.shortOrder.timeInForce === TimeInForce.GTC;
-        const longSuccess = finalLongResponse.isSuccess() && 
-          (finalLongResponse.isFilled() || (longIsGTC && finalLongResponse.status === OrderStatus.SUBMITTED));
-        const shortSuccess = finalShortResponse.isSuccess() && 
-          (finalShortResponse.isFilled() || (shortIsGTC && finalShortResponse.status === OrderStatus.SUBMITTED));
-        
-        // Handle partial fills and GTC orders on book
-        const longFilled = finalLongResponse.filledSize || 0;
-        const shortFilled = finalShortResponse.filledSize || 0;
-        const minFilled = Math.min(longFilled || plan.positionSize, shortFilled || plan.positionSize);
-        const isPartialFill = (longSuccess && shortSuccess) && 
-          (longFilled > 0 || shortFilled > 0) && 
-          (minFilled < plan.positionSize - 0.0001);
-        const longFullyFilled = longFilled >= plan.positionSize - 0.0001;
-        const shortFullyFilled = shortFilled >= plan.positionSize - 0.0001;
-        const longOnBook = longIsGTC && finalLongResponse.status === OrderStatus.SUBMITTED && !longFullyFilled;
-        const shortOnBook = shortIsGTC && finalShortResponse.status === OrderStatus.SUBMITTED && !shortFullyFilled;
-        
-        // Detect asymmetric fill: one side filled, other on book
-        const asymmetricFill = (longFullyFilled && shortOnBook) || (shortFullyFilled && longOnBook);
-        
-        if (asymmetricFill) {
-          const fillKey = `${opportunity.symbol}-${opportunity.longExchange}-${opportunity.shortExchange}`;
-          this.asymmetricFills.set(fillKey, {
-            symbol: opportunity.symbol,
-            longFilled: longFullyFilled,
-            shortFilled: shortFullyFilled,
-            longOrderId: longResponse.orderId,
-            shortOrderId: shortResponse.orderId,
-            longExchange: opportunity.longExchange,
-            shortExchange: opportunity.shortExchange,
-            positionSize: plan.positionSize,
-            opportunity,
-            timestamp: new Date(),
-          });
-          
-          this.logger.warn(
-            `⚠️ ASYMMETRIC FILL DETECTED: ${opportunity.symbol} - ` +
-            `${longFullyFilled ? 'LONG filled' : 'SHORT filled'} but ` +
-            `${longOnBook ? 'LONG' : 'SHORT'} still on book (GTC). ` +
-            `Will check after ${this.ASYMMETRIC_FILL_TIMEOUT_MS / 1000 / 60} minutes...`
-          );
-        }
-        
-        if (longSuccess && shortSuccess) {
-          if (longOnBook || shortOnBook) {
-            this.logger.log(
-              `📋 [${i + 1}/${opportunities.length}] ${opportunity.symbol}: ` +
-              `Orders placed on book (GTC)${longOnBook && shortOnBook ? ' - both' : longOnBook ? ' - LONG' : ' - SHORT'}. ` +
-              `Will fill when price is reached.`
-            );
-          }
-          if (isPartialFill) {
-            this.logger.warn(
-              `⚠️ Partial fill for ${opportunity.symbol}: ` +
-              `Long: ${longFilled.toFixed(4)}/${plan.positionSize.toFixed(4)}, ` +
-              `Short: ${shortFilled.toFixed(4)}/${plan.positionSize.toFixed(4)}`
-            );
-            // Capital for the unfilled portion remains available, but we still count this as a success
-            // The unfilled capital will be available in the next execution cycle
-          }
-          
-          // Record position entries in loss tracker (use actual filled size)
-          const longFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
-          const shortFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
-          const avgMarkPrice = opportunity.longMarkPrice && opportunity.shortMarkPrice
-            ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
-            : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
-          const actualFilledSize = isPartialFill ? minFilled : plan.positionSize;
-          const positionSizeUsd = actualFilledSize * avgMarkPrice;
-          const longEntryCost = longFeeRate * positionSizeUsd;
-          const shortEntryCost = shortFeeRate * positionSizeUsd;
-          
-          this.lossTracker.recordPositionEntry(
-            opportunity.symbol,
-            opportunity.longExchange,
-            longEntryCost,
-            positionSizeUsd,
-          );
-          this.lossTracker.recordPositionEntry(
-            opportunity.symbol,
-            opportunity.shortExchange,
-            shortEntryCost,
-            positionSizeUsd,
-          );
-          
-          successfulExecutions++;
-          totalOrders += 2;
-          totalExpectedReturn += plan.expectedNetReturn * (isPartialFill ? (actualFilledSize / plan.positionSize) : 1);
-
-          this.logger.log(
-            `✅ [${i + 1}/${opportunities.length}] ${opportunity.symbol}${isPartialFill ? ' (PARTIAL)' : ''}: ` +
-            `$${(plan.expectedNetReturn * (isPartialFill ? (actualFilledSize / plan.positionSize) : 1)).toFixed(4)}/period ` +
-            `(${(opportunity.expectedReturn * 100).toFixed(2)}% APY)`
-          );
-          
-          // Refresh balances after successful execution to account for locked margin
+          // Refresh balances before execution to ensure we have accurate data
+          // This is critical after rebalancing or previous executions
           try {
-            const [newLongBalance, newShortBalance] = await Promise.all([
+            const [longBalance, shortBalance] = await Promise.all([
               longAdapter.getBalance(),
               shortAdapter.getBalance(),
             ]);
-            const [newLongPositions, newShortPositions] = await Promise.all([
+
+            // Get current positions to calculate locked margin
+            const [longPositions, shortPositions] = await Promise.all([
               longAdapter.getPositions(),
               shortAdapter.getPositions(),
             ]);
-            const newLongMarginUsed = newLongPositions.reduce((sum, pos) => {
-              const posValue = pos.getPositionValue();
-              return sum + (pos.marginUsed ?? (posValue / this.leverage));
-            }, 0);
-            const newShortMarginUsed = newShortPositions.reduce((sum, pos) => {
-              const posValue = pos.getPositionValue();
-              return sum + (pos.marginUsed ?? (posValue / this.leverage));
-            }, 0);
-            exchangeBalances.set(opportunity.longExchange, Math.max(0, newLongBalance - newLongMarginUsed));
-            exchangeBalances.set(opportunity.shortExchange, Math.max(0, newShortBalance - newShortMarginUsed));
-          } catch (error: any) {
-            this.logger.debug(`Failed to refresh balances after execution: ${error.message}`);
-          }
-        } else {
-          // Execution failed - check if orders are on book (GTC) or actually failed
-          const longOnBook = longIsGTC && finalLongResponse.status === OrderStatus.SUBMITTED && !finalLongResponse.error;
-          const shortOnBook = shortIsGTC && finalShortResponse.status === OrderStatus.SUBMITTED && !finalShortResponse.error;
-          
-          if (longOnBook || shortOnBook) {
-            // Orders are on book (GTC) - this is fine, they'll fill when price is reached
-            this.logger.log(
-              `📋 [${i + 1}/${opportunities.length}] ${opportunity.symbol}: ` +
-              `Orders on book (GTC)${longOnBook && shortOnBook ? ' - both' : longOnBook ? ' - LONG' : ' - SHORT'}. ` +
-              `Capital remains available until filled.`
-            );
-            // Don't count as error - orders are on book
-          } else {
-            // Actual failure - capital remains available for next opportunity
-            const longError = finalLongResponse.error || 
-              (finalLongResponse.isFilled() ? 'none' : 
-               finalLongResponse.status === OrderStatus.REJECTED ? 'rejected' : 
-               finalLongResponse.status === OrderStatus.CANCELLED ? 'cancelled' : 'not filled');
-            const shortError = finalShortResponse.error || 
-              (finalShortResponse.isFilled() ? 'none' : 
-               finalShortResponse.status === OrderStatus.REJECTED ? 'rejected' : 
-               finalShortResponse.status === OrderStatus.CANCELLED ? 'cancelled' : 'not filled');
-          result.errors.push(
-            `Order execution failed for ${opportunity.symbol}: ` +
-              `Long: ${longError}, Short: ${shortError}`
-            );
-            this.logger.warn(
-              `❌ [${i + 1}/${opportunities.length}] ${opportunity.symbol} failed: ` +
-              `${longError} / ${shortError}`
-            );
-          }
-        }
 
-        // Small delay between position executions to avoid rate limits
-        if (i < opportunities.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+            const longMarginUsed = longPositions.reduce((sum, pos) => {
+              const posValue = pos.getPositionValue();
+              return sum + (pos.marginUsed ?? posValue / this.leverage);
+            }, 0);
+            const shortMarginUsed = shortPositions.reduce((sum, pos) => {
+              const posValue = pos.getPositionValue();
+              return sum + (pos.marginUsed ?? posValue / this.leverage);
+            }, 0);
+
+            const longAvailable = Math.max(0, longBalance - longMarginUsed);
+            const shortAvailable = Math.max(0, shortBalance - shortMarginUsed);
+
+            exchangeBalances.set(opportunity.longExchange, longAvailable);
+            exchangeBalances.set(opportunity.shortExchange, shortAvailable);
+
+            // Check if we still have sufficient balance after refresh
+            if (
+              longAvailable < collateralNeeded ||
+              shortAvailable < collateralNeeded
+            ) {
+              this.logger.warn(
+                `⚠️ Insufficient balance after refresh for ${opportunity.symbol}: ` +
+                  `${opportunity.longExchange}: $${longAvailable.toFixed(2)} (need $${collateralNeeded.toFixed(2)}), ` +
+                  `${opportunity.shortExchange}: $${shortAvailable.toFixed(2)} (need $${collateralNeeded.toFixed(2)})`,
+              );
+
+              // Attempt rebalancing one more time with fresh balances
+              const rebalanceSuccess =
+                await this.attemptRebalanceForOpportunity(
+                  opportunity,
+                  adapters,
+                  collateralNeeded,
+                  longAvailable,
+                  shortAvailable,
+                );
+
+              if (!rebalanceSuccess) {
+                this.logger.warn(
+                  `Skipping ${opportunity.symbol}: insufficient balance even after rebalancing`,
+                );
+                result.errors.push(
+                  `Insufficient balance for ${opportunity.symbol} even after rebalancing: ` +
+                    `${opportunity.longExchange}: $${longAvailable.toFixed(2)}, ` +
+                    `${opportunity.shortExchange}: $${shortAvailable.toFixed(2)}`,
+                );
+                continue; // Skip this opportunity, capital remains available for next
+              }
+
+              // Re-check balances after rebalancing
+              const [updatedLongBalance, updatedShortBalance] =
+                await Promise.all([
+                  longAdapter.getBalance(),
+                  shortAdapter.getBalance(),
+                ]);
+              const [updatedLongPositions, updatedShortPositions] =
+                await Promise.all([
+                  longAdapter.getPositions(),
+                  shortAdapter.getPositions(),
+                ]);
+              const updatedLongMarginUsed = updatedLongPositions.reduce(
+                (sum, pos) => {
+                  const posValue = pos.getPositionValue();
+                  return sum + (pos.marginUsed ?? posValue / this.leverage);
+                },
+                0,
+              );
+              const updatedShortMarginUsed = updatedShortPositions.reduce(
+                (sum, pos) => {
+                  const posValue = pos.getPositionValue();
+                  return sum + (pos.marginUsed ?? posValue / this.leverage);
+                },
+                0,
+              );
+              const updatedLongAvailable = Math.max(
+                0,
+                updatedLongBalance - updatedLongMarginUsed,
+              );
+              const updatedShortAvailable = Math.max(
+                0,
+                updatedShortBalance - updatedShortMarginUsed,
+              );
+
+              if (
+                updatedLongAvailable < collateralNeeded ||
+                updatedShortAvailable < collateralNeeded
+              ) {
+                this.logger.warn(
+                  `Still insufficient balance after rebalancing for ${opportunity.symbol}, skipping`,
+                );
+                continue;
+              }
+
+              exchangeBalances.set(
+                opportunity.longExchange,
+                updatedLongAvailable,
+              );
+              exchangeBalances.set(
+                opportunity.shortExchange,
+                updatedShortAvailable,
+              );
+            }
+          } catch (error: any) {
+            this.logger.warn(
+              `Failed to refresh balances before execution: ${error.message}`,
+            );
+            // Continue anyway - might still work
+          }
+
+          // Create execution plan with the specific allocation amount
+          const plan = await this.createExecutionPlanWithAllocation(
+            item.opportunity,
+            adapters,
+            allocation,
+            item.opportunity.longMarkPrice,
+            item.opportunity.shortMarkPrice,
+          );
+
+          if (!plan) {
+            this.logger.warn(
+              `Failed to create execution plan for ${item.opportunity.symbol} with allocation $${allocation.toFixed(2)}`,
+            );
+            continue; // Capital remains available for next opportunity
+          }
+
+          // Place orders (in parallel for speed)
+          const actionType = isTopUp ? 'Topping up' : 'Opening';
+          this.logger.log(
+            `📤 [${i + 1}/${opportunities.length}] ${actionType} ${opportunity.symbol}: ` +
+              `$${allocation.toFixed(2)} (${plan.positionSize.toFixed(4)} size)` +
+              (executionAttempt > 1
+                ? ` [Attempt ${executionAttempt}/${this.MAX_EXECUTION_RETRIES}]`
+                : ''),
+          );
+
+          const [longResponse, shortResponse] = await Promise.all([
+            longAdapter.placeOrder(plan.longOrder),
+            shortAdapter.placeOrder(plan.shortOrder),
+          ]);
+
+          // Wait for orders to fill if they're not immediately filled
+          let finalLongResponse = longResponse;
+          let finalShortResponse = shortResponse;
+
+          if (!longResponse.isFilled() && longResponse.orderId) {
+            finalLongResponse = await this.waitForOrderFill(
+              longAdapter,
+              longResponse.orderId,
+              opportunity.symbol,
+              opportunity.longExchange,
+              plan.positionSize,
+              this.MAX_ORDER_WAIT_RETRIES,
+              this.ORDER_WAIT_BASE_INTERVAL,
+              false, // isClosingPosition = false
+            );
+          }
+
+          if (!shortResponse.isFilled() && shortResponse.orderId) {
+            finalShortResponse = await this.waitForOrderFill(
+              shortAdapter,
+              shortResponse.orderId,
+              opportunity.symbol,
+              opportunity.shortExchange,
+              plan.positionSize,
+              this.MAX_ORDER_WAIT_RETRIES,
+              this.ORDER_WAIT_BASE_INTERVAL,
+              false, // isClosingPosition = false
+            );
+          }
+
+          // Track volume for filled orders
+          if (this.performanceLogger) {
+            if (
+              finalLongResponse.isFilled() &&
+              finalLongResponse.filledSize &&
+              finalLongResponse.averageFillPrice
+            ) {
+              const longVolume =
+                finalLongResponse.filledSize *
+                finalLongResponse.averageFillPrice;
+              this.performanceLogger.recordTradeVolume(longVolume);
+            }
+            if (
+              finalShortResponse.isFilled() &&
+              finalShortResponse.filledSize &&
+              finalShortResponse.averageFillPrice
+            ) {
+              const shortVolume =
+                finalShortResponse.filledSize *
+                finalShortResponse.averageFillPrice;
+              this.performanceLogger.recordTradeVolume(shortVolume);
+            }
+          }
+
+          // Check if both orders succeeded
+          // For GTC LIMIT orders, SUBMITTED status is fine - they're on the book
+          // Only treat as failure if REJECTED, CANCELLED, or has error
+          const longIsGTC = plan.longOrder.timeInForce === TimeInForce.GTC;
+          const shortIsGTC = plan.shortOrder.timeInForce === TimeInForce.GTC;
+          const longSuccess =
+            finalLongResponse.isSuccess() &&
+            (finalLongResponse.isFilled() ||
+              (longIsGTC &&
+                finalLongResponse.status === OrderStatus.SUBMITTED));
+          const shortSuccess =
+            finalShortResponse.isSuccess() &&
+            (finalShortResponse.isFilled() ||
+              (shortIsGTC &&
+                finalShortResponse.status === OrderStatus.SUBMITTED));
+
+          // Handle partial fills and GTC orders on book
+          const longFilled = finalLongResponse.filledSize || 0;
+          const shortFilled = finalShortResponse.filledSize || 0;
+          const longFullyFilled = longFilled >= plan.positionSize - 0.0001;
+          const shortFullyFilled = shortFilled >= plan.positionSize - 0.0001;
+          const longOnBook =
+            longIsGTC &&
+            finalLongResponse.status === OrderStatus.SUBMITTED &&
+            !longFullyFilled;
+          const shortOnBook =
+            shortIsGTC &&
+            finalShortResponse.status === OrderStatus.SUBMITTED &&
+            !shortFullyFilled;
+
+          // Calculate fill balance (how balanced are the fills?)
+          const maxFilled = Math.max(
+            longFilled || 0.0001,
+            shortFilled || 0.0001,
+          );
+          const minFilled = Math.min(
+            longFilled || plan.positionSize,
+            shortFilled || plan.positionSize,
+          );
+          const fillBalance = maxFilled > 0 ? minFilled / maxFilled : 1.0;
+
+          if (longSuccess && shortSuccess) {
+            // Check if fills are balanced enough (both filled, and neither on book)
+            if (
+              fillBalance < this.MIN_FILL_BALANCE &&
+              !longOnBook &&
+              !shortOnBook &&
+              longFilled > 0 &&
+              shortFilled > 0
+            ) {
+              // Imbalanced fills and neither on book - close both to maintain delta neutrality
+              this.logger.warn(
+                `⚠️ [${i + 1}/${opportunities.length}] ${opportunity.symbol}: ` +
+                  `Imbalanced fills (LONG: ${longFilled.toFixed(4)}, SHORT: ${shortFilled.toFixed(4)}, ` +
+                  `balance: ${(fillBalance * 100).toFixed(1)}%, require >${(this.MIN_FILL_BALANCE * 100).toFixed(0)}%). ` +
+                  `Closing both positions to maintain delta neutrality...`,
+              );
+
+              // Close both positions
+              if (longFilled > 0.0001) {
+                await this.closeFilledPosition(
+                  longAdapter,
+                  opportunity.symbol,
+                  'LONG',
+                  longFilled,
+                  opportunity.longExchange,
+                  result,
+                );
+              }
+              if (shortFilled > 0.0001) {
+                await this.closeFilledPosition(
+                  shortAdapter,
+                  opportunity.symbol,
+                  'SHORT',
+                  shortFilled,
+                  opportunity.shortExchange,
+                  result,
+                );
+              }
+
+              // Don't retry - this was a successful execution that we chose to close
+              executionSuccess = true;
+              break;
+            }
+
+            // Detect asymmetric fill: one side fully filled, other on book
+            const asymmetricFill =
+              (longFullyFilled && shortOnBook) ||
+              (shortFullyFilled && longOnBook);
+
+            if (asymmetricFill) {
+              const fillKey = `${opportunity.symbol}-${opportunity.longExchange}-${opportunity.shortExchange}`;
+              this.asymmetricFills.set(fillKey, {
+                symbol: opportunity.symbol,
+                longFilled: longFullyFilled,
+                shortFilled: shortFullyFilled,
+                longOrderId: longResponse.orderId,
+                shortOrderId: shortResponse.orderId,
+                longExchange: opportunity.longExchange,
+                shortExchange: opportunity.shortExchange,
+                positionSize: plan.positionSize,
+                opportunity,
+                timestamp: new Date(),
+              });
+
+              this.logger.warn(
+                `⚠️ ASYMMETRIC FILL: ${opportunity.symbol} - ` +
+                  `${longFullyFilled ? 'LONG filled' : 'SHORT filled'} but ` +
+                  `${longOnBook ? 'LONG' : 'SHORT'} still on book. ` +
+                  `Attempting immediate completion...`,
+              );
+
+              // Try to complete immediately with market order
+              const completed = await this.attemptImmediateCompletion(
+                this.asymmetricFills.get(fillKey)!,
+                adapters,
+              );
+
+              if (completed) {
+                this.asymmetricFills.delete(fillKey);
+                successfulExecutions++;
+                totalOrders += 2;
+                totalExpectedReturn += plan.expectedNetReturn;
+
+                this.logger.log(
+                  `✅ [${i + 1}/${opportunities.length}] ${opportunity.symbol} (COMPLETED): ` +
+                    `$${plan.expectedNetReturn.toFixed(4)}/period ` +
+                    `(${(opportunity.expectedReturn * 100).toFixed(2)}% APY)`,
+                );
+              } else {
+                this.logger.log(
+                  `📋 [${i + 1}/${opportunities.length}] ${opportunity.symbol}: ` +
+                    `Asymmetric fill - will retry after ${this.ASYMMETRIC_FILL_TIMEOUT_MS / 1000 / 60} minutes if GTC doesn't fill`,
+                );
+              }
+
+              executionSuccess = true;
+            } else if (longOnBook || shortOnBook) {
+              // Orders on book but not asymmetric (both on book or both filled with similar amounts)
+              this.logger.log(
+                `📋 [${i + 1}/${opportunities.length}] ${opportunity.symbol}: ` +
+                  `Orders placed on book (GTC)${longOnBook && shortOnBook ? ' - both' : longOnBook ? ' - LONG' : ' - SHORT'}. ` +
+                  `Will fill when price is reached.`,
+              );
+              executionSuccess = true;
+            } else {
+              // Both filled successfully with good balance
+              const isPartialFill =
+                (longFilled > 0 || shortFilled > 0) &&
+                minFilled < plan.positionSize - 0.0001;
+
+              if (isPartialFill) {
+                this.logger.warn(
+                  `⚠️ Partial fill for ${opportunity.symbol}: ` +
+                    `Long: ${longFilled.toFixed(4)}/${plan.positionSize.toFixed(4)}, ` +
+                    `Short: ${shortFilled.toFixed(4)}/${plan.positionSize.toFixed(4)}`,
+                );
+              }
+
+              // Record position entries in loss tracker (use actual filled size)
+              const longFeeRate =
+                this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
+              const shortFeeRate =
+                this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) ||
+                0.0005;
+              const avgMarkPrice =
+                opportunity.longMarkPrice && opportunity.shortMarkPrice
+                  ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
+                  : opportunity.longMarkPrice ||
+                    opportunity.shortMarkPrice ||
+                    0;
+              const actualFilledSize = isPartialFill
+                ? minFilled
+                : plan.positionSize;
+              const positionSizeUsd = actualFilledSize * avgMarkPrice;
+              const longEntryCost = longFeeRate * positionSizeUsd;
+              const shortEntryCost = shortFeeRate * positionSizeUsd;
+
+              this.lossTracker.recordPositionEntry(
+                opportunity.symbol,
+                opportunity.longExchange,
+                longEntryCost,
+                positionSizeUsd,
+              );
+              this.lossTracker.recordPositionEntry(
+                opportunity.symbol,
+                opportunity.shortExchange,
+                shortEntryCost,
+                positionSizeUsd,
+              );
+
+              successfulExecutions++;
+              totalOrders += 2;
+              totalExpectedReturn +=
+                plan.expectedNetReturn *
+                (isPartialFill ? actualFilledSize / plan.positionSize : 1);
+
+              this.logger.log(
+                `✅ [${i + 1}/${opportunities.length}] ${opportunity.symbol}${isPartialFill ? ' (PARTIAL)' : ''}: ` +
+                  `$${(plan.expectedNetReturn * (isPartialFill ? actualFilledSize / plan.positionSize : 1)).toFixed(4)}/period ` +
+                  `(${(opportunity.expectedReturn * 100).toFixed(2)}% APY)`,
+              );
+
+              executionSuccess = true;
+            }
+
+            // Refresh balances after successful execution to account for locked margin
+            if (executionSuccess) {
+              try {
+                const [newLongBalance, newShortBalance] = await Promise.all([
+                  longAdapter.getBalance(),
+                  shortAdapter.getBalance(),
+                ]);
+                const [newLongPositions, newShortPositions] = await Promise.all(
+                  [longAdapter.getPositions(), shortAdapter.getPositions()],
+                );
+                const newLongMarginUsed = newLongPositions.reduce(
+                  (sum, pos) => {
+                    const posValue = pos.getPositionValue();
+                    return sum + (pos.marginUsed ?? posValue / this.leverage);
+                  },
+                  0,
+                );
+                const newShortMarginUsed = newShortPositions.reduce(
+                  (sum, pos) => {
+                    const posValue = pos.getPositionValue();
+                    return sum + (pos.marginUsed ?? posValue / this.leverage);
+                  },
+                  0,
+                );
+                exchangeBalances.set(
+                  opportunity.longExchange,
+                  Math.max(0, newLongBalance - newLongMarginUsed),
+                );
+                exchangeBalances.set(
+                  opportunity.shortExchange,
+                  Math.max(0, newShortBalance - newShortMarginUsed),
+                );
+              } catch (error: any) {
+                this.logger.debug(
+                  `Failed to refresh balances after execution: ${error.message}`,
+                );
+              }
+            }
+          } else {
+            // One or both orders failed
+            const longOnBook =
+              longIsGTC &&
+              finalLongResponse.status === OrderStatus.SUBMITTED &&
+              !finalLongResponse.error;
+            const shortOnBook =
+              shortIsGTC &&
+              finalShortResponse.status === OrderStatus.SUBMITTED &&
+              !finalShortResponse.error;
+
+            if (longOnBook || shortOnBook) {
+              // Orders are on book (GTC) - this is fine, they'll fill when price is reached
+              this.logger.log(
+                `📋 [${i + 1}/${opportunities.length}] ${opportunity.symbol}: ` +
+                  `Orders on book (GTC)${longOnBook && shortOnBook ? ' - both' : longOnBook ? ' - LONG' : ' - SHORT'}.`,
+              );
+              executionSuccess = true; // Don't retry
+            } else {
+              // Both failed - check if we should retry
+              const bothFailed = !longSuccess && !shortSuccess;
+
+              if (bothFailed && executionAttempt < this.MAX_EXECUTION_RETRIES) {
+                // Retry with backoff
+                const delayIndex = executionAttempt - 1;
+                const retryDelay =
+                  this.EXECUTION_RETRY_DELAYS[delayIndex] ||
+                  this.EXECUTION_RETRY_DELAYS[
+                    this.EXECUTION_RETRY_DELAYS.length - 1
+                  ];
+
+                this.logger.warn(
+                  `⚠️ [${i + 1}/${opportunities.length}] ${opportunity.symbol}: Both orders failed. ` +
+                    `Retrying in ${retryDelay / 1000}s... (attempt ${executionAttempt}/${this.MAX_EXECUTION_RETRIES})`,
+                );
+
+                await new Promise((resolve) => setTimeout(resolve, retryDelay));
+                // Loop will continue to retry
+              } else {
+                // Max retries reached or only one failed
+                const longError =
+                  finalLongResponse.error ||
+                  (finalLongResponse.isFilled()
+                    ? 'none'
+                    : finalLongResponse.status === OrderStatus.REJECTED
+                      ? 'rejected'
+                      : finalLongResponse.status === OrderStatus.CANCELLED
+                        ? 'cancelled'
+                        : 'not filled');
+                const shortError =
+                  finalShortResponse.error ||
+                  (finalShortResponse.isFilled()
+                    ? 'none'
+                    : finalShortResponse.status === OrderStatus.REJECTED
+                      ? 'rejected'
+                      : finalShortResponse.status === OrderStatus.CANCELLED
+                        ? 'cancelled'
+                        : 'not filled');
+
+                result.errors.push(
+                  `Order execution failed for ${opportunity.symbol} after ${executionAttempt} attempts: ` +
+                    `Long: ${longError}, Short: ${shortError}`,
+                );
+
+                this.logger.error(
+                  `❌ [${i + 1}/${opportunities.length}] ${opportunity.symbol} failed after ` +
+                    `${executionAttempt} attempts: ${longError} / ${shortError}`,
+                );
+
+                executionSuccess = true; // Stop retrying
+              }
+            }
+          }
+
+          // Small delay between opportunities
+          if (i < opportunities.length - 1 && executionSuccess) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+        } catch (error: any) {
+          if (executionAttempt < this.MAX_EXECUTION_RETRIES) {
+            const delayIndex = executionAttempt - 1;
+            const retryDelay =
+              this.EXECUTION_RETRY_DELAYS[delayIndex] ||
+              this.EXECUTION_RETRY_DELAYS[
+                this.EXECUTION_RETRY_DELAYS.length - 1
+              ];
+
+            this.logger.warn(
+              `⚠️ Error executing ${item.opportunity.symbol}: ${error.message}. ` +
+                `Retrying in ${retryDelay / 1000}s... (attempt ${executionAttempt}/${this.MAX_EXECUTION_RETRIES})`,
+            );
+
+            await new Promise((resolve) => setTimeout(resolve, retryDelay));
+            // Loop will continue to retry
+          } else {
+            result.errors.push(
+              `Error executing ${item.opportunity.symbol} after ${executionAttempt} attempts: ${error.message}`,
+            );
+            this.logger.error(
+              `❌ Failed to execute ${item.opportunity.symbol} after ${executionAttempt} attempts: ${error.message}`,
+            );
+            executionSuccess = true; // Stop retrying
+          }
         }
-    } catch (error: any) {
-        result.errors.push(`Error executing ${item.opportunity.symbol}: ${error.message}`);
-        this.logger.error(`Failed to execute ${item.opportunity.symbol}: ${error.message}. Capital remains available.`);
-      }
+      } // End retry while loop
     }
 
     this.logger.log(
       `✅ Execution: ${successfulExecutions}/${opportunities.length} positions, ` +
-      `$${totalExpectedReturn.toFixed(2)}/period expected`
+        `$${totalExpectedReturn.toFixed(2)}/period expected`,
     );
 
     return {
@@ -3223,33 +4157,41 @@ export class FundingArbitrageStrategy {
       return;
     }
 
-    this.logger.log('\n═══════════════════════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '\n═══════════════════════════════════════════════════════════════════════════════',
+    );
     this.logger.log('📊 COMPREHENSIVE PERFORMANCE METRICS');
-    this.logger.log('═══════════════════════════════════════════════════════════════════════════════\n');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════════════════════\n',
+    );
 
     // Get all current positions
     const allPositions = await this.getAllPositions(adapters);
-    
+
     if (allPositions.length === 0) {
-      this.logger.log('⚠️ No positions found - metrics will be available after positions are opened');
+      this.logger.log(
+        '⚠️ No positions found - metrics will be available after positions are opened',
+      );
       return;
     }
 
     // Get current funding rates for all symbols
     const symbols = new Set<string>();
-    allPositions.forEach(pos => symbols.add(pos.symbol));
+    allPositions.forEach((pos) => symbols.add(pos.symbol));
     const allFundingRates = new Map<string, Map<ExchangeType, number>>();
-    
+
     for (const symbol of symbols) {
       try {
         const rates = await this.aggregator.getFundingRates(symbol);
         const rateMap = new Map<ExchangeType, number>();
-        rates.forEach(rate => {
+        rates.forEach((rate) => {
           rateMap.set(rate.exchange, rate.currentRate);
         });
         allFundingRates.set(symbol, rateMap);
       } catch (error: any) {
-        this.logger.debug(`Failed to get funding rates for ${symbol}: ${error.message}`);
+        this.logger.debug(
+          `Failed to get funding rates for ${symbol}: ${error.message}`,
+        );
       }
     }
 
@@ -3263,7 +4205,10 @@ export class FundingArbitrageStrategy {
     let totalUnrealizedPnl = 0;
 
     // Group positions by symbol (arbitrage pairs: long + short)
-    const positionsBySymbol = new Map<string, { long?: PerpPosition; short?: PerpPosition }>();
+    const positionsBySymbol = new Map<
+      string,
+      { long?: PerpPosition; short?: PerpPosition }
+    >();
     for (const position of allPositions) {
       if (!positionsBySymbol.has(position.symbol)) {
         positionsBySymbol.set(position.symbol, {});
@@ -3278,20 +4223,20 @@ export class FundingArbitrageStrategy {
 
     // Log metrics for each position pair
     this.logger.log('📈 POSITION DETAILS:\n');
-    
+
     let positionIndex = 0;
     for (const [symbol, pair] of positionsBySymbol.entries()) {
       positionIndex++;
-      
+
       // Get both positions (long and short)
       const longPosition = pair.long;
       const shortPosition = pair.short;
-      
+
       if (!longPosition || !shortPosition) {
         // Skip incomplete pairs
         continue;
       }
-      
+
       const longValue = longPosition.getPositionValue();
       const shortValue = shortPosition.getPositionValue();
       const totalPairValue = longValue + shortValue;
@@ -3300,9 +4245,9 @@ export class FundingArbitrageStrategy {
       // Get funding rates for this position pair
       // Find the opportunity to get both exchange rates
       const opportunity = opportunities.find(
-        item => item.opportunity.symbol === symbol
+        (item) => item.opportunity.symbol === symbol,
       );
-      
+
       let longRate = 0;
       let shortRate = 0;
       if (opportunity) {
@@ -3321,7 +4266,7 @@ export class FundingArbitrageStrategy {
       // For arbitrage, we care about the spread, not individual positions
       const spread = Math.abs(longRate - shortRate);
       const effectiveFundingRate = spread; // Net funding rate for the arbitrage pair
-      
+
       const longBreakEvenData = this.lossTracker.getRemainingBreakEvenHours(
         longPosition,
         -longRate, // LONG receives funding when rate is negative
@@ -3332,21 +4277,28 @@ export class FundingArbitrageStrategy {
         shortRate, // SHORT receives funding when rate is positive
         shortValue,
       );
-      
+
       // Combined break-even: use the worse of the two (longer time)
       const combinedBreakEvenHours = Math.max(
         longBreakEvenData.remainingBreakEvenHours,
-        shortBreakEvenData.remainingBreakEvenHours
+        shortBreakEvenData.remainingBreakEvenHours,
       );
-      const combinedFeesEarned = longBreakEvenData.feesEarnedSoFar + shortBreakEvenData.feesEarnedSoFar;
-      const combinedRemainingCost = longBreakEvenData.remainingCost + shortBreakEvenData.remainingCost;
-      const combinedHoursHeld = Math.max(longBreakEvenData.hoursHeld, shortBreakEvenData.hoursHeld);
+      const combinedFeesEarned =
+        longBreakEvenData.feesEarnedSoFar + shortBreakEvenData.feesEarnedSoFar;
+      const combinedRemainingCost =
+        longBreakEvenData.remainingCost + shortBreakEvenData.remainingCost;
+      const combinedHoursHeld = Math.max(
+        longBreakEvenData.hoursHeld,
+        shortBreakEvenData.hoursHeld,
+      );
 
       // Calculate hourly return for the arbitrage pair
       const periodsPerYear = 24 * 365;
       let hourlyReturn = 0;
       if (opportunity) {
-        const oppSpread = Math.abs(opportunity.opportunity.longRate - opportunity.opportunity.shortRate);
+        const oppSpread = Math.abs(
+          opportunity.opportunity.longRate - opportunity.opportunity.shortRate,
+        );
         hourlyReturn = (oppSpread * totalPairValue) / periodsPerYear;
       } else {
         // Estimate from current funding rates
@@ -3354,20 +4306,25 @@ export class FundingArbitrageStrategy {
       }
 
       // Calculate estimated APY
-      const estimatedAPY = opportunity 
+      const estimatedAPY = opportunity
         ? opportunity.opportunity.expectedReturn * 100
-        : (hourlyReturn * periodsPerYear / totalPairValue) * 100;
+        : ((hourlyReturn * periodsPerYear) / totalPairValue) * 100;
 
       // Get actual entry costs for both positions
-      const longEntry = this.lossTracker['currentPositions'].get(`${symbol}_${longPosition.exchangeType}`);
-      const shortEntry = this.lossTracker['currentPositions'].get(`${symbol}_${shortPosition.exchangeType}`);
+      const longEntry = this.lossTracker['currentPositions'].get(
+        `${symbol}_${longPosition.exchangeType}`,
+      );
+      const shortEntry = this.lossTracker['currentPositions'].get(
+        `${symbol}_${shortPosition.exchangeType}`,
+      );
       const longEntryCost = longEntry?.entry.entryCost || 0;
       const shortEntryCost = shortEntry?.entry.entryCost || 0;
       const totalEntryCost = longEntryCost + shortEntryCost;
 
       totalEntryCosts += totalEntryCost;
       totalExpectedHourlyReturn += hourlyReturn;
-      totalEstimatedAPY += estimatedAPY * (totalPairValue / (totalPositionValue || 1)); // Weighted average
+      totalEstimatedAPY +=
+        estimatedAPY * (totalPairValue / (totalPositionValue || 1)); // Weighted average
 
       if (combinedBreakEvenHours !== Infinity) {
         totalBreakEvenHours += combinedBreakEvenHours;
@@ -3377,7 +4334,7 @@ export class FundingArbitrageStrategy {
       const feesEarnedSoFar = combinedFeesEarned;
       const totalCosts = totalEntryCost * 2; // Entry + estimated exit for both positions
       const currentPnl = feesEarnedSoFar - totalCosts;
-      
+
       if (currentPnl > 0) {
         totalUnrealizedPnl += currentPnl;
       } else {
@@ -3386,156 +4343,233 @@ export class FundingArbitrageStrategy {
 
       // Format break-even time
       const breakEvenDays = combinedBreakEvenHours / 24;
-      const breakEvenStr = combinedBreakEvenHours === Infinity 
-        ? 'N/A (unprofitable)'
-        : combinedBreakEvenHours < 1
-        ? `${(combinedBreakEvenHours * 60).toFixed(0)} minutes`
-        : combinedBreakEvenHours < 24
-        ? `${combinedBreakEvenHours.toFixed(1)} hours`
-        : `${breakEvenDays.toFixed(1)} days (${combinedBreakEvenHours.toFixed(1)}h)`;
+      const breakEvenStr =
+        combinedBreakEvenHours === Infinity
+          ? 'N/A (unprofitable)'
+          : combinedBreakEvenHours < 1
+            ? `${(combinedBreakEvenHours * 60).toFixed(0)} minutes`
+            : combinedBreakEvenHours < 24
+              ? `${combinedBreakEvenHours.toFixed(1)} hours`
+              : `${breakEvenDays.toFixed(1)} days (${combinedBreakEvenHours.toFixed(1)}h)`;
 
       // Status indicator
-      const status = combinedBreakEvenHours === 0 
-        ? '✅ PROFITABLE'
-        : combinedBreakEvenHours === Infinity
-        ? '❌ UNPROFITABLE'
-        : combinedBreakEvenHours < 24
-        ? '🟡 BREAKING EVEN SOON'
-        : '🟠 IN PROGRESS';
+      const status =
+        combinedBreakEvenHours === 0
+          ? '✅ PROFITABLE'
+          : combinedBreakEvenHours === Infinity
+            ? '❌ UNPROFITABLE'
+            : combinedBreakEvenHours < 24
+              ? '🟡 BREAKING EVEN SOON'
+              : '🟠 IN PROGRESS';
 
       this.logger.log(`Position Pair ${positionIndex}: ${symbol}`);
-      this.logger.log(`   ───────────────────────────────────────────────────────────────────────────`);
-      this.logger.log(`   LONG: ${longPosition.exchangeType} | Size: $${longValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${longPosition.size.toFixed(4)} @ $${(longPosition.markPrice || 0).toFixed(2)})`);
-      this.logger.log(`   SHORT: ${shortPosition.exchangeType} | Size: $${shortValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${shortPosition.size.toFixed(4)} @ $${(shortPosition.markPrice || 0).toFixed(2)})`);
-      this.logger.log(`   Total Pair Value: $${totalPairValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+      this.logger.log(
+        `   ───────────────────────────────────────────────────────────────────────────`,
+      );
+      this.logger.log(
+        `   LONG: ${longPosition.exchangeType} | Size: $${longValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${longPosition.size.toFixed(4)} @ $${(longPosition.markPrice || 0).toFixed(2)})`,
+      );
+      this.logger.log(
+        `   SHORT: ${shortPosition.exchangeType} | Size: $${shortValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${shortPosition.size.toFixed(4)} @ $${(shortPosition.markPrice || 0).toFixed(2)})`,
+      );
+      this.logger.log(
+        `   Total Pair Value: $${totalPairValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      );
       this.logger.log(`   Status: ${status}`);
-      this.logger.log(`   ───────────────────────────────────────────────────────────────────────────`);
-      
+      this.logger.log(
+        `   ───────────────────────────────────────────────────────────────────────────`,
+      );
+
       // Funding Rate Details
       if (opportunity) {
-        this.logger.log(`   📊 POOL ESTIMATED APY: ${(opportunity.opportunity.expectedReturn * 100).toFixed(2)}%`);
-        this.logger.log(`      Long Rate (${opportunity.opportunity.longExchange}): ${(opportunity.opportunity.longRate * 100).toFixed(4)}%`);
-        this.logger.log(`      Short Rate (${opportunity.opportunity.shortExchange}): ${(opportunity.opportunity.shortRate * 100).toFixed(4)}%`);
-        this.logger.log(`      Spread: ${(opportunity.opportunity.spread * 100).toFixed(4)}%`);
+        this.logger.log(
+          `   📊 POOL ESTIMATED APY: ${(opportunity.opportunity.expectedReturn * 100).toFixed(2)}%`,
+        );
+        this.logger.log(
+          `      Long Rate (${opportunity.opportunity.longExchange}): ${(opportunity.opportunity.longRate * 100).toFixed(4)}%`,
+        );
+        this.logger.log(
+          `      Short Rate (${opportunity.opportunity.shortExchange}): ${(opportunity.opportunity.shortRate * 100).toFixed(4)}%`,
+        );
+        this.logger.log(
+          `      Spread: ${(opportunity.opportunity.spread * 100).toFixed(4)}%`,
+        );
       }
-      
+
       this.logger.log(`   💰 CURRENT REAL APY: ${estimatedAPY.toFixed(2)}%`);
       this.logger.log(`      Hourly Return: $${hourlyReturn.toFixed(4)}`);
       this.logger.log(`      Daily Return: $${(hourlyReturn * 24).toFixed(2)}`);
-      this.logger.log(`      Annual Return: $${(hourlyReturn * periodsPerYear).toFixed(2)}`);
-      
+      this.logger.log(
+        `      Annual Return: $${(hourlyReturn * periodsPerYear).toFixed(2)}`,
+      );
+
       // Break-even Analysis
       this.logger.log(`   ⏱️  BREAK-EVEN ANALYSIS:`);
       this.logger.log(`      Time Until Break-Even: ${breakEvenStr}`);
       this.logger.log(`      Hours Held: ${combinedHoursHeld.toFixed(2)}`);
-      this.logger.log(`      Fees Earned So Far: $${feesEarnedSoFar.toFixed(4)}`);
-      this.logger.log(`      Remaining Cost: $${combinedRemainingCost.toFixed(4)}`);
-      
+      this.logger.log(
+        `      Fees Earned So Far: $${feesEarnedSoFar.toFixed(4)}`,
+      );
+      this.logger.log(
+        `      Remaining Cost: $${combinedRemainingCost.toFixed(4)}`,
+      );
+
       // Cost Breakdown
       this.logger.log(`   💸 COST BREAKDOWN:`);
       this.logger.log(`      Long Entry Cost: $${longEntryCost.toFixed(4)}`);
       this.logger.log(`      Short Entry Cost: $${shortEntryCost.toFixed(4)}`);
       this.logger.log(`      Total Entry Cost: $${totalEntryCost.toFixed(4)}`);
-      this.logger.log(`      Estimated Exit Cost: $${totalEntryCost.toFixed(4)}`);
+      this.logger.log(
+        `      Estimated Exit Cost: $${totalEntryCost.toFixed(4)}`,
+      );
       this.logger.log(`      Total Costs: $${totalCosts.toFixed(4)}`);
-      
+
       // P&L Summary
       this.logger.log(`   📈 PROFIT/LOSS:`);
       this.logger.log(`      Fees Earned: $${feesEarnedSoFar.toFixed(4)}`);
-      this.logger.log(`      Current P&L: $${currentPnl.toFixed(4)} ${currentPnl >= 0 ? '✅' : '❌'}`);
-      this.logger.log(`      ROI: ${totalCosts > 0 ? ((currentPnl / totalCosts) * 100).toFixed(2) : 0}%`);
-      
+      this.logger.log(
+        `      Current P&L: $${currentPnl.toFixed(4)} ${currentPnl >= 0 ? '✅' : '❌'}`,
+      );
+      this.logger.log(
+        `      ROI: ${totalCosts > 0 ? ((currentPnl / totalCosts) * 100).toFixed(2) : 0}%`,
+      );
+
       // Allocation Info
       if (opportunity && opportunity.maxPortfolioFor35APY) {
         this.logger.log(`   🎯 ALLOCATION:`);
-        this.logger.log(`      Max Portfolio (35% APY): $${(opportunity.maxPortfolioFor35APY).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-        this.logger.log(`      Current Allocation: $${totalPairValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-        const allocationPercent = (totalPairValue / opportunity.maxPortfolioFor35APY) * 100;
+        this.logger.log(
+          `      Max Portfolio (35% APY): $${opportunity.maxPortfolioFor35APY.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        );
+        this.logger.log(
+          `      Current Allocation: $${totalPairValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        );
+        const allocationPercent =
+          (totalPairValue / opportunity.maxPortfolioFor35APY) * 100;
         this.logger.log(`      Allocation %: ${allocationPercent.toFixed(1)}%`);
       }
-      
+
       this.logger.log('');
     }
 
     // Portfolio Summary
-    this.logger.log('═══════════════════════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════════════════════',
+    );
     this.logger.log('📊 PORTFOLIO SUMMARY');
-    this.logger.log('═══════════════════════════════════════════════════════════════════════════════\n');
-    
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════════════════════\n',
+    );
+
     const positionPairsCount = positionsBySymbol.size;
     this.logger.log(`   Total Position Pairs: ${positionPairsCount}`);
-    this.logger.log(`   Total Individual Positions: ${allPositions.length} (${positionPairsCount * 2} expected)`);
-    this.logger.log(`   Total Position Value: $${totalPositionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+    this.logger.log(
+      `   Total Individual Positions: ${allPositions.length} (${positionPairsCount * 2} expected)`,
+    );
+    this.logger.log(
+      `   Total Position Value: $${totalPositionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    );
     this.logger.log(`   Total Entry Costs: $${totalEntryCosts.toFixed(4)}`);
-    this.logger.log(`   ───────────────────────────────────────────────────────────────────────────`);
-    
+    this.logger.log(
+      `   ───────────────────────────────────────────────────────────────────────────`,
+    );
+
     this.logger.log(`   💰 EXPECTED RETURNS:`);
     this.logger.log(`      Weighted Avg APY: ${totalEstimatedAPY.toFixed(2)}%`);
-    this.logger.log(`      Total Hourly Return: $${totalExpectedHourlyReturn.toFixed(4)}`);
-    this.logger.log(`      Total Daily Return: $${(totalExpectedHourlyReturn * 24).toFixed(2)}`);
-    this.logger.log(`      Total Annual Return: $${(totalExpectedHourlyReturn * 8760).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-    
+    this.logger.log(
+      `      Total Hourly Return: $${totalExpectedHourlyReturn.toFixed(4)}`,
+    );
+    this.logger.log(
+      `      Total Daily Return: $${(totalExpectedHourlyReturn * 24).toFixed(2)}`,
+    );
+    this.logger.log(
+      `      Total Annual Return: $${(totalExpectedHourlyReturn * 8760).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    );
+
     this.logger.log(`   ⏱️  BREAK-EVEN:`);
-    const avgBreakEvenHours = positionPairsCount > 0 ? totalBreakEvenHours / positionPairsCount : 0;
+    const avgBreakEvenHours =
+      positionPairsCount > 0 ? totalBreakEvenHours / positionPairsCount : 0;
     const avgBreakEvenDays = avgBreakEvenHours / 24;
-    const avgBreakEvenStr = avgBreakEvenHours === Infinity 
-      ? 'N/A'
-      : avgBreakEvenHours < 24
-      ? `${avgBreakEvenHours.toFixed(1)} hours`
-      : `${avgBreakEvenDays.toFixed(1)} days`;
+    const avgBreakEvenStr =
+      avgBreakEvenHours === Infinity
+        ? 'N/A'
+        : avgBreakEvenHours < 24
+          ? `${avgBreakEvenHours.toFixed(1)} hours`
+          : `${avgBreakEvenDays.toFixed(1)} days`;
     this.logger.log(`      Average Time to Break-Even: ${avgBreakEvenStr}`);
-    
+
     this.logger.log(`   📈 PROFIT/LOSS:`);
-    this.logger.log(`      Total Unrealized P&L: $${totalUnrealizedPnl.toFixed(4)} ${totalUnrealizedPnl >= 0 ? '✅' : '❌'}`);
-    this.logger.log(`      Total Realized P&L: $${totalRealizedPnl.toFixed(4)}`);
-    this.logger.log(`      Net P&L: $${(totalUnrealizedPnl + totalRealizedPnl).toFixed(4)}`);
-    
+    this.logger.log(
+      `      Total Unrealized P&L: $${totalUnrealizedPnl.toFixed(4)} ${totalUnrealizedPnl >= 0 ? '✅' : '❌'}`,
+    );
+    this.logger.log(
+      `      Total Realized P&L: $${totalRealizedPnl.toFixed(4)}`,
+    );
+    this.logger.log(
+      `      Net P&L: $${(totalUnrealizedPnl + totalRealizedPnl).toFixed(4)}`,
+    );
+
     // Get cumulative loss from loss tracker
     const cumulativeLoss = this.lossTracker.getCumulativeLoss();
     this.logger.log(`      Cumulative Loss: $${cumulativeLoss.toFixed(4)}`);
-    
+
     this.logger.log(`   📊 EFFICIENCY:`);
     const totalCapital = totalPositionValue / this.leverage; // Collateral deployed
-    const capitalEfficiency = totalCapital > 0 ? (totalExpectedHourlyReturn * 8760 / totalCapital) * 100 : 0;
-    this.logger.log(`      Capital Deployed: $${totalCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-    this.logger.log(`      Capital Efficiency: ${capitalEfficiency.toFixed(2)}% APY`);
+    const capitalEfficiency =
+      totalCapital > 0
+        ? ((totalExpectedHourlyReturn * 8760) / totalCapital) * 100
+        : 0;
+    this.logger.log(
+      `      Capital Deployed: $${totalCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    );
+    this.logger.log(
+      `      Capital Efficiency: ${capitalEfficiency.toFixed(2)}% APY`,
+    );
     this.logger.log(`      Leverage: ${this.leverage}x`);
-    
-    this.logger.log('\n═══════════════════════════════════════════════════════════════════════════════\n');
+
+    this.logger.log(
+      '\n═══════════════════════════════════════════════════════════════════════════════\n',
+    );
   }
 
   /**
    * Execute single position (fallback method)
    */
   private async executeSinglePosition(
-    bestOpportunity: { plan: ArbitrageExecutionPlan; opportunity: ArbitrageOpportunity },
+    bestOpportunity: {
+      plan: ArbitrageExecutionPlan;
+      opportunity: ArbitrageOpportunity;
+    },
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
     result: ArbitrageExecutionResult,
     lossTracker: PositionLossTracker,
   ): Promise<ArbitrageExecutionResult> {
     this.logger.log(
       `🎯 Executing single best opportunity: ${bestOpportunity.opportunity.symbol} ` +
-      `(Expected net return: $${bestOpportunity.plan.expectedNetReturn.toFixed(4)} per period, ` +
-      `APY: ${(bestOpportunity.opportunity.expectedReturn * 100).toFixed(2)}%, ` +
-      `Spread: ${(bestOpportunity.opportunity.spread * 100).toFixed(4)}%)`
+        `(Expected net return: $${bestOpportunity.plan.expectedNetReturn.toFixed(4)} per period, ` +
+        `APY: ${(bestOpportunity.opportunity.expectedReturn * 100).toFixed(2)}%, ` +
+        `Spread: ${(bestOpportunity.opportunity.spread * 100).toFixed(4)}%)`,
     );
 
     // Close existing positions
     const allPositions = await this.getAllPositions(adapters);
     if (allPositions.length > 0) {
-      const closeResult = await this.closeAllPositions(allPositions, adapters, result);
+      const closeResult = await this.closeAllPositions(
+        allPositions,
+        adapters,
+        result,
+      );
       if (closeResult.stillOpen.length > 0) {
         this.logger.warn(
           `⚠️ ${closeResult.stillOpen.length} position(s) failed to close: ` +
-          `${closeResult.stillOpen.map(p => `${p.symbol} on ${p.exchangeType}`).join(', ')}`
+            `${closeResult.stillOpen.map((p) => `${p.symbol} on ${p.exchangeType}`).join(', ')}`,
         );
       }
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     try {
       const { plan, opportunity } = bestOpportunity;
-      
+
       // Get adapters
       const [longAdapter, shortAdapter] = [
         adapters.get(opportunity.longExchange),
@@ -3550,8 +4584,8 @@ export class FundingArbitrageStrategy {
       // Place orders
       this.logger.log(
         `📤 Executing orders for ${opportunity.symbol}: ` +
-        `LONG ${plan.positionSize.toFixed(4)} on ${opportunity.longExchange}, ` +
-        `SHORT ${plan.positionSize.toFixed(4)} on ${opportunity.shortExchange}`
+          `LONG ${plan.positionSize.toFixed(4)} on ${opportunity.longExchange}, ` +
+          `SHORT ${plan.positionSize.toFixed(4)} on ${opportunity.shortExchange}`,
       );
 
       const [longResponse, shortResponse] = await Promise.all([
@@ -3561,15 +4595,18 @@ export class FundingArbitrageStrategy {
 
       if (longResponse.isSuccess() && shortResponse.isSuccess()) {
         // Record position entries
-        const longFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
-        const shortFeeRate = this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
-        const avgMarkPrice = opportunity.longMarkPrice && opportunity.shortMarkPrice
-          ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
-          : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
+        const longFeeRate =
+          this.EXCHANGE_FEE_RATES.get(opportunity.longExchange) || 0.0005;
+        const shortFeeRate =
+          this.EXCHANGE_FEE_RATES.get(opportunity.shortExchange) || 0.0005;
+        const avgMarkPrice =
+          opportunity.longMarkPrice && opportunity.shortMarkPrice
+            ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
+            : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
         const positionSizeUsd = plan.positionSize * avgMarkPrice;
         const longEntryCost = longFeeRate * positionSizeUsd;
         const shortEntryCost = shortFeeRate * positionSizeUsd;
-        
+
         lossTracker.recordPositionEntry(
           opportunity.symbol,
           opportunity.longExchange,
@@ -3582,20 +4619,20 @@ export class FundingArbitrageStrategy {
           shortEntryCost,
           positionSizeUsd,
         );
-        
+
         result.opportunitiesExecuted = 1;
         result.ordersPlaced = 2;
         result.totalExpectedReturn = plan.expectedNetReturn;
 
         this.logger.log(
           `✅ Successfully executed arbitrage for ${opportunity.symbol}: ` +
-          `Expected return: $${plan.expectedNetReturn.toFixed(4)} per period ` +
-          `(APY: ${(opportunity.expectedReturn * 100).toFixed(2)}%)`
+            `Expected return: $${plan.expectedNetReturn.toFixed(4)} per period ` +
+            `(APY: ${(opportunity.expectedReturn * 100).toFixed(2)}%)`,
         );
       } else {
         result.errors.push(
           `Order execution failed for ${opportunity.symbol}: ` +
-          `Long: ${longResponse.error || 'unknown'}, Short: ${shortResponse.error || 'unknown'}`
+            `Long: ${longResponse.error || 'unknown'}, Short: ${shortResponse.error || 'unknown'}`,
         );
       }
     } catch (error: any) {
@@ -3652,9 +4689,10 @@ export class FundingArbitrageStrategy {
     );
 
     // Calculate consistency score (average of both exchanges)
-    const consistencyScore = longMetrics && shortMetrics
-      ? (longMetrics.consistencyScore + shortMetrics.consistencyScore) / 2
-      : longMetrics?.consistencyScore || shortMetrics?.consistencyScore || 0;
+    const consistencyScore =
+      longMetrics && shortMetrics
+        ? (longMetrics.consistencyScore + shortMetrics.consistencyScore) / 2
+        : longMetrics?.consistencyScore || shortMetrics?.consistencyScore || 0;
 
     // Calculate worst-case break-even using minimum historical rates
     let worstCaseBreakEvenHours: number | null = null;
@@ -3664,13 +4702,15 @@ export class FundingArbitrageStrategy {
       const worstCaseShortRate = shortMetrics.minRate;
       const worstCaseSpread = Math.abs(worstCaseShortRate - worstCaseLongRate);
       const worstCaseAPY = worstCaseSpread * periodsPerYear;
-      
-      const avgMarkPrice = opportunity.longMarkPrice && opportunity.shortMarkPrice
-        ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
-        : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
+
+      const avgMarkPrice =
+        opportunity.longMarkPrice && opportunity.shortMarkPrice
+          ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
+          : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
       const positionSizeUsd = plan.positionSize * avgMarkPrice;
-      const worstCaseHourlyReturn = (worstCaseAPY / periodsPerYear) * positionSizeUsd;
-      
+      const worstCaseHourlyReturn =
+        (worstCaseAPY / periodsPerYear) * positionSizeUsd;
+
       if (worstCaseHourlyReturn > 0) {
         const totalCosts = plan.estimatedCosts.total;
         worstCaseBreakEvenHours = totalCosts / worstCaseHourlyReturn;
@@ -3707,15 +4747,22 @@ export class FundingArbitrageStrategy {
     // Get current position's funding rate
     let currentFundingRate = 0;
     try {
-      const rates = await this.aggregator.getFundingRates(currentPosition.symbol);
-      const currentRate = rates.find(r => r.exchange === currentPosition.exchangeType);
+      const rates = await this.aggregator.getFundingRates(
+        currentPosition.symbol,
+      );
+      const currentRate = rates.find(
+        (r) => r.exchange === currentPosition.exchangeType,
+      );
       if (currentRate) {
-        currentFundingRate = currentPosition.side === 'LONG' 
-          ? currentRate.currentRate 
-          : -currentRate.currentRate; // Flip for SHORT
+        currentFundingRate =
+          currentPosition.side === 'LONG'
+            ? currentRate.currentRate
+            : -currentRate.currentRate; // Flip for SHORT
       }
     } catch (error: any) {
-      this.logger.debug(`Failed to get funding rate for current position: ${error.message}`);
+      this.logger.debug(
+        `Failed to get funding rate for current position: ${error.message}`,
+      );
     }
 
     const avgMarkPrice = currentPosition.markPrice || 0;
@@ -3728,35 +4775,41 @@ export class FundingArbitrageStrategy {
       currentFundingRate,
       positionValueUsd,
     );
-    
+
     // Handle case where position was already closed (not in tracker anymore)
-    const isPositionClosed = currentBreakEvenData.remainingBreakEvenHours === Infinity && 
-                             currentBreakEvenData.remainingCost === Infinity &&
-                             currentBreakEvenData.hoursHeld === 0;
-    
-    const currentBreakEvenHours = currentBreakEvenData.remainingBreakEvenHours === Infinity 
-      ? Infinity 
-      : currentBreakEvenData.remainingBreakEvenHours;
-    
+    const isPositionClosed =
+      currentBreakEvenData.remainingBreakEvenHours === Infinity &&
+      currentBreakEvenData.remainingCost === Infinity &&
+      currentBreakEvenData.hoursHeld === 0;
+
+    const currentBreakEvenHours =
+      currentBreakEvenData.remainingBreakEvenHours === Infinity
+        ? Infinity
+        : currentBreakEvenData.remainingBreakEvenHours;
+
     // If position was already closed, treat it as if we have no outstanding costs
-    const p1FeesOutstanding = isPositionClosed ? 0 : currentBreakEvenData.remainingCost;
+    const p1FeesOutstanding = isPositionClosed
+      ? 0
+      : currentBreakEvenData.remainingCost;
 
     // Calculate new position's hourly return
     const periodsPerYear = 24 * 365;
     const newPositionSizeUsd = newPlan.positionSize * avgMarkPrice;
-    const newHourlyReturn = (newOpportunity.expectedReturn / periodsPerYear) * newPositionSizeUsd;
+    const newHourlyReturn =
+      (newOpportunity.expectedReturn / periodsPerYear) * newPositionSizeUsd;
 
     // P1 fees outstanding already calculated above (handles closed positions)
-    
+
     // Calculate P2 costs (entry fees + exit fees + slippage)
     const p2EntryFees = newPlan.estimatedCosts.fees / 2; // Entry is half of total fees
     const p2ExitFees = newPlan.estimatedCosts.fees / 2; // Exit is half of total fees
     const p2Slippage = newPlan.estimatedCosts.slippage; // Slippage cost
-    
+
     // Total costs for P2 = P1 fees outstanding + P2 entry fees + P2 exit fees + P2 slippage
     // This represents all costs we need to earn back with P2
-    const totalCostsP2 = p1FeesOutstanding + p2EntryFees + p2ExitFees + p2Slippage;
-    
+    const totalCostsP2 =
+      p1FeesOutstanding + p2EntryFees + p2ExitFees + p2Slippage;
+
     // Also get switching costs breakdown for logging
     const switchingCosts = this.lossTracker.getSwitchingCosts(
       currentPosition,
@@ -3765,7 +4818,7 @@ export class FundingArbitrageStrategy {
       p2ExitFees,
       positionValueUsd,
     );
-    
+
     // Calculate P2 time-to-break-even with all costs
     // TTBE = total costs / hourly return
     let p2TimeToBreakEven: number;
@@ -3779,7 +4832,7 @@ export class FundingArbitrageStrategy {
     if (p2TimeToBreakEven < currentBreakEvenHours) {
       this.logger.debug(
         `Rebalancing ${currentPosition.symbol}: P1 TTBE=${currentBreakEvenHours === Infinity ? '∞' : currentBreakEvenHours.toFixed(1)}h, ` +
-        `P2 TTBE=${p2TimeToBreakEven === Infinity ? '∞' : p2TimeToBreakEven.toFixed(1)}h → APPROVED`
+          `P2 TTBE=${p2TimeToBreakEven === Infinity ? '∞' : p2TimeToBreakEven.toFixed(1)}h → APPROVED`,
       );
     }
 
@@ -3790,12 +4843,13 @@ export class FundingArbitrageStrategy {
     if (newPlan.expectedNetReturn > 0) {
       this.logger.log(
         `✅ Rebalancing approved: New opportunity is instantly profitable ` +
-        `(net return: $${newPlan.expectedNetReturn.toFixed(4)}/period)`
+          `(net return: $${newPlan.expectedNetReturn.toFixed(4)}/period)`,
       );
       return {
         shouldRebalance: true,
         reason: 'New opportunity is instantly profitable',
-        currentBreakEvenHours: currentBreakEvenHours === Infinity ? null : currentBreakEvenHours,
+        currentBreakEvenHours:
+          currentBreakEvenHours === Infinity ? null : currentBreakEvenHours,
         newBreakEvenHours: null, // Not applicable for profitable positions
       };
     }
@@ -3805,13 +4859,15 @@ export class FundingArbitrageStrategy {
       // Current position is already profitable, don't switch unless new is instantly profitable
       this.logger.log(
         `⏸️  Skipping rebalance: Current position already profitable ` +
-        `(fees earned: $${currentBreakEvenData.feesEarnedSoFar.toFixed(4)} > costs: $${(currentBreakEvenData.remainingCost + currentBreakEvenData.feesEarnedSoFar).toFixed(4)})`
+          `(fees earned: $${currentBreakEvenData.feesEarnedSoFar.toFixed(4)} > costs: $${(currentBreakEvenData.remainingCost + currentBreakEvenData.feesEarnedSoFar).toFixed(4)})`,
       );
       return {
         shouldRebalance: false,
-        reason: 'Current position already profitable, new position not instantly profitable',
+        reason:
+          'Current position already profitable, new position not instantly profitable',
         currentBreakEvenHours: 0,
-        newBreakEvenHours: p2TimeToBreakEven === Infinity ? null : p2TimeToBreakEven,
+        newBreakEvenHours:
+          p2TimeToBreakEven === Infinity ? null : p2TimeToBreakEven,
       };
     }
 
@@ -3821,17 +4877,20 @@ export class FundingArbitrageStrategy {
       if (p2TimeToBreakEven < Infinity) {
         this.logger.log(
           `✅ Rebalancing approved: Current position never breaks even, ` +
-          `new position has finite TTBE (${p2TimeToBreakEven.toFixed(2)}h)`
+            `new position has finite TTBE (${p2TimeToBreakEven.toFixed(2)}h)`,
         );
         return {
           shouldRebalance: true,
-          reason: 'Current position never breaks even, new position has finite break-even time',
+          reason:
+            'Current position never breaks even, new position has finite break-even time',
           currentBreakEvenHours: null,
           newBreakEvenHours: p2TimeToBreakEven,
         };
       }
       // Both never break even - avoid churn
-      this.logger.log(`⏸️  Skipping rebalance: Both positions never break even (avoiding churn)`);
+      this.logger.log(
+        `⏸️  Skipping rebalance: Both positions never break even (avoiding churn)`,
+      );
       return {
         shouldRebalance: false,
         reason: 'Both positions never break even',
@@ -3844,7 +4903,7 @@ export class FundingArbitrageStrategy {
     if (p2TimeToBreakEven === Infinity) {
       this.logger.log(
         `⏸️  Skipping rebalance: New position never breaks even ` +
-        `(P1 remaining TTBE: ${currentBreakEvenHours.toFixed(2)}h)`
+          `(P1 remaining TTBE: ${currentBreakEvenHours.toFixed(2)}h)`,
       );
       return {
         shouldRebalance: false,
@@ -3859,11 +4918,13 @@ export class FundingArbitrageStrategy {
     // No margin needed - if it's faster, it's better
     if (p2TimeToBreakEven < currentBreakEvenHours) {
       const hoursSaved = currentBreakEvenHours - p2TimeToBreakEven;
-      const improvementPercent = ((currentBreakEvenHours - p2TimeToBreakEven) / currentBreakEvenHours) * 100;
-      
+      const improvementPercent =
+        ((currentBreakEvenHours - p2TimeToBreakEven) / currentBreakEvenHours) *
+        100;
+
       this.logger.log(
         `✅ Rebalancing approved: P2 TTBE (${p2TimeToBreakEven.toFixed(2)}h) < P1 remaining TTBE (${currentBreakEvenHours.toFixed(2)}h) ` +
-        `→ saves ${hoursSaved.toFixed(2)}h (${improvementPercent.toFixed(1)}% faster)`
+          `→ saves ${hoursSaved.toFixed(2)}h (${improvementPercent.toFixed(1)}% faster)`,
       );
       return {
         shouldRebalance: true,
@@ -3877,7 +4938,7 @@ export class FundingArbitrageStrategy {
     const hoursLost = p2TimeToBreakEven - currentBreakEvenHours;
     this.logger.log(
       `⏸️  Skipping rebalance: P1 remaining TTBE (${currentBreakEvenHours.toFixed(2)}h) < P2 TTBE (${p2TimeToBreakEven.toFixed(2)}h) ` +
-      `→ would lose ${hoursLost.toFixed(2)}h`
+        `→ would lose ${hoursLost.toFixed(2)}h`,
     );
     return {
       shouldRebalance: false,
@@ -3921,30 +4982,39 @@ export class FundingArbitrageStrategy {
     for (const item of allOpportunities) {
       if (!item.plan) continue; // Skip if no plan
 
-      const historical = this.evaluateOpportunityWithHistory(item.opportunity, item.plan);
-      
+      const historical = this.evaluateOpportunityWithHistory(
+        item.opportunity,
+        item.plan,
+      );
+
       // Calculate score: (consistencyScore * avgHistoricalRate * liquidity) / worstCaseBreakEvenHours
       // Higher score = better worst-case opportunity
       const longMetrics = historical.historicalMetrics.long;
       const shortMetrics = historical.historicalMetrics.short;
-      const avgHistoricalRate = longMetrics && shortMetrics
-        ? (longMetrics.averageRate + shortMetrics.averageRate) / 2
-        : 0;
-      
+      const avgHistoricalRate =
+        longMetrics && shortMetrics
+          ? (longMetrics.averageRate + shortMetrics.averageRate) / 2
+          : 0;
+
       // Use open interest as liquidity proxy
       const longOI = item.opportunity.longOpenInterest || 0;
       const shortOI = item.opportunity.shortOpenInterest || 0;
       const minOI = Math.min(longOI, shortOI);
       // Normalize liquidity score: 0-1 scale based on OI (higher OI = better liquidity)
       // Use log scale to avoid extreme values: log10(OI/1000) / 10, clamped to [0, 1]
-      const liquidity = minOI > 0 
-        ? Math.min(1, Math.max(0, Math.log10(Math.max(minOI / 1000, 1)) / 10))
-        : 0.1; // Default low liquidity score if OI unavailable
-      
+      const liquidity =
+        minOI > 0
+          ? Math.min(1, Math.max(0, Math.log10(Math.max(minOI / 1000, 1)) / 10))
+          : 0.1; // Default low liquidity score if OI unavailable
+
       const worstCaseBreakEven = historical.worstCaseBreakEvenHours || Infinity;
-      const score = worstCaseBreakEven < Infinity && worstCaseBreakEven > 0
-        ? (historical.consistencyScore * Math.abs(avgHistoricalRate) * liquidity) / worstCaseBreakEven
-        : 0;
+      const score =
+        worstCaseBreakEven < Infinity && worstCaseBreakEven > 0
+          ? (historical.consistencyScore *
+              Math.abs(avgHistoricalRate) *
+              liquidity) /
+            worstCaseBreakEven
+          : 0;
 
       evaluated.push({
         opportunity: item.opportunity,
@@ -3969,17 +5039,20 @@ export class FundingArbitrageStrategy {
 
     if (worstCaseBreakEvenDays > this.MAX_WORST_CASE_BREAK_EVEN_DAYS) {
       this.logger.warn(
-        `Worst-case opportunity has break-even > ${this.MAX_WORST_CASE_BREAK_EVEN_DAYS} days, skipping`
+        `Worst-case opportunity has break-even > ${this.MAX_WORST_CASE_BREAK_EVEN_DAYS} days, skipping`,
       );
       return null;
     }
 
-    const reason = `Worst-case scenario selection: ` +
+    const reason =
+      `Worst-case scenario selection: ` +
       `Consistency: ${(best.historical.consistencyScore * 100).toFixed(1)}%, ` +
       `Worst-case break-even: ${worstCaseBreakEvenDays.toFixed(1)} days, ` +
       `Score: ${best.score.toFixed(4)}`;
 
-    this.logger.log(`🎯 Selected WORST-CASE opportunity: ${best.opportunity.symbol} - ${reason}`);
+    this.logger.log(
+      `🎯 Selected WORST-CASE opportunity: ${best.opportunity.symbol} - ${reason}`,
+    );
 
     return {
       opportunity: best.opportunity,
@@ -4000,7 +5073,9 @@ export class FundingArbitrageStrategy {
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
     result: ArbitrageExecutionResult,
   ): Promise<ArbitrageExecutionResult> {
-    this.logger.log(`⚠️  Executing WORST-CASE scenario opportunity: ${worstCase.reason}`);
+    this.logger.log(
+      `⚠️  Executing WORST-CASE scenario opportunity: ${worstCase.reason}`,
+    );
 
     // Close existing positions first
     const allPositions = await this.getAllPositions(adapters);
@@ -4031,11 +5106,21 @@ export class FundingArbitrageStrategy {
       }
 
       // Record entry
-      const longFeeRate = this.EXCHANGE_FEE_RATES.get(worstCase.opportunity.longExchange) || 0.0005;
-      const shortFeeRate = this.EXCHANGE_FEE_RATES.get(worstCase.opportunity.shortExchange) || 0.0005;
-      const avgMarkPrice = worstCase.opportunity.longMarkPrice && worstCase.opportunity.shortMarkPrice
-        ? (worstCase.opportunity.longMarkPrice + worstCase.opportunity.shortMarkPrice) / 2
-        : worstCase.opportunity.longMarkPrice || worstCase.opportunity.shortMarkPrice || 0;
+      const longFeeRate =
+        this.EXCHANGE_FEE_RATES.get(worstCase.opportunity.longExchange) ||
+        0.0005;
+      const shortFeeRate =
+        this.EXCHANGE_FEE_RATES.get(worstCase.opportunity.shortExchange) ||
+        0.0005;
+      const avgMarkPrice =
+        worstCase.opportunity.longMarkPrice &&
+        worstCase.opportunity.shortMarkPrice
+          ? (worstCase.opportunity.longMarkPrice +
+              worstCase.opportunity.shortMarkPrice) /
+            2
+          : worstCase.opportunity.longMarkPrice ||
+            worstCase.opportunity.shortMarkPrice ||
+            0;
       const positionSizeUsd = worstCase.plan.positionSize * avgMarkPrice;
       const entryCost = (longFeeRate + shortFeeRate) * positionSizeUsd;
 
@@ -4053,8 +5138,12 @@ export class FundingArbitrageStrategy {
       );
 
       // Place orders
-      const longResponse = await longAdapter.placeOrder(worstCase.plan.longOrder);
-      const shortResponse = await shortAdapter.placeOrder(worstCase.plan.shortOrder);
+      const longResponse = await longAdapter.placeOrder(
+        worstCase.plan.longOrder,
+      );
+      const shortResponse = await shortAdapter.placeOrder(
+        worstCase.plan.shortOrder,
+      );
 
       if (longResponse.isSuccess() && shortResponse.isSuccess()) {
         result.opportunitiesExecuted = 1;
@@ -4064,8 +5153,12 @@ export class FundingArbitrageStrategy {
         result.errors.push(`Failed to execute worst-case opportunity orders`);
       }
     } catch (error: any) {
-      result.errors.push(`Error executing worst-case opportunity: ${error.message}`);
-      this.logger.error(`Failed to execute worst-case opportunity: ${error.message}`);
+      result.errors.push(
+        `Error executing worst-case opportunity: ${error.message}`,
+      );
+      this.logger.error(
+        `Failed to execute worst-case opportunity: ${error.message}`,
+      );
     }
 
     return result;
@@ -4075,72 +5168,135 @@ export class FundingArbitrageStrategy {
    * Log comprehensive investor report with all risk metrics
    */
   private logInvestorReport(
-    riskMetrics: import('../../infrastructure/services/PortfolioRiskAnalyzer').PortfolioRiskMetrics & { dataQuality?: any },
-    optimalPortfolio: { allocations: Map<string, number>; totalPortfolio: number; aggregateAPY: number; opportunityCount: number },
+    riskMetrics: import('../../infrastructure/services/PortfolioRiskAnalyzer').PortfolioRiskMetrics & {
+      dataQuality?: any;
+    },
+    optimalPortfolio: {
+      allocations: Map<string, number>;
+      totalPortfolio: number;
+      aggregateAPY: number;
+      opportunityCount: number;
+    },
   ): void {
     this.logger.log('\n📊 PORTFOLIO RISK ANALYSIS (Investor Report):');
     this.logger.log('='.repeat(100));
-    
+
     // Data quality check
     const dataQuality = riskMetrics.dataQuality;
     if (dataQuality?.hasIssues) {
       this.logger.warn('\n⚠️  DATA QUALITY WARNINGS:');
-      dataQuality.warnings.forEach((warning: string) => this.logger.warn(`  - ${warning}`));
+      dataQuality.warnings.forEach((warning: string) =>
+        this.logger.warn(`  - ${warning}`),
+      );
     }
-    
+
     // Section 1: Expected Returns & Confidence
     this.logger.log('\nEXPECTED RETURNS:');
-    this.logger.log(`  Expected APY: ${(riskMetrics.expectedAPY * 100).toFixed(2)}%`);
+    this.logger.log(
+      `  Expected APY: ${(riskMetrics.expectedAPY * 100).toFixed(2)}%`,
+    );
     if (dataQuality?.hasSufficientDataForConfidenceInterval) {
-      this.logger.log(`  ${(riskMetrics.expectedAPYConfidenceInterval.confidence * 100).toFixed(0)}% Confidence Interval: ${(riskMetrics.expectedAPYConfidenceInterval.lower * 100).toFixed(2)}% - ${(riskMetrics.expectedAPYConfidenceInterval.upper * 100).toFixed(2)}%`);
+      this.logger.log(
+        `  ${(riskMetrics.expectedAPYConfidenceInterval.confidence * 100).toFixed(0)}% Confidence Interval: ${(riskMetrics.expectedAPYConfidenceInterval.lower * 100).toFixed(2)}% - ${(riskMetrics.expectedAPYConfidenceInterval.upper * 100).toFixed(2)}%`,
+      );
     } else {
-      this.logger.log(`  ${(riskMetrics.expectedAPYConfidenceInterval.confidence * 100).toFixed(0)}% Confidence Interval: N/A (insufficient historical data)`);
+      this.logger.log(
+        `  ${(riskMetrics.expectedAPYConfidenceInterval.confidence * 100).toFixed(0)}% Confidence Interval: N/A (insufficient historical data)`,
+      );
     }
-    
+
     // Section 2: Risk Metrics
     this.logger.log('\nRISK METRICS:');
-    this.logger.log(`  Worst-Case APY: ${(riskMetrics.worstCaseAPY * 100).toFixed(2)}% (if all spreads reverse)`);
-    if (dataQuality?.hasSufficientDataForVaR && riskMetrics.valueAtRisk95 !== 0) {
-      this.logger.log(`  Value at Risk (95%): -$${(Math.abs(riskMetrics.valueAtRisk95) / 1000).toFixed(1)}k (worst month loss)`);
+    this.logger.log(
+      `  Worst-Case APY: ${(riskMetrics.worstCaseAPY * 100).toFixed(2)}% (if all spreads reverse)`,
+    );
+    if (
+      dataQuality?.hasSufficientDataForVaR &&
+      riskMetrics.valueAtRisk95 !== 0
+    ) {
+      this.logger.log(
+        `  Value at Risk (95%): -$${(Math.abs(riskMetrics.valueAtRisk95) / 1000).toFixed(1)}k (worst month loss)`,
+      );
     } else {
-      this.logger.log(`  Value at Risk (95%): N/A (insufficient historical data - need 2+ months)`);
+      this.logger.log(
+        `  Value at Risk (95%): N/A (insufficient historical data - need 2+ months)`,
+      );
     }
-    if (dataQuality?.hasSufficientDataForDrawdown && riskMetrics.maximumDrawdown !== 0) {
-      this.logger.log(`  Maximum Drawdown: -$${(Math.abs(riskMetrics.maximumDrawdown) / 1000).toFixed(1)}k (estimated)`);
+    if (
+      dataQuality?.hasSufficientDataForDrawdown &&
+      riskMetrics.maximumDrawdown !== 0
+    ) {
+      this.logger.log(
+        `  Maximum Drawdown: -$${(Math.abs(riskMetrics.maximumDrawdown) / 1000).toFixed(1)}k (estimated)`,
+      );
     } else {
-      this.logger.log(`  Maximum Drawdown: N/A (insufficient historical data - need 1+ month)`);
+      this.logger.log(
+        `  Maximum Drawdown: N/A (insufficient historical data - need 1+ month)`,
+      );
     }
-    this.logger.log(`  Sharpe Ratio: ${riskMetrics.sharpeRatio.toFixed(2)} (risk-adjusted return)`);
-    
+    this.logger.log(
+      `  Sharpe Ratio: ${riskMetrics.sharpeRatio.toFixed(2)} (risk-adjusted return)`,
+    );
+
     // Section 3: Historical Validation
     this.logger.log('\nHISTORICAL VALIDATION:');
     if (dataQuality?.hasSufficientDataForBacktest) {
-      this.logger.log(`  Last 30 Days: ${(riskMetrics.historicalBacktest.last30Days.apy * 100).toFixed(2)}% APY ${riskMetrics.historicalBacktest.last30Days.realized ? '(realized)' : '(estimated)'}`);
-      this.logger.log(`  Last 90 Days: ${(riskMetrics.historicalBacktest.last90Days.apy * 100).toFixed(2)}% APY ${riskMetrics.historicalBacktest.last90Days.realized ? '(realized)' : '(estimated)'}`);
+      this.logger.log(
+        `  Last 30 Days: ${(riskMetrics.historicalBacktest.last30Days.apy * 100).toFixed(2)}% APY ${riskMetrics.historicalBacktest.last30Days.realized ? '(realized)' : '(estimated)'}`,
+      );
+      this.logger.log(
+        `  Last 90 Days: ${(riskMetrics.historicalBacktest.last90Days.apy * 100).toFixed(2)}% APY ${riskMetrics.historicalBacktest.last90Days.realized ? '(realized)' : '(estimated)'}`,
+      );
       if (riskMetrics.historicalBacktest.worstMonth.month !== 'N/A') {
-        this.logger.log(`  Worst Month: ${(riskMetrics.historicalBacktest.worstMonth.apy * 100).toFixed(2)}% APY (${riskMetrics.historicalBacktest.worstMonth.month})`);
-        this.logger.log(`  Best Month: ${(riskMetrics.historicalBacktest.bestMonth.apy * 100).toFixed(2)}% APY (${riskMetrics.historicalBacktest.bestMonth.month})`);
+        this.logger.log(
+          `  Worst Month: ${(riskMetrics.historicalBacktest.worstMonth.apy * 100).toFixed(2)}% APY (${riskMetrics.historicalBacktest.worstMonth.month})`,
+        );
+        this.logger.log(
+          `  Best Month: ${(riskMetrics.historicalBacktest.bestMonth.apy * 100).toFixed(2)}% APY (${riskMetrics.historicalBacktest.bestMonth.month})`,
+        );
       } else {
         this.logger.log(`  Worst/Best Month: N/A (insufficient monthly data)`);
       }
     } else {
-      this.logger.log(`  Historical Backtest: N/A (insufficient historical data - need 2+ months)`);
+      this.logger.log(
+        `  Historical Backtest: N/A (insufficient historical data - need 2+ months)`,
+      );
     }
-    
+
     // Section 4: Stress Test Scenarios
     this.logger.log('\nSTRESS TEST SCENARIOS:');
     riskMetrics.stressTests.forEach((scenario, index) => {
-      const riskEmoji = scenario.riskLevel === 'CRITICAL' ? '🔴' : scenario.riskLevel === 'HIGH' ? '🟠' : scenario.riskLevel === 'MEDIUM' ? '🟡' : '🟢';
-      this.logger.log(`  ${index + 1}. ${scenario.scenario}: ${(scenario.apy * 100).toFixed(2)}% APY → ${riskEmoji} ${scenario.riskLevel} risk, ${scenario.timeToRecover} to recover`);
+      const riskEmoji =
+        scenario.riskLevel === 'CRITICAL'
+          ? '🔴'
+          : scenario.riskLevel === 'HIGH'
+            ? '🟠'
+            : scenario.riskLevel === 'MEDIUM'
+              ? '🟡'
+              : '🟢';
+      this.logger.log(
+        `  ${index + 1}. ${scenario.scenario}: ${(scenario.apy * 100).toFixed(2)}% APY → ${riskEmoji} ${scenario.riskLevel} risk, ${scenario.timeToRecover} to recover`,
+      );
       this.logger.log(`     ${scenario.description}`);
     });
-    
+
     // Section 5: Concentration & Correlation Risks
     this.logger.log('\nCONCENTRATION RISK:');
-    const concentrationEmoji = riskMetrics.concentrationRisk.riskLevel === 'HIGH' ? '🔴' : riskMetrics.concentrationRisk.riskLevel === 'MEDIUM' ? '🟡' : '🟢';
-    this.logger.log(`  Max Allocation: ${riskMetrics.concentrationRisk.maxAllocationPercent.toFixed(1)}% ${concentrationEmoji} ${riskMetrics.concentrationRisk.riskLevel} RISK${riskMetrics.concentrationRisk.maxAllocationPercent > 25 ? ' - exceeds 25% threshold' : ''}`);
-    this.logger.log(`  Top 3 Allocations: ${riskMetrics.concentrationRisk.top3AllocationPercent.toFixed(1)}%`);
-    this.logger.log(`  Herfindahl Index: ${riskMetrics.concentrationRisk.herfindahlIndex.toFixed(3)} (${riskMetrics.concentrationRisk.herfindahlIndex > 0.25 ? 'HIGH' : riskMetrics.concentrationRisk.herfindahlIndex > 0.15 ? 'MODERATE' : 'LOW'} concentration)`);
+    const concentrationEmoji =
+      riskMetrics.concentrationRisk.riskLevel === 'HIGH'
+        ? '🔴'
+        : riskMetrics.concentrationRisk.riskLevel === 'MEDIUM'
+          ? '🟡'
+          : '🟢';
+    this.logger.log(
+      `  Max Allocation: ${riskMetrics.concentrationRisk.maxAllocationPercent.toFixed(1)}% ${concentrationEmoji} ${riskMetrics.concentrationRisk.riskLevel} RISK${riskMetrics.concentrationRisk.maxAllocationPercent > 25 ? ' - exceeds 25% threshold' : ''}`,
+    );
+    this.logger.log(
+      `  Top 3 Allocations: ${riskMetrics.concentrationRisk.top3AllocationPercent.toFixed(1)}%`,
+    );
+    this.logger.log(
+      `  Herfindahl Index: ${riskMetrics.concentrationRisk.herfindahlIndex.toFixed(3)} (${riskMetrics.concentrationRisk.herfindahlIndex > 0.25 ? 'HIGH' : riskMetrics.concentrationRisk.herfindahlIndex > 0.15 ? 'MODERATE' : 'LOW'} concentration)`,
+    );
     if (riskMetrics.concentrationRisk.maxAllocationPercent > 25) {
       // Find which symbol has the max allocation
       let maxSymbol = 'N/A';
@@ -4151,34 +5307,64 @@ export class FundingArbitrageStrategy {
           maxSymbol = symbol;
         }
       });
-      this.logger.log(`  Recommendation: Reduce ${maxSymbol} allocation to <25%`);
+      this.logger.log(
+        `  Recommendation: Reduce ${maxSymbol} allocation to <25%`,
+      );
     }
-    
+
     this.logger.log('\nCORRELATION RISK:');
-    if (dataQuality?.hasSufficientDataForCorrelation && riskMetrics.correlationRisk.correlatedPairs.length >= 0) {
-      const correlationEmoji = riskMetrics.correlationRisk.maxCorrelation > 0.7 ? '🟠' : riskMetrics.correlationRisk.maxCorrelation > 0.5 ? '🟡' : '🟢';
-      this.logger.log(`  Average Correlation: ${riskMetrics.correlationRisk.averageCorrelation.toFixed(3)} (${Math.abs(riskMetrics.correlationRisk.averageCorrelation) < 0.3 ? 'LOW' : 'MODERATE'} - opportunities are mostly ${Math.abs(riskMetrics.correlationRisk.averageCorrelation) < 0.3 ? 'independent' : 'correlated'})`);
-      this.logger.log(`  Max Correlation: ${riskMetrics.correlationRisk.maxCorrelation.toFixed(3)} ${correlationEmoji}`);
+    if (
+      dataQuality?.hasSufficientDataForCorrelation &&
+      riskMetrics.correlationRisk.correlatedPairs.length >= 0
+    ) {
+      const correlationEmoji =
+        riskMetrics.correlationRisk.maxCorrelation > 0.7
+          ? '🟠'
+          : riskMetrics.correlationRisk.maxCorrelation > 0.5
+            ? '🟡'
+            : '🟢';
+      this.logger.log(
+        `  Average Correlation: ${riskMetrics.correlationRisk.averageCorrelation.toFixed(3)} (${Math.abs(riskMetrics.correlationRisk.averageCorrelation) < 0.3 ? 'LOW' : 'MODERATE'} - opportunities are mostly ${Math.abs(riskMetrics.correlationRisk.averageCorrelation) < 0.3 ? 'independent' : 'correlated'})`,
+      );
+      this.logger.log(
+        `  Max Correlation: ${riskMetrics.correlationRisk.maxCorrelation.toFixed(3)} ${correlationEmoji}`,
+      );
       if (riskMetrics.correlationRisk.correlatedPairs.length > 0) {
-        this.logger.log(`  Highly Correlated Pairs (|correlation| > 0.7): ${riskMetrics.correlationRisk.correlatedPairs.length} pairs`);
-        riskMetrics.correlationRisk.correlatedPairs.slice(0, 5).forEach(pair => {
-          this.logger.log(`    - ${pair.pair1} / ${pair.pair2}: ${pair.correlation.toFixed(3)}`);
-        });
+        this.logger.log(
+          `  Highly Correlated Pairs (|correlation| > 0.7): ${riskMetrics.correlationRisk.correlatedPairs.length} pairs`,
+        );
+        riskMetrics.correlationRisk.correlatedPairs
+          .slice(0, 5)
+          .forEach((pair) => {
+            this.logger.log(
+              `    - ${pair.pair1} / ${pair.pair2}: ${pair.correlation.toFixed(3)}`,
+            );
+          });
       } else {
-        this.logger.log(`  Highly Correlated Pairs: None (all pairs have |correlation| ≤ 0.7)`);
+        this.logger.log(
+          `  Highly Correlated Pairs: None (all pairs have |correlation| ≤ 0.7)`,
+        );
       }
     } else {
-      this.logger.log(`  Correlation Analysis: N/A (insufficient historical data - need 10+ matched pairs)`);
+      this.logger.log(
+        `  Correlation Analysis: N/A (insufficient historical data - need 10+ matched pairs)`,
+      );
     }
-    
+
     // Section 6: Volatility Breakdown by Asset
     this.logger.log('\nVOLATILITY BREAKDOWN:');
-    riskMetrics.volatilityBreakdown.forEach(item => {
-      const riskEmoji = item.riskLevel === 'HIGH' ? '🔴' : item.riskLevel === 'MEDIUM' ? '🟡' : '🟢';
-      this.logger.log(`  ${item.symbol}: $${(item.allocation / 1000).toFixed(1)}k (${item.allocationPercent.toFixed(1)}%) | Stability: ${(item.stabilityScore * 100).toFixed(0)}% | Risk: ${riskEmoji} ${item.riskLevel}`);
+    riskMetrics.volatilityBreakdown.forEach((item) => {
+      const riskEmoji =
+        item.riskLevel === 'HIGH'
+          ? '🔴'
+          : item.riskLevel === 'MEDIUM'
+            ? '🟡'
+            : '🟢';
+      this.logger.log(
+        `  ${item.symbol}: $${(item.allocation / 1000).toFixed(1)}k (${item.allocationPercent.toFixed(1)}%) | Stability: ${(item.stabilityScore * 100).toFixed(0)}% | Risk: ${riskEmoji} ${item.riskLevel}`,
+      );
     });
-    
+
     this.logger.log('\n' + '='.repeat(100));
   }
 }
-
