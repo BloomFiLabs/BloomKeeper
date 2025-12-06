@@ -1834,6 +1834,16 @@ export class FundingArbitrageStrategy {
       this.logger.log('\n📊 Ladder Allocation Strategy:');
       this.logger.log(`   Starting Capital: $${totalAvailableCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
       this.logger.log(`   Existing Positions: ${existingPositionsBySymbol.size} symbol(s)`);
+      if (existingPositionsBySymbol.size > 0) {
+        const existingSymbols = Array.from(existingPositionsBySymbol.keys());
+        this.logger.log(`   Existing Position Symbols: ${existingSymbols.join(', ')}`);
+        for (const [sym, pair] of existingPositionsBySymbol.entries()) {
+          this.logger.log(
+            `     - ${sym}: $${pair.currentValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
+            `($${pair.currentCollateral.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} collateral)`
+          );
+        }
+      }
       
       // First pass: Top up existing positions that are below their max
       for (let i = 0; i < opportunitiesWithMaxPortfolio.length; i++) {
@@ -1882,55 +1892,90 @@ export class FundingArbitrageStrategy {
                 `Remaining: $${remainingCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
               );
               
-              // If we've topped up to max, mark as complete
+              // If we've topped up to max, we can move to next position
               if (topUpAmount >= additionalCollateralNeeded - 0.01) {
                 cumulativeCapitalUsed = capitalRangeStart + maxCollateral; // Set to full max
+                this.logger.log(
+                  `   ✅ Position ${i + 1} (${symbol}) is now FULLY FILLED. Moving to Position ${i + 2}...`
+                );
                 continue; // Move to next position
+              } else {
+                // Position is partially filled - stop here, don't move to next position
+                this.logger.log(
+                  `   ⏸️  Position ${i + 1} (${symbol}) is partially filled. ` +
+                  `Need $${(additionalCollateralNeeded - topUpAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} more ` +
+                  `to complete before moving to Position ${i + 2}.`
+                );
+                break; // Stop here - don't move to next position until this one is full
               }
+            } else {
+              // Can't top up even $0.01 - stop here
+              this.logger.log(
+                `   ⏸️  Position ${i + 1} (${symbol}): ` +
+                `Insufficient capital to top up (need $${additionalCollateralNeeded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). ` +
+                `Stopping ladder allocation.`
+              );
+              break;
             }
           } else {
-            // Position is already at or above max - skip to next
+            // Position is already at or above max - move to next position
             cumulativeCapitalUsed += maxCollateral;
             this.logger.log(
               `   ✅ Position ${i + 1} (${symbol}): ` +
               `Already at max ($${existingPair.currentValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). ` +
-              `Skipping to next position.`
+              `Moving to Position ${i + 2}...`
             );
             continue;
           }
         } else {
-          // No existing position - check if we can open a new one completely
-          const requiredCollateral = maxCollateral;
-          
-          if (remainingCapital >= requiredCollateral) {
-            // We can fill this position completely
+          // No existing position - fill it partially with whatever capital we have
+          // This is Position 1 in the ladder - we fill it until it's maxed, then move to Position 2
+          if (remainingCapital > 0.01) { // Need at least $0.01
             const capitalRangeStart = cumulativeCapitalUsed;
-            cumulativeCapitalUsed += requiredCollateral;
+            const partialCollateral = Math.min(remainingCapital, maxCollateral);
+            const partialMaxPortfolio = partialCollateral * this.leverage;
+            
+            cumulativeCapitalUsed += partialCollateral;
             const capitalRangeEnd = cumulativeCapitalUsed;
             
             selectedOpportunities.push({
               ...item,
+              maxPortfolioFor35APY: partialMaxPortfolio,
               isExisting: false,
+              additionalCollateralNeeded: partialCollateral,
             });
-            remainingCapital -= requiredCollateral;
+            remainingCapital -= partialCollateral;
+            
+            const isFullyFilled = partialCollateral >= maxCollateral - 0.01;
+            const status = isFullyFilled ? 'Filled completely' : 'Filled partially';
             
             this.logger.log(
-              `   ✅ Position ${i + 1} (${symbol}): ` +
-              `NEW - Filled completely at $${maxPortfolio.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-              `(Collateral: $${requiredCollateral.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). ` +
+              `   ${isFullyFilled ? '✅' : '🔄'} Position ${i + 1} (${symbol}): ` +
+              `NEW - ${status} at $${partialMaxPortfolio.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
+              `(Collateral: $${partialCollateral.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
+              `of $${maxCollateral.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} max). ` +
               `Capital range: $${capitalRangeStart.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
               `to $${capitalRangeEnd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. ` +
               `Remaining: $${remainingCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
             );
+            
+            // If this position is fully filled, we can move to the next position
+            // Otherwise, we stop here and wait for more capital
+            if (!isFullyFilled) {
+              this.logger.log(
+                `   ⏸️  Position ${i + 1} (${symbol}) is partially filled. ` +
+                `Need $${(maxCollateral - partialCollateral).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} more ` +
+                `to complete before moving to Position ${i + 2}.`
+              );
+              break; // Stop here - don't move to next position until this one is full
+            }
           } else {
-            // Can't afford to fill this position completely - skip it and move to next
+            // No capital left - stop
             this.logger.log(
               `   ⏸️  Position ${i + 1} (${symbol}): ` +
-              `Skipped - need $${requiredCollateral.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-              `but only have $${remainingCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. ` +
-              `Moving to next position...`
+              `No capital remaining. Stopping ladder allocation.`
             );
-            // Continue to next position (don't break - might be able to fill smaller positions)
+            break;
           }
         }
       }
