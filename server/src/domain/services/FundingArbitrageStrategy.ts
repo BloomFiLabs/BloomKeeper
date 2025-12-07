@@ -1590,6 +1590,12 @@ export class FundingArbitrageStrategy {
         const adapter = adapters.get(exchange);
         if (adapter) {
           try {
+            // Clear cache before fetching balance to ensure fresh data
+            // Hyperliquid adapter has a clearBalanceCache method
+            if ('clearBalanceCache' in adapter && typeof (adapter as any).clearBalanceCache === 'function') {
+              (adapter as any).clearBalanceCache();
+            }
+            
             const totalBalance = await adapter.getBalance();
             const marginUsed = marginUsedPerExchange.get(exchange) ?? 0;
             // Available balance = total balance - margin already used in existing positions

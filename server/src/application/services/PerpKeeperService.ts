@@ -216,6 +216,13 @@ export class PerpKeeperService implements IPerpKeeperService {
 
   async getBalance(exchangeType: ExchangeType): Promise<number> {
     const adapter = this.getExchangeAdapter(exchangeType);
+    
+    // Clear cache before fetching balance to ensure fresh data
+    // Hyperliquid adapter has a clearBalanceCache method
+    if ('clearBalanceCache' in adapter && typeof (adapter as any).clearBalanceCache === 'function') {
+      (adapter as any).clearBalanceCache();
+    }
+    
     return await adapter.getBalance();
   }
 

@@ -35,7 +35,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
   // Balance cache: reduce clearinghouseState calls (weight 2 each, 1200 weight/minute limit)
   private balanceCache: { balance: number; timestamp: number } | null = null;
-  private readonly BALANCE_CACHE_TTL = 30000; // 30 seconds cache
+  private readonly BALANCE_CACHE_TTL = 5000; // 5 seconds cache (reduced from 30s to ensure fresh data)
 
   constructor(
     private readonly configService: ConfigService,
@@ -370,6 +370,8 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
   async getPositions(): Promise<PerpPosition[]> {
     try {
+      // Always fetch fresh positions (no caching to ensure we see latest state)
+      this.logger.debug(`Fetching fresh positions from Hyperliquid for ${this.walletAddress}...`);
       const clearinghouseState = await this.infoClient.clearinghouseState({ user: this.walletAddress });
       const positions: PerpPosition[] = [];
 
@@ -756,14 +758,26 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
     );
   }
 
+  /**
+   * Clear balance cache to force fresh data fetch on next call
+   */
+  clearBalanceCache(): void {
+    this.balanceCache = null;
+    this.logger.debug('Balance cache cleared - next getBalance() will fetch fresh data');
+  }
+
   async getBalance(): Promise<number> {
+
     // Check cache first (clearinghouseState has weight 2, 1200 weight/minute limit)
     if (this.balanceCache && (Date.now() - this.balanceCache.timestamp) < this.BALANCE_CACHE_TTL) {
+      const cacheAge = Math.round((Date.now() - this.balanceCache.timestamp) / 1000);
+      this.logger.debug(`Using cached balance: $${this.balanceCache.balance.toFixed(2)} (age: ${cacheAge}s)`);
       return this.balanceCache.balance;
     }
 
     try {
       // clearinghouseState has weight 2 (1200 weight/minute = 600 requests/minute max)
+      this.logger.debug(`Fetching fresh balance from Hyperliquid for ${this.walletAddress}...`);
       const clearinghouseState = await this.infoClient.clearinghouseState({ user: this.walletAddress });
       const marginSummary = clearinghouseState.marginSummary;
       
@@ -786,9 +800,10 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
     } catch (error: any) {
       // If we have cached balance, return it even if expired (graceful degradation)
       if (this.balanceCache) {
+        const cacheAge = Math.round((Date.now() - this.balanceCache.timestamp) / 1000);
         this.logger.warn(
           `Failed to get fresh balance, using cached value: ${error.message}. ` +
-          `Cached balance: $${this.balanceCache.balance.toFixed(2)} (age: ${Math.round((Date.now() - this.balanceCache.timestamp) / 1000)}s)`
+          `Cached balance: $${this.balanceCache.balance.toFixed(2)} (age: ${cacheAge}s)`
         );
         return this.balanceCache.balance;
       }

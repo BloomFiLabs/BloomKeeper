@@ -98,6 +98,12 @@ export class ExchangeBalanceRebalancer {
 
     for (const [exchangeType, adapter] of adapters) {
       try {
+        // Clear cache before fetching balance to ensure fresh data
+        // Hyperliquid adapter has a clearBalanceCache method
+        if ('clearBalanceCache' in adapter && typeof (adapter as any).clearBalanceCache === 'function') {
+          (adapter as any).clearBalanceCache();
+        }
+        
         const balance = await adapter.getBalance();
         balances.set(exchangeType, balance);
         this.logger.debug(`   ${exchangeType}: $${balance.toFixed(2)}`);

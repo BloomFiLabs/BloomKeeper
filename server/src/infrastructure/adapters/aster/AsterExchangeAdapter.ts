@@ -481,6 +481,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
 
   async getPositions(): Promise<PerpPosition[]> {
     try {
+      // Always fetch fresh positions (no caching to ensure we see latest state)
+      this.logger.debug('Fetching fresh positions from Aster...');
+      
       // Use API key authentication if available, otherwise use Ethereum signature
       let params: Record<string, any>;
       let headers: Record<string, string> = {};
@@ -728,6 +731,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
 
   async getBalance(): Promise<number> {
     try {
+      // Always fetch fresh balance (no caching to ensure we see latest state)
+      this.logger.debug('Fetching fresh balance from Aster...');
+      
       // Aster API requires Ethereum signature authentication (not HMAC API keys)
       // Based on official docs: https://github.com/asterdex/api-docs
       // Balance endpoint: GET /fapi/v3/balance (USER_DATA authentication type)
