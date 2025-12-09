@@ -313,17 +313,62 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     let formattedQuantity: string = request.size.toString(); // Store for error logging
     try {
       // Aster requires leverage to be set before placing orders
-      // Get max leverage for the symbol and set it appropriately
-      // Use min of strategy leverage (from KEEPER_LEVERAGE env var, default 2x) and 80% of max leverage
       const maxLeverage = await this.getMaxLeverage(request.symbol);
-      const strategyLeverage = parseFloat(
-        this.configService.get<string>('KEEPER_LEVERAGE') || '2.0',
-      );
-      // Use the smaller of: strategy leverage or 80% of max leverage (safety buffer)
-      const desiredLeverage = Math.min(
-        Math.floor(strategyLeverage),
-        Math.floor(maxLeverage * 0.8),
-      );
+      let desiredLeverage: number;
+      
+      if (request.reduceOnly) {
+        // For closing orders (reduce-only), use the position's current leverage
+        // This ensures we can close positions even if max leverage changed
+        try {
+          const position = await this.getPosition(request.symbol);
+          if (position && position.leverage) {
+            // Use the position's leverage, but ensure it doesn't exceed current max leverage
+            desiredLeverage = Math.min(
+              Math.floor(position.leverage),
+              Math.floor(maxLeverage),
+            );
+            this.logger.debug(
+              `Closing order for ${request.symbol}: Using position leverage ${position.leverage}x ` +
+                `(capped at max ${maxLeverage}x)`,
+            );
+          } else {
+            // Fallback: if we can't get position, use strategy leverage
+            const strategyLeverage = parseFloat(
+              this.configService.get<string>('KEEPER_LEVERAGE') || '2.0',
+            );
+            desiredLeverage = Math.min(
+              Math.floor(strategyLeverage),
+              Math.floor(maxLeverage * 0.8),
+            );
+            this.logger.warn(
+              `Could not get position leverage for ${request.symbol}, using strategy leverage ${desiredLeverage}x`,
+            );
+          }
+        } catch (error: any) {
+          // If getting position fails, fallback to strategy leverage
+          const strategyLeverage = parseFloat(
+            this.configService.get<string>('KEEPER_LEVERAGE') || '2.0',
+          );
+          desiredLeverage = Math.min(
+            Math.floor(strategyLeverage),
+            Math.floor(maxLeverage * 0.8),
+          );
+          this.logger.warn(
+            `Failed to get position for ${request.symbol}: ${error.message}. ` +
+              `Using strategy leverage ${desiredLeverage}x`,
+          );
+        }
+      } else {
+        // For opening orders, use strategy leverage
+        const strategyLeverage = parseFloat(
+          this.configService.get<string>('KEEPER_LEVERAGE') || '2.0',
+        );
+        // Use the smaller of: strategy leverage or 80% of max leverage (safety buffer)
+        desiredLeverage = Math.min(
+          Math.floor(strategyLeverage),
+          Math.floor(maxLeverage * 0.8),
+        );
+      }
       
       if (desiredLeverage > 1 && desiredLeverage <= maxLeverage) {
         await this.setLeverage(request.symbol, desiredLeverage);
