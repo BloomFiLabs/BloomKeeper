@@ -45,4 +45,12 @@ export interface IPositionManager {
     exchangeType: ExchangeType,
     result: ArbitrageExecutionResult,
   ): Promise<Result<void, DomainException>>;
+
+  /**
+   * Detect and close single-leg positions (positions without a matching pair on another exchange)
+   * Returns positions that were identified as single-leg and should be closed
+   */
+  detectSingleLegPositions(
+    positions: PerpPosition[],
+  ): PerpPosition[];
 }

@@ -502,6 +502,98 @@ export class PositionManager implements IPositionManager {
   }
 
   /**
+   * Detect single-leg positions (positions without a matching pair on another exchange)
+   * A single-leg position is one where we have LONG on one exchange but no SHORT on another,
+   * or SHORT on one exchange but no LONG on another.
+   * 
+   * Returns positions that are single-leg and should be closed immediately to prevent price exposure.
+   */
+  detectSingleLegPositions(positions: PerpPosition[]): PerpPosition[] {
+    if (positions.length === 0) {
+      return [];
+    }
+
+    // Group positions by symbol
+    const positionsBySymbol = new Map<string, PerpPosition[]>();
+    for (const position of positions) {
+      if (!positionsBySymbol.has(position.symbol)) {
+        positionsBySymbol.set(position.symbol, []);
+      }
+      positionsBySymbol.get(position.symbol)!.push(position);
+    }
+
+    const singleLegPositions: PerpPosition[] = [];
+
+    for (const [symbol, symbolPositions] of positionsBySymbol) {
+      // For arbitrage, we need both LONG and SHORT positions on DIFFERENT exchanges
+      const longPositions = symbolPositions.filter((p) => p.side === OrderSide.LONG);
+      const shortPositions = symbolPositions.filter((p) => p.side === OrderSide.SHORT);
+
+      // Check if we have both LONG and SHORT on different exchanges
+      const hasLongOnDifferentExchange = longPositions.some(
+        (longPos) =>
+          !shortPositions.some(
+            (shortPos) => shortPos.exchangeType === longPos.exchangeType,
+          ),
+      );
+      const hasShortOnDifferentExchange = shortPositions.some(
+        (shortPos) =>
+          !longPositions.some(
+            (longPos) => longPos.exchangeType === shortPos.exchangeType,
+          ),
+      );
+
+      // If we have LONG but no SHORT on a different exchange, all LONG positions are single-leg
+      if (longPositions.length > 0 && !hasShortOnDifferentExchange) {
+        this.logger.warn(
+          `⚠️ Single-leg LONG position(s) detected for ${symbol}: ` +
+            `Found ${longPositions.length} LONG position(s) but no SHORT position on different exchange. ` +
+            `These positions have price exposure and should be closed.`,
+        );
+        singleLegPositions.push(...longPositions);
+      }
+
+      // If we have SHORT but no LONG on a different exchange, all SHORT positions are single-leg
+      if (shortPositions.length > 0 && !hasLongOnDifferentExchange) {
+        this.logger.warn(
+          `⚠️ Single-leg SHORT position(s) detected for ${symbol}: ` +
+            `Found ${shortPositions.length} SHORT position(s) but no LONG position on different exchange. ` +
+            `These positions have price exposure and should be closed.`,
+        );
+        singleLegPositions.push(...shortPositions);
+      }
+
+      // Edge case: If we have LONG and SHORT but they're on the SAME exchange, they're not arbitrage pairs
+      // This is also a single-leg scenario (both legs on same exchange = no arbitrage)
+      if (
+        longPositions.length > 0 &&
+        shortPositions.length > 0 &&
+        longPositions.every((longPos) =>
+          shortPositions.some(
+            (shortPos) => shortPos.exchangeType === longPos.exchangeType,
+          ),
+        )
+      ) {
+        this.logger.warn(
+          `⚠️ Positions for ${symbol} are on the same exchange(s) - not arbitrage pairs. ` +
+            `Both LONG and SHORT positions are single-leg (no cross-exchange arbitrage).`,
+        );
+        singleLegPositions.push(...symbolPositions);
+      }
+    }
+
+    if (singleLegPositions.length > 0) {
+      this.logger.error(
+        `🚨 CRITICAL: Detected ${singleLegPositions.length} single-leg position(s) with price exposure: ` +
+          `${singleLegPositions.map((p) => `${p.symbol} (${p.side}) on ${p.exchangeType}`).join(', ')}. ` +
+          `These will be closed immediately to prevent losses.`,
+      );
+    }
+
+    return singleLegPositions;
+  }
+
+  /**
    * Check if arbitrage is still profitable with taker fees (for market orders)
    */
   private checkProfitabilityWithTakerFees(

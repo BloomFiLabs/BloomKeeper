@@ -6,6 +6,7 @@ import { PerpKeeperPerformanceLogger } from '../../infrastructure/logging/PerpKe
 import { PerpKeeperService } from './PerpKeeperService';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import { PerpOrderRequest, OrderSide, OrderType, TimeInForce, OrderStatus } from '../../domain/value-objects/PerpOrder';
+import { PerpPosition } from '../../domain/entities/PerpPosition';
 import { Contract, JsonRpcProvider, Wallet, formatUnits } from 'ethers';
 import * as cliProgress from 'cli-progress';
 
@@ -58,6 +59,88 @@ export class PerpKeeperScheduler implements OnModuleInit {
     this.logger.log(
       `Configuration: minSpread=${this.minSpread}, maxPositionSize=${this.maxPositionSizeUsd}`
     );
+  }
+
+  /**
+   * Detect single-leg positions (positions without a matching pair on another exchange)
+   * A single-leg position is one where we have LONG on one exchange but no SHORT on another,
+   * or SHORT on one exchange but no LONG on another.
+   */
+  private detectSingleLegPositions(positions: PerpPosition[]): PerpPosition[] {
+    if (positions.length === 0) {
+      return [];
+    }
+
+    // Group positions by symbol
+    const positionsBySymbol = new Map<string, PerpPosition[]>();
+    for (const position of positions) {
+      if (!positionsBySymbol.has(position.symbol)) {
+        positionsBySymbol.set(position.symbol, []);
+      }
+      positionsBySymbol.get(position.symbol)!.push(position);
+    }
+
+    const singleLegPositions: PerpPosition[] = [];
+
+    for (const [symbol, symbolPositions] of positionsBySymbol) {
+      // For arbitrage, we need both LONG and SHORT positions on DIFFERENT exchanges
+      const longPositions = symbolPositions.filter((p) => p.side === OrderSide.LONG);
+      const shortPositions = symbolPositions.filter((p) => p.side === OrderSide.SHORT);
+
+      // Check if we have both LONG and SHORT on different exchanges
+      const hasLongOnDifferentExchange = longPositions.some(
+        (longPos) =>
+          !shortPositions.some(
+            (shortPos) => shortPos.exchangeType === longPos.exchangeType,
+          ),
+      );
+      const hasShortOnDifferentExchange = shortPositions.some(
+        (shortPos) =>
+          !longPositions.some(
+            (longPos) => longPos.exchangeType === shortPos.exchangeType,
+          ),
+      );
+
+      // If we have LONG but no SHORT on a different exchange, all LONG positions are single-leg
+      if (longPositions.length > 0 && !hasShortOnDifferentExchange) {
+        this.logger.warn(
+          `⚠️ Single-leg LONG position(s) detected for ${symbol}: ` +
+            `Found ${longPositions.length} LONG position(s) but no SHORT position on different exchange. ` +
+            `These positions have price exposure and should be closed.`,
+        );
+        singleLegPositions.push(...longPositions);
+      }
+
+      // If we have SHORT but no LONG on a different exchange, all SHORT positions are single-leg
+      if (shortPositions.length > 0 && !hasLongOnDifferentExchange) {
+        this.logger.warn(
+          `⚠️ Single-leg SHORT position(s) detected for ${symbol}: ` +
+            `Found ${shortPositions.length} SHORT position(s) but no LONG position on different exchange. ` +
+            `These positions have price exposure and should be closed.`,
+        );
+        singleLegPositions.push(...shortPositions);
+      }
+
+      // Edge case: If we have LONG and SHORT but they're on the SAME exchange, they're not arbitrage pairs
+      // This is also a single-leg scenario (both legs on same exchange = no arbitrage)
+      if (
+        longPositions.length > 0 &&
+        shortPositions.length > 0 &&
+        longPositions.every((longPos) =>
+          shortPositions.some(
+            (shortPos) => shortPos.exchangeType === longPos.exchangeType,
+          ),
+        )
+      ) {
+        this.logger.warn(
+          `⚠️ Positions for ${symbol} are on the same exchange(s) - not arbitrage pairs. ` +
+            `Both LONG and SHORT positions are single-leg (no cross-exchange arbitrage).`,
+        );
+        singleLegPositions.push(...symbolPositions);
+      }
+    }
+
+    return singleLegPositions;
   }
 
   /**
@@ -181,10 +264,121 @@ export class PerpKeeperScheduler implements OnModuleInit {
         const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
         const allPositions = positionsResult.positions;
         if (allPositions.length > 0) {
-          this.logger.log(`📋 Found ${allPositions.length} existing position(s) - closing to free up margin...`);
-          for (const position of allPositions) {
-            try {
-              const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
+          // CRITICAL: Detect single-leg positions first (positions without matching pair on another exchange)
+          const singleLegPositions = this.detectSingleLegPositions(allPositions);
+          if (singleLegPositions.length > 0) {
+            this.logger.error(
+              `🚨 CRITICAL: Detected ${singleLegPositions.length} single-leg position(s) with price exposure: ` +
+                `${singleLegPositions.map((p) => `${p.symbol} (${p.side}) on ${p.exchangeType}`).join(', ')}. ` +
+                `Closing these FIRST to prevent losses...`,
+            );
+            // Close single-leg positions first
+            for (const position of singleLegPositions) {
+              try {
+                const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
+                const closeOrder = new PerpOrderRequest(
+                  position.symbol,
+                  position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
+                  OrderType.MARKET,
+                  position.size,
+                  0,
+                  TimeInForce.IOC,
+                  true, // Reduce only
+                );
+                
+                this.logger.error(`   🚨 CRITICAL: Closing single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}...`);
+                const closeResponse = await adapter.placeOrder(closeOrder);
+                
+                if (closeResponse.isFilled()) {
+                  this.logger.log(`   ✅ Successfully closed single-leg position: ${position.symbol} on ${position.exchangeType}`);
+                } else {
+                  this.logger.error(`   ❌ CRITICAL: Failed to close single-leg position ${position.symbol} on ${position.exchangeType}: ${closeResponse.error || 'order not filled'}`);
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 500));
+              } catch (error: any) {
+                this.logger.error(`   ❌ CRITICAL: Error closing single-leg position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
+              }
+            }
+            
+            // Remove single-leg positions from allPositions to avoid double-closing
+            const singleLegSet = new Set(singleLegPositions.map(p => `${p.symbol}-${p.exchangeType}-${p.side}`));
+            const remainingPositions = allPositions.filter(
+              p => !singleLegSet.has(`${p.symbol}-${p.exchangeType}-${p.side}`)
+            );
+            
+            if (remainingPositions.length === 0) {
+              this.logger.log('✅ All positions were single-leg and have been closed');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              return; // No other positions to close
+            }
+            
+            this.logger.log(`📋 Found ${remainingPositions.length} additional position(s) to close...`);
+            for (const position of remainingPositions) {
+              try {
+                const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
+                const closeOrder = new PerpOrderRequest(
+                  position.symbol,
+                  position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
+                  OrderType.MARKET,
+                  position.size,
+                  0, // No limit price for market orders
+                  TimeInForce.IOC, // Immediate or cancel
+                  true, // Reduce only
+                );
+                
+                this.logger.log(`   Closing ${position.symbol} on ${position.exchangeType}...`);
+                let closeResponse = await adapter.placeOrder(closeOrder);
+                
+                // Wait and retry if order didn't fill immediately
+                if (!closeResponse.isFilled() && closeResponse.orderId) {
+                  this.logger.log(`   ⏳ Order not filled immediately, polling for fill...`);
+                  const maxRetries = 5;
+                  const pollIntervalMs = 2000;
+                  
+                  for (let attempt = 0; attempt < maxRetries; attempt++) {
+                    if (attempt > 0) {
+                      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+                    }
+                    
+                    try {
+                      const statusResponse = await adapter.getOrderStatus(closeResponse.orderId, position.symbol);
+                      if (statusResponse.isFilled()) {
+                        closeResponse = statusResponse;
+                        this.logger.log(`   ✅ Order filled on attempt ${attempt + 1}/${maxRetries}`);
+                        break;
+                      }
+                      if (statusResponse.status === OrderStatus.CANCELLED || statusResponse.error) {
+                        closeResponse = statusResponse;
+                        break;
+                      }
+                      this.logger.debug(`   Order still ${statusResponse.status} (attempt ${attempt + 1}/${maxRetries})...`);
+                    } catch (error: any) {
+                      this.logger.warn(`   Failed to check order status (attempt ${attempt + 1}/${maxRetries}): ${error.message}`);
+                      if (attempt === maxRetries - 1) {
+                        this.logger.warn(`   ⚠️ Could not verify order fill after ${maxRetries} attempts`);
+                      }
+                    }
+                  }
+                }
+                
+                if (closeResponse.isFilled()) {
+                  this.logger.log(`   ✅ Successfully closed position: ${position.symbol} on ${position.exchangeType}`);
+                } else {
+                  this.logger.warn(`   ⚠️ Failed to close position ${position.symbol} on ${position.exchangeType}: ${closeResponse.error || 'order not filled'}`);
+                }
+                
+                // Small delay between closes
+                await new Promise(resolve => setTimeout(resolve, 500));
+              } catch (error: any) {
+                this.logger.warn(`   ⚠️ Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
+              }
+            }
+          } else {
+            this.logger.log(`📋 Found ${allPositions.length} existing position(s) - closing to free up margin...`);
+            for (const position of allPositions) {
+              try {
+                const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
               const closeOrder = new PerpOrderRequest(
                 position.symbol,
                 position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
@@ -236,10 +430,11 @@ export class PerpKeeperScheduler implements OnModuleInit {
                 this.logger.warn(`   ⚠️ Failed to close position ${position.symbol} on ${position.exchangeType}: ${closeResponse.error || 'order not filled'}`);
               }
               
-              // Small delay between closes
-              await new Promise(resolve => setTimeout(resolve, 500));
-            } catch (error: any) {
-              this.logger.warn(`   ⚠️ Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
+                // Small delay between closes
+                await new Promise(resolve => setTimeout(resolve, 500));
+              } catch (error: any) {
+                this.logger.warn(`   ⚠️ Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
+              }
             }
           }
           

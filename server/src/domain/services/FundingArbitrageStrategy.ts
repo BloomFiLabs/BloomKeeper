@@ -1221,7 +1221,7 @@ export class FundingArbitrageStrategy {
       );
 
       // Only close positions that are NOT being topped up (positions we're replacing with new ones)
-      const positionsToClose: PerpPosition[] = [];
+      let positionsToClose: PerpPosition[] = [];
       const symbolsBeingToppedUp = new Set(
         selectedOpportunities
           .filter((item) => item.isExisting)
@@ -1232,6 +1232,42 @@ export class FundingArbitrageStrategy {
         if (!symbolsBeingToppedUp.has(position.symbol)) {
           positionsToClose.push(position);
         }
+      }
+
+      // CRITICAL: Detect and close single-leg positions FIRST (before handling asymmetric fills)
+      // Single-leg positions have price exposure and must be closed immediately
+      const singleLegPositions = this.positionManager.detectSingleLegPositions(
+        currentPositions,
+      );
+      if (singleLegPositions.length > 0) {
+        this.logger.error(
+          `🚨 CRITICAL: Closing ${singleLegPositions.length} single-leg position(s) immediately to prevent price exposure...`,
+        );
+        const singleLegCloseResult = await this.closeAllPositions(
+          singleLegPositions,
+          adapters,
+          result,
+        );
+        if (singleLegCloseResult.stillOpen.length > 0) {
+          this.logger.error(
+            `❌ CRITICAL: ${singleLegCloseResult.stillOpen.length} single-leg position(s) failed to close! ` +
+              `These positions have price exposure: ${singleLegCloseResult.stillOpen
+                .map((p) => `${p.symbol} (${p.side}) on ${p.exchangeType}`)
+                .join(', ')}. ` +
+              `MANUAL INTERVENTION REQUIRED!`,
+          );
+        } else {
+          this.logger.log(
+            `✅ Successfully closed all ${singleLegPositions.length} single-leg position(s)`,
+          );
+        }
+        // Remove single-leg positions from positionsToClose to avoid double-closing
+        const singleLegSymbols = new Set(
+          singleLegPositions.map((p) => `${p.symbol}-${p.exchangeType}`),
+        );
+        positionsToClose = positionsToClose.filter(
+          (p) => !singleLegSymbols.has(`${p.symbol}-${p.exchangeType}`),
+        );
       }
 
       // Handle asymmetric fills from previous execution cycles
