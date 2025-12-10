@@ -30,7 +30,7 @@ export class LighterFundingDataProvider implements OnModuleInit {
   // Cache for funding rates (key: market_id, value: rate)
   private fundingRatesCache: Map<number, number> = new Map();
   private lastCacheUpdate: number = 0;
-  private readonly CACHE_TTL = 60000; // 1 minute cache (funding rates update hourly)
+  private readonly CACHE_TTL = 10000; // 10 second cache (funding rates update hourly, but we want fresh data for performance metrics)
 
   constructor(
     private readonly configService: ConfigService,
@@ -81,9 +81,9 @@ export class LighterFundingDataProvider implements OnModuleInit {
   /**
    * Ensure cache is fresh (refresh if needed)
    */
-  private async ensureCacheFresh(): Promise<void> {
+  private async ensureCacheFresh(forceRefresh: boolean = false): Promise<void> {
     const now = Date.now();
-    if (this.fundingRatesCache.size === 0 || (now - this.lastCacheUpdate) > this.CACHE_TTL) {
+    if (forceRefresh || this.fundingRatesCache.size === 0 || (now - this.lastCacheUpdate) > this.CACHE_TTL) {
       await this.refreshFundingRates();
     }
   }
@@ -92,17 +92,23 @@ export class LighterFundingDataProvider implements OnModuleInit {
    * Get current funding rate for a market
    * Uses cached funding rates from the funding-rates API endpoint
    * @param marketIndex Market index (e.g., 0 for ETH/USDC)
+   * @param forceRefresh If true, force refresh the cache before returning
    * @returns Funding rate as decimal (e.g., 0.0001 = 0.01%)
    */
-  async getCurrentFundingRate(marketIndex: number): Promise<number> {
-    await this.ensureCacheFresh();
+  async getCurrentFundingRate(marketIndex: number, forceRefresh: boolean = false): Promise<number> {
+    const wasStale = this.fundingRatesCache.size === 0 || (Date.now() - this.lastCacheUpdate) > this.CACHE_TTL;
+    await this.ensureCacheFresh(forceRefresh);
     
     const rate = this.fundingRatesCache.get(marketIndex);
     if (rate !== undefined) {
+      if (forceRefresh || wasStale) {
+        this.logger.debug(`Lighter funding rate for market ${marketIndex}: ${(rate * 100).toFixed(4)}% (${forceRefresh ? 'force refreshed' : 'cache refreshed'})`);
+      }
       return rate;
     }
     
     // If not in cache, return 0 (market might not exist or have no funding rate)
+    this.logger.warn(`Lighter funding rate for market ${marketIndex} not found in cache`);
     return 0;
   }
 

@@ -617,72 +617,138 @@ export class PositionManager implements IPositionManager {
       return [];
     }
 
-    // Group positions by symbol
+    this.logger.debug(`🔍 detectSingleLegPositions: Analyzing ${positions.length} total positions`);
+    for (const pos of positions) {
+      this.logger.debug(
+        `  Position: symbol="${pos.symbol}", exchange=${pos.exchangeType}, side=${pos.side}, size=${pos.size}`
+      );
+    }
+
+    // Normalize symbol for cross-exchange matching (e.g., "0GUSDT" -> "0G", "ETHUSDT" -> "ETH")
+    const normalizeSymbol = (symbol: string): string => {
+      return symbol
+        .replace('USDT', '')
+        .replace('USDC', '')
+        .replace('-PERP', '')
+        .replace('PERP', '')
+        .toUpperCase();
+    };
+
+    // Group positions by normalized symbol to match positions across exchanges
     const positionsBySymbol = new Map<string, PerpPosition[]>();
     for (const position of positions) {
-      if (!positionsBySymbol.has(position.symbol)) {
-        positionsBySymbol.set(position.symbol, []);
+      const normalizedSymbol = normalizeSymbol(position.symbol);
+      this.logger.debug(
+        `  Normalizing: "${position.symbol}" -> "${normalizedSymbol}" (exchange=${position.exchangeType}, side=${position.side})`
+      );
+      if (!positionsBySymbol.has(normalizedSymbol)) {
+        positionsBySymbol.set(normalizedSymbol, []);
       }
-      positionsBySymbol.get(position.symbol)!.push(position);
+      positionsBySymbol.get(normalizedSymbol)!.push(position);
     }
+
+    this.logger.debug(`📊 Grouped into ${positionsBySymbol.size} normalized symbols: ${Array.from(positionsBySymbol.keys()).join(', ')}`);
 
     const singleLegPositions: PerpPosition[] = [];
 
     for (const [symbol, symbolPositions] of positionsBySymbol) {
+      this.logger.debug(`\n🔍 Analyzing symbol "${symbol}" with ${symbolPositions.length} position(s):`);
+      for (const pos of symbolPositions) {
+        this.logger.debug(`    - ${pos.exchangeType}: ${pos.side}, size=${pos.size}, symbol="${pos.symbol}"`);
+      }
+      
       // For arbitrage, we need both LONG and SHORT positions on DIFFERENT exchanges
       const longPositions = symbolPositions.filter((p) => p.side === OrderSide.LONG);
       const shortPositions = symbolPositions.filter((p) => p.side === OrderSide.SHORT);
 
-      // Check if we have both LONG and SHORT on different exchanges
-      const hasLongOnDifferentExchange = longPositions.some(
-        (longPos) =>
-          !shortPositions.some(
-            (shortPos) => shortPos.exchangeType === longPos.exchangeType,
-          ),
-      );
-      const hasShortOnDifferentExchange = shortPositions.some(
-        (shortPos) =>
-          !longPositions.some(
-            (longPos) => longPos.exchangeType === shortPos.exchangeType,
-          ),
-      );
+      this.logger.debug(`  LONG positions: ${longPositions.length} (${longPositions.map(p => `${p.exchangeType}`).join(', ')})`);
+      this.logger.debug(`  SHORT positions: ${shortPositions.length} (${shortPositions.map(p => `${p.exchangeType}`).join(', ')})`);
 
-      // If we have LONG but no SHORT on a different exchange, all LONG positions are single-leg
-      if (longPositions.length > 0 && !hasShortOnDifferentExchange) {
-        this.logger.warn(
-          `⚠️ Single-leg LONG position(s) detected for ${symbol}: ` +
-            `Found ${longPositions.length} LONG position(s) but no SHORT position on different exchange. ` +
-            `These positions have price exposure and should be closed.`,
+      // Check if we have a matched arbitrage pair: LONG on one exchange and SHORT on a DIFFERENT exchange
+      // This is the CORRECT arbitrage setup - both positions exist and are on different exchanges
+      const matchedPairs: Array<{ long: PerpPosition; short: PerpPosition }> = [];
+      const unmatchedPositions: PerpPosition[] = [];
+      
+      for (const longPos of longPositions) {
+        const matchingShort = shortPositions.find(
+          (shortPos) => shortPos.exchangeType !== longPos.exchangeType,
         );
-        singleLegPositions.push(...longPositions);
+        if (matchingShort) {
+          // Found a matched pair: LONG and SHORT on different exchanges
+          matchedPairs.push({ long: longPos, short: matchingShort });
+        } else {
+          // No matching SHORT on a different exchange
+          unmatchedPositions.push(longPos);
+        }
+      }
+      
+      // Check for unmatched SHORT positions (SHORT without a LONG on a different exchange)
+      for (const shortPos of shortPositions) {
+        const matchingLong = longPositions.find(
+          (longPos) => longPos.exchangeType !== shortPos.exchangeType,
+        );
+        if (!matchingLong) {
+          // No matching LONG on a different exchange
+          if (!unmatchedPositions.includes(shortPos)) {
+            unmatchedPositions.push(shortPos);
+          }
+        }
+      }
+      
+      // Also check for same-exchange pairs (LONG and SHORT on same exchange - not arbitrage)
+      const sameExchangePairs: PerpPosition[] = [];
+      for (const longPos of longPositions) {
+        const sameExchangeShort = shortPositions.find(
+          (shortPos) => shortPos.exchangeType === longPos.exchangeType,
+        );
+        if (sameExchangeShort) {
+          // Both LONG and SHORT on same exchange - not an arbitrage pair
+          if (!sameExchangePairs.includes(longPos)) {
+            sameExchangePairs.push(longPos);
+          }
+          if (!sameExchangePairs.includes(sameExchangeShort)) {
+            sameExchangePairs.push(sameExchangeShort);
+          }
+        }
       }
 
-      // If we have SHORT but no LONG on a different exchange, all SHORT positions are single-leg
-      if (shortPositions.length > 0 && !hasLongOnDifferentExchange) {
-        this.logger.warn(
-          `⚠️ Single-leg SHORT position(s) detected for ${symbol}: ` +
-            `Found ${shortPositions.length} SHORT position(s) but no LONG position on different exchange. ` +
-            `These positions have price exposure and should be closed.`,
+      this.logger.debug(
+        `  Matched pairs: ${matchedPairs.length} (${matchedPairs.map(p => `${p.long.exchangeType} LONG + ${p.short.exchangeType} SHORT`).join(', ')})`,
+      );
+      this.logger.debug(
+        `  Unmatched positions: ${unmatchedPositions.length} (${unmatchedPositions.map(p => `${p.side} on ${p.exchangeType}`).join(', ')})`,
+      );
+      this.logger.debug(
+        `  Same-exchange pairs: ${sameExchangePairs.length} (${sameExchangePairs.map(p => `${p.side} on ${p.exchangeType}`).join(', ')})`,
+      );
+
+      if (matchedPairs.length > 0) {
+        this.logger.debug(
+          `✅ Matched arbitrage pair(s) detected for ${symbol}: LONG and SHORT positions exist on different exchanges - NOT single-leg`,
         );
-        singleLegPositions.push(...shortPositions);
       }
 
-      // Edge case: If we have LONG and SHORT but they're on the SAME exchange, they're not arbitrage pairs
-      // This is also a single-leg scenario (both legs on same exchange = no arbitrage)
-      if (
-        longPositions.length > 0 &&
-        shortPositions.length > 0 &&
-        longPositions.every((longPos) =>
-          shortPositions.some(
-            (shortPos) => shortPos.exchangeType === longPos.exchangeType,
-          ),
-        )
-      ) {
+      // Flag unmatched positions and same-exchange pairs as single-leg
+      if (unmatchedPositions.length > 0) {
         this.logger.warn(
-          `⚠️ Positions for ${symbol} are on the same exchange(s) - not arbitrage pairs. ` +
-            `Both LONG and SHORT positions are single-leg (no cross-exchange arbitrage).`,
+          `⚠️ Single-leg position(s) detected for ${symbol}: ` +
+            `${unmatchedPositions.map(p => `${p.side} on ${p.exchangeType}`).join(', ')} ` +
+            `have no matching position on a different exchange. These have price exposure and should be closed.`,
         );
-        singleLegPositions.push(...symbolPositions);
+        singleLegPositions.push(...unmatchedPositions);
+      }
+
+      if (sameExchangePairs.length > 0) {
+        this.logger.warn(
+          `⚠️ Same-exchange position(s) detected for ${symbol}: ` +
+            `${sameExchangePairs.map(p => `${p.side} on ${p.exchangeType}`).join(', ')} ` +
+            `are on the same exchange - not arbitrage pairs. These should be closed.`,
+        );
+        sameExchangePairs.forEach(pos => {
+          if (!singleLegPositions.includes(pos)) {
+            singleLegPositions.push(pos);
+          }
+        });
       }
     }
 

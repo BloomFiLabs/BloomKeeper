@@ -5,6 +5,7 @@ export enum ExchangeType {
   ASTER = 'ASTER',
   LIGHTER = 'LIGHTER',
   HYPERLIQUID = 'HYPERLIQUID',
+  EXTENDED = 'EXTENDED',
 }
 
 /**
@@ -22,6 +23,9 @@ export class ExchangeConfig {
     public readonly accountIndex?: number, // Account index (for Lighter)
     public readonly apiKeyIndex?: number, // API key index (for Lighter)
     public readonly recvWindow?: number, // Receive window in milliseconds (for Aster)
+    public readonly starkKey?: string, // Stark private key for signing (for Extended)
+    public readonly vaultNumber?: number, // Vault/account number (for Extended)
+    public readonly starknetRpcUrl?: string, // Optional Starknet RPC URL (for Extended)
     public readonly rateLimitRps?: number, // Rate limit requests per second
     public readonly timeout?: number, // Request timeout in milliseconds
     public readonly testnet?: boolean, // Whether to use testnet
@@ -53,6 +57,18 @@ export class ExchangeConfig {
       }
     }
 
+    if (exchangeType === ExchangeType.EXTENDED) {
+      if (!apiKey) {
+        throw new Error('Extended exchange requires apiKey');
+      }
+      if (!starkKey) {
+        throw new Error('Extended exchange requires starkKey');
+      }
+      if (vaultNumber === undefined) {
+        throw new Error('Extended exchange requires vaultNumber');
+      }
+    }
+
     if (rateLimitRps !== undefined && rateLimitRps <= 0) {
       throw new Error('Rate limit must be greater than 0');
     }
@@ -81,6 +97,13 @@ export class ExchangeConfig {
    */
   isHyperliquid(): boolean {
     return this.exchangeType === ExchangeType.HYPERLIQUID;
+  }
+
+  /**
+   * Returns true if this is an Extended exchange configuration
+   */
+  isExtended(): boolean {
+    return this.exchangeType === ExchangeType.EXTENDED;
   }
 
   /**

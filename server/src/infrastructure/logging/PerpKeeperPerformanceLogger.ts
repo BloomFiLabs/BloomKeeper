@@ -172,11 +172,18 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
     metrics.lastUpdateTime = new Date();
 
     // Remove old snapshots for positions being updated on this exchange
-    // This prevents duplicate snapshots for the same symbol+exchange
-    const symbolsToUpdate = new Set(positions.map(p => p.symbol));
-    this.fundingSnapshots = this.fundingSnapshots.filter(
-      (s) => !(symbolsToUpdate.has(s.symbol) && s.exchange === exchange)
-    );
+    // If positions is empty (all closed), remove ALL snapshots for this exchange
+    // Otherwise, remove snapshots only for symbols that are being updated
+    if (positions.length === 0) {
+      // All positions closed - remove all snapshots for this exchange
+      this.fundingSnapshots = this.fundingSnapshots.filter((s) => s.exchange !== exchange);
+    } else {
+      // Remove snapshots for symbols that are being updated (to prevent duplicates)
+      const symbolsToUpdate = new Set(positions.map(p => p.symbol));
+      this.fundingSnapshots = this.fundingSnapshots.filter(
+        (s) => !(symbolsToUpdate.has(s.symbol) && s.exchange === exchange)
+      );
+    }
 
     // Create funding rate snapshots for APY estimation
     for (const position of positions) {
@@ -270,14 +277,25 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
   calculateEstimatedAPY(): number {
     if (this.fundingSnapshots.length === 0) return 0;
 
-    // Group snapshots by symbol to identify arbitrage pairs
+    // Normalize symbol for cross-exchange matching (e.g., "0GUSDT" -> "0G", "ETHUSDT" -> "ETH")
+    const normalizeSymbol = (symbol: string): string => {
+      return symbol
+        .replace('USDT', '')
+        .replace('USDC', '')
+        .replace('-PERP', '')
+        .replace('PERP', '')
+        .toUpperCase();
+    };
+
+    // Group snapshots by normalized symbol to identify arbitrage pairs across exchanges
     const snapshotsBySymbol = new Map<string, { long?: FundingRateSnapshot; short?: FundingRateSnapshot }>();
     
     for (const snapshot of this.fundingSnapshots) {
-      if (!snapshotsBySymbol.has(snapshot.symbol)) {
-        snapshotsBySymbol.set(snapshot.symbol, {});
+      const normalizedSymbol = normalizeSymbol(snapshot.symbol);
+      if (!snapshotsBySymbol.has(normalizedSymbol)) {
+        snapshotsBySymbol.set(normalizedSymbol, {});
       }
-      const pair = snapshotsBySymbol.get(snapshot.symbol)!;
+      const pair = snapshotsBySymbol.get(normalizedSymbol)!;
       if (snapshot.positionSide === 'LONG') {
         pair.long = snapshot;
       } else {

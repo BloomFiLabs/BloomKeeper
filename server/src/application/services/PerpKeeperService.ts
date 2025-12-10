@@ -12,6 +12,7 @@ import {
 import { AsterExchangeAdapter } from '../../infrastructure/adapters/aster/AsterExchangeAdapter';
 import { LighterExchangeAdapter } from '../../infrastructure/adapters/lighter/LighterExchangeAdapter';
 import { HyperliquidExchangeAdapter } from '../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter';
+import { ExtendedExchangeAdapter } from '../../infrastructure/adapters/extended/ExtendedExchangeAdapter';
 import { MockExchangeAdapter } from '../../infrastructure/adapters/mock/MockExchangeAdapter';
 import { PerpKeeperPerformanceLogger } from '../../infrastructure/logging/PerpKeeperPerformanceLogger';
 import { ExchangeBalanceRebalancer, RebalanceResult } from '../../domain/services/ExchangeBalanceRebalancer';
@@ -31,6 +32,7 @@ export class PerpKeeperService implements IPerpKeeperService {
     @Optional() @Inject(AsterExchangeAdapter) private readonly asterAdapter: AsterExchangeAdapter | null,
     @Optional() @Inject(LighterExchangeAdapter) private readonly lighterAdapter: LighterExchangeAdapter | null,
     @Optional() @Inject(HyperliquidExchangeAdapter) private readonly hyperliquidAdapter: HyperliquidExchangeAdapter | null,
+    @Optional() @Inject(ExtendedExchangeAdapter) private readonly extendedAdapter: ExtendedExchangeAdapter | null,
     private readonly performanceLogger: PerpKeeperPerformanceLogger,
     private readonly balanceRebalancer: ExchangeBalanceRebalancer,
     private readonly configService: ConfigService,
@@ -51,18 +53,23 @@ export class PerpKeeperService implements IPerpKeeperService {
       const aster = asterAdapter || new AsterExchangeAdapter(this.configService);
       const lighter = lighterAdapter || new LighterExchangeAdapter(this.configService);
       const hyperliquid = hyperliquidAdapter || new HyperliquidExchangeAdapter(this.configService, null as any);
+      const extended = extendedAdapter || new ExtendedExchangeAdapter(this.configService);
       
       this.adapters.set(
         ExchangeType.ASTER, 
-        new MockExchangeAdapter(this.configService, ExchangeType.ASTER, aster, lighter, hyperliquid)
+        new MockExchangeAdapter(this.configService, ExchangeType.ASTER, aster, lighter, hyperliquid, extended)
       );
       this.adapters.set(
         ExchangeType.LIGHTER, 
-        new MockExchangeAdapter(this.configService, ExchangeType.LIGHTER, aster, lighter, hyperliquid)
+        new MockExchangeAdapter(this.configService, ExchangeType.LIGHTER, aster, lighter, hyperliquid, extended)
       );
       this.adapters.set(
         ExchangeType.HYPERLIQUID, 
-        new MockExchangeAdapter(this.configService, ExchangeType.HYPERLIQUID, aster, lighter, hyperliquid)
+        new MockExchangeAdapter(this.configService, ExchangeType.HYPERLIQUID, aster, lighter, hyperliquid, extended)
+      );
+      this.adapters.set(
+        ExchangeType.EXTENDED, 
+        new MockExchangeAdapter(this.configService, ExchangeType.EXTENDED, aster, lighter, hyperliquid, extended)
       );
     } else {
       // Use real adapters, but only if they were successfully created
@@ -80,6 +87,11 @@ export class PerpKeeperService implements IPerpKeeperService {
         this.adapters.set(ExchangeType.HYPERLIQUID, hyperliquidAdapter);
       } else {
         this.logger.warn('Hyperliquid adapter not available - will be created lazily if needed');
+      }
+      if (extendedAdapter) {
+        this.adapters.set(ExchangeType.EXTENDED, extendedAdapter);
+      } else {
+        this.logger.warn('Extended adapter not available - will be created lazily if needed');
       }
     }
 

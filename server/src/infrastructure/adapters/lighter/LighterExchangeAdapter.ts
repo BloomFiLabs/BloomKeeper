@@ -260,8 +260,14 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
   }
 
   async placeOrder(request: PerpOrderRequest): Promise<PerpOrderResponse> {
+    this.logger.log(
+      `📤 Placing ${request.side} order on Lighter: ${request.size} ${request.symbol} ` +
+      `@ ${request.price || 'market'} (type: ${request.type}, reduceOnly: ${request.reduceOnly})`
+    );
+    
     // Add retry logic with exponential backoff for order placement (rate limiting)
-    const maxRetries = 6;
+    // For market orders, limit to 5 retries with progressive price improvement
+    const maxRetries = request.type === OrderType.MARKET ? 5 : 6;
     const baseDelay = 2000; // 2 seconds base delay
     const maxDelay = 60000; // 60 seconds max delay
     let lastError: any = null;
@@ -281,69 +287,158 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
         
+        this.logger.debug(`Initializing Lighter adapter for order placement (attempt ${attempt + 1})...`);
         await this.ensureInitialized();
 
+        this.logger.debug(`Getting market index for ${request.symbol}...`);
         const marketIndex = await this.getMarketIndex(request.symbol);
+        this.logger.debug(`Market index for ${request.symbol}: ${marketIndex}`);
+        
+        this.logger.debug(`Getting market helper for market ${marketIndex}...`);
         const market = await this.getMarketHelper(marketIndex);
 
         const isBuy = request.side === OrderSide.LONG;
         const isAsk = !isBuy;
 
         // Convert size to market units
+        this.logger.debug(`Converting size ${request.size} to market units...`);
         const baseAmount = market.amountToUnits(request.size);
+        this.logger.debug(`Base amount: ${baseAmount}`);
 
         let orderParams: any;
+        let useCreateMarketOrder = false;
+        
         if (request.type === OrderType.MARKET) {
-          // For market orders, we need to use a limit order with current market price
-          // Add retry logic for order book fetch
-          let orderBook: any;
-          const orderBookMaxRetries = 5;
-          for (let obAttempt = 0; obAttempt < orderBookMaxRetries; obAttempt++) {
+          // For closing positions (reduceOnly=true), use createMarketOrder
+          if (request.reduceOnly) {
+            useCreateMarketOrder = true;
+            
+            // Get current mark price for avgExecutionPrice
+            let avgExecutionPrice: number;
             try {
-              if (obAttempt > 0) {
-                const obDelay = Math.min(baseDelay * Math.pow(2, obAttempt - 1), maxDelay);
-                const obJitter = obDelay * 0.2 * (Math.random() * 2 - 1);
-                const delay = Math.max(1000, obDelay + obJitter);
-                this.logger.debug(`Retrying order book fetch (attempt ${obAttempt + 1}/${orderBookMaxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+              const markPrice = await this.getMarkPrice(request.symbol);
+              avgExecutionPrice = markPrice;
+            } catch (priceError: any) {
+              // Fallback: try to get from order book
+              try {
+                const orderBook = await this.orderApi!.getOrderBookDetails({ marketIndex: marketIndex } as any) as any;
+                avgExecutionPrice = isBuy 
+                  ? parseFloat(orderBook.bestAsk?.price || '0')
+                  : parseFloat(orderBook.bestBid?.price || '0');
+              } catch (obError: any) {
+                throw new Error(`Failed to get price for closing position: ${priceError.message}`);
               }
-              // Cast to any since SDK types may be incomplete (script shows this works)
-              orderBook = await this.orderApi!.getOrderBookDetails({ marketIndex: marketIndex } as any) as any;
-              break;
-            } catch (obError: any) {
-              const obErrorMsg = obError?.message || String(obError);
-              const isObRateLimit = obErrorMsg.includes('Too Many Requests') || 
-                                    obErrorMsg.includes('429') ||
-                                    obErrorMsg.includes('rate limit');
-              if (isObRateLimit && obAttempt < orderBookMaxRetries - 1) {
-                continue;
-              }
-              throw obError;
             }
+            
+            // Progressive price improvement for closing orders: worse prices on retries
+            const priceImprovements = [0, 0.001, 0.005, 0.01, 0.02, 0.05];
+            const priceImprovement = priceImprovements[Math.min(attempt, priceImprovements.length - 1)];
+            
+            // Apply price improvement (worse price = better chance to fill)
+            // For BUY (closing SHORT): worse = higher price
+            // For SELL (closing LONG): worse = lower price
+            const adjustedPrice = isBuy
+              ? avgExecutionPrice * (1 + priceImprovement)
+              : avgExecutionPrice * (1 - priceImprovement);
+            
+            if (attempt > 0) {
+              this.logger.warn(
+                `🔄 Closing position retry ${attempt + 1}/${maxRetries} for ${request.symbol}: ` +
+                `Using ${(priceImprovement * 100).toFixed(2)}% worse price (${adjustedPrice.toFixed(6)} vs ${avgExecutionPrice.toFixed(6)})`
+              );
+            }
+            
+            // Use createMarketOrder for closing positions (per Lighter docs)
+            const [tx, hash, error] = await this.signerClient!.createMarketOrder({
+              marketIndex,
+              clientOrderIndex: Date.now(),
+              baseAmount,
+              avgExecutionPrice: market.priceToUnits(adjustedPrice),
+              isAsk,
+              reduceOnly: true,
+            });
+            
+            if (error) {
+              throw new Error(`Failed to close position: ${error}`);
+            }
+            
+            // Wait for transaction
+            try {
+              await this.signerClient!.waitForTransaction(hash, 30000, 2000);
+            } catch (waitError: any) {
+              this.logger.warn(`Transaction wait failed: ${waitError.message}`);
+            }
+            
+            return new PerpOrderResponse(
+              hash,
+              OrderStatus.SUBMITTED,
+              request.symbol,
+              request.side,
+              request.clientOrderId,
+              undefined,
+              undefined,
+              undefined,
+              new Date(),
+            );
+          } else {
+            // For opening market orders, use createUnifiedOrder with idealPrice and maxSlippage
+            // Get current market price
+            let orderBook: any;
+            const orderBookMaxRetries = 5;
+            for (let obAttempt = 0; obAttempt < orderBookMaxRetries; obAttempt++) {
+              try {
+                if (obAttempt > 0) {
+                  const obDelay = Math.min(baseDelay * Math.pow(2, obAttempt - 1), maxDelay);
+                  const obJitter = obDelay * 0.2 * (Math.random() * 2 - 1);
+                  const delay = Math.max(1000, obDelay + obJitter);
+                  this.logger.debug(`Retrying order book fetch (attempt ${obAttempt + 1}/${orderBookMaxRetries})`);
+                  await new Promise(resolve => setTimeout(resolve, delay));
+                }
+                orderBook = await this.orderApi!.getOrderBookDetails({ marketIndex: marketIndex } as any) as any;
+                break;
+              } catch (obError: any) {
+                const obErrorMsg = obError?.message || String(obError);
+                const isObRateLimit = obErrorMsg.includes('Too Many Requests') || 
+                                      obErrorMsg.includes('429') ||
+                                      obErrorMsg.includes('rate limit');
+                if (isObRateLimit && obAttempt < orderBookMaxRetries - 1) {
+                  continue;
+                }
+                throw obError;
+              }
+            }
+            
+            // Progressive price improvement for market orders: worse prices on retries
+            const priceImprovements = [0, 0.001, 0.005, 0.01, 0.02, 0.05];
+            const priceImprovement = priceImprovements[Math.min(attempt, priceImprovements.length - 1)];
+            
+            let idealPrice = isBuy 
+              ? parseFloat(orderBook.bestAsk?.price || '0')
+              : parseFloat(orderBook.bestBid?.price || '0');
+            
+            // Apply price improvement (worse price = better chance to fill)
+            idealPrice = isBuy
+              ? idealPrice * (1 + priceImprovement)
+              : idealPrice * (1 - priceImprovement);
+            
+            if (attempt > 0) {
+              this.logger.warn(
+                `🔄 Market order retry ${attempt + 1}/${maxRetries} for ${request.symbol}: ` +
+                `Using ${(priceImprovement * 100).toFixed(2)}% worse price`
+              );
+            }
+            
+            // Use createUnifiedOrder with MARKET order type (per Lighter docs)
+            orderParams = {
+              marketIndex,
+              clientOrderIndex: Date.now(),
+              baseAmount,
+              isAsk,
+              orderType: LighterOrderType.MARKET,
+              idealPrice: market.priceToUnits(idealPrice),
+              maxSlippage: 0.01, // 1% max slippage
+            };
           }
-          
-          const price = isBuy 
-            ? parseFloat(orderBook.bestAsk?.price || '0')
-            : parseFloat(orderBook.bestBid?.price || '0');
-          
-          // For market orders, use LIMIT with best price (Lighter requires this)
-          // Map TimeInForce: IOC = 1, GTC = 0
-          const timeInForce = request.timeInForce === TimeInForce.IOC ? 1 : 0;
-          
-          orderParams = {
-            marketIndex,
-            clientOrderIndex: Date.now(),
-            baseAmount,
-            price: market.priceToUnits(price),
-            isAsk,
-            orderType: LighterOrderType.LIMIT, // Use LIMIT even for "market" orders
-            timeInForce, // 0 = GTC, 1 = IOC
-            reduceOnly: request.reduceOnly ? 1 : 0, // Critical: must be 1 for closing orders
-            orderExpiry: 0, // Set to 0 (no expiry in OrderExpiry field)
-            expiredAt: timeInForce === 1 
-              ? Date.now() + 60000  // 1 minute for IOC orders
-              : Date.now() + 3600000, // 1 hour for GTC orders
-          };
         } else {
           // Limit order
           if (!request.price) {
@@ -352,7 +447,12 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
 
           // Map TimeInForce: IOC = 1, GTC = 0
           const timeInForce = request.timeInForce === TimeInForce.IOC ? 1 : 0;
+          const expiredAt = timeInForce === 1 
+            ? Date.now() + 60000  // 1 minute for IOC orders
+            : Date.now() + 3600000; // 1 hour for GTC orders
 
+          // orderExpiry: Must always be 0 for limit orders (both GTC and IOC)
+          // Based on actual Lighter API payload: OrderExpiry: 0 for all limit orders
           orderParams = {
             marketIndex,
             clientOrderIndex: Date.now(),
@@ -362,21 +462,35 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
             orderType: LighterOrderType.LIMIT,
             timeInForce, // 0 = GTC, 1 = IOC
             reduceOnly: request.reduceOnly ? 1 : 0, // Critical: must be 1 for closing orders
-            orderExpiry: 0, // Set to 0 (no expiry in OrderExpiry field)
-            expiredAt: timeInForce === 1 
-              ? Date.now() + 60000  // 1 minute for IOC orders
-              : Date.now() + 3600000, // 1 hour for GTC orders
+            orderExpiry: 0, // Always 0 for limit orders (per Lighter API spec)
+            expiredAt,
           };
         }
 
+        this.logger.debug(`Creating unified order with params: ${JSON.stringify({
+          marketIndex: orderParams.marketIndex,
+          clientOrderIndex: orderParams.clientOrderIndex,
+          baseAmount: orderParams.baseAmount.toString(),
+          price: orderParams.price?.toString() || orderParams.idealPrice?.toString() || 'N/A',
+          idealPrice: orderParams.idealPrice?.toString(),
+          maxSlippage: orderParams.maxSlippage,
+          isAsk: orderParams.isAsk,
+          orderType: orderParams.orderType,
+          timeInForce: orderParams.timeInForce,
+          reduceOnly: orderParams.reduceOnly,
+        })}`);
+        
         const result = await this.signerClient!.createUnifiedOrder(orderParams);
 
         if (!result.success) {
           const errorMsg = result.mainOrder.error || 'Order creation failed';
+          this.logger.error(`❌ Lighter order creation failed: ${errorMsg}`);
+          this.logger.error(`Order params: ${JSON.stringify(orderParams)}`);
           throw new Error(errorMsg);
         }
 
         const orderId = result.mainOrder.hash;
+        this.logger.log(`✅ Lighter order created successfully: ${orderId}`);
         
         // Wait for transaction to be processed (matching script behavior)
         try {
@@ -405,6 +519,19 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
       } catch (error: any) {
         lastError = error;
         const errorMsg = error?.message || String(error);
+        const errorStack = error?.stack || '';
+        
+        // Log detailed error information
+        this.logger.error(
+          `❌ Lighter order placement failed (attempt ${attempt + 1}/${maxRetries}): ${errorMsg}`
+        );
+        if (errorStack) {
+          this.logger.debug(`Error stack: ${errorStack}`);
+        }
+        if (error?.response) {
+          this.logger.debug(`Error response: ${JSON.stringify(error.response.data)}`);
+        }
+        
         const isRateLimit = errorMsg.includes('Too Many Requests') || 
                            errorMsg.includes('429') ||
                            errorMsg.includes('rate limit') ||
@@ -430,12 +557,20 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
     }
     
     // Should never reach here, but just in case
-    throw new ExchangeError(
-      `Failed to place order after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`,
-      ExchangeType.LIGHTER,
-      undefined,
-      lastError,
-    );
+        const finalErrorMsg = lastError?.message || 'Unknown error';
+        this.logger.error(
+          `❌ Lighter order placement failed after ${maxRetries} attempts: ${finalErrorMsg}`
+        );
+        if (lastError?.stack) {
+          this.logger.error(`Final error stack: ${lastError.stack}`);
+        }
+        
+        throw new ExchangeError(
+          `Failed to place order after ${maxRetries} attempts: ${finalErrorMsg}`,
+          ExchangeType.LIGHTER,
+          undefined,
+          lastError,
+        );
   }
 
   async getPosition(symbol: string): Promise<PerpPosition | null> {
@@ -633,29 +768,34 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
           const liquidationPrice = undefined; // Not provided by API
           const marginUsed = undefined; // Not provided by API
 
-          positions.push(
-            new PerpPosition(
-              ExchangeType.LIGHTER,
-              symbol,
-              side,
-              absSize,
-              entryPrice,
-              markPrice,
-              unrealizedPnl,
-              leverage,
-              liquidationPrice,
-              marginUsed,
-              undefined,
-              new Date(),
-            ),
+          const position = new PerpPosition(
+            ExchangeType.LIGHTER,
+            symbol,
+            side,
+            absSize,
+            entryPrice,
+            markPrice,
+            unrealizedPnl,
+            leverage,
+            liquidationPrice,
+            marginUsed,
+            undefined,
+            new Date(),
           );
+          
+          this.logger.debug(
+            `📍 Lighter Position: symbol="${symbol}", side=${side}, size=${absSize}, ` +
+            `entryPrice=${entryPrice}, markPrice=${markPrice}, pnl=${unrealizedPnl}, marketIndex=${marketIndex}`
+          );
+          
+          positions.push(position);
         } catch (error: any) {
           this.logger.warn(`Failed to parse position data: ${error.message}. Data: ${JSON.stringify(posData).substring(0, 200)}`);
           continue;
         }
       }
 
-      this.logger.debug(`Retrieved ${positions.length} positions from Lighter Explorer API`);
+      this.logger.debug(`✅ Lighter getPositions() returning ${positions.length} positions: ${positions.map(p => `${p.symbol}(${p.side})`).join(', ')}`);
       return positions;
     } catch (error: any) {
       this.logger.error(`Failed to get positions: ${error.message}`);
@@ -1394,20 +1534,58 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
           `(requested: ${amount.toFixed(2)} USDC)`
         );
 
-        // Wait until we have at least the requested amount
+        const elapsed = Date.now() - startTime;
+        
+        // Tolerance for withdrawal fees: accept balance within 5% or $0.50 of requested amount
+        const tolerance = Math.max(amount * 0.05, 0.50);
+        const minAcceptableAmount = amount - tolerance;
+        
+        // After 2 minutes, accept balance if it's at least 80% of requested (handles withdrawal fees)
+        const acceptPartialAfter = 120000; // 2 minutes
+        const minPartialAmount = amount * 0.80;
+        
+        // Check if we have sufficient balance
         if (balanceFormatted >= amount) {
           this.logger.log(
             `✅ Funds arrived. Available balance: ${balanceFormatted.toFixed(2)} USDC`
           );
           break;
         }
-
-        const elapsed = Date.now() - startTime;
+        
+        // Accept balance within tolerance (handles withdrawal fees)
+        if (balanceFormatted >= minAcceptableAmount && balanceFormatted > 0) {
+          this.logger.log(
+            `✅ Funds arrived (within tolerance). Available balance: ${balanceFormatted.toFixed(2)} USDC ` +
+            `(requested: ${amount.toFixed(2)} USDC, tolerance: ${tolerance.toFixed(2)} USDC). ` +
+            `This likely accounts for withdrawal fees.`
+          );
+          break;
+        }
+        
+        // After 2 minutes, accept partial balance if reasonable (at least 80% of requested)
+        if (elapsed >= acceptPartialAfter && balanceFormatted >= minPartialAmount && balanceFormatted > 0) {
+          this.logger.log(
+            `✅ Accepting partial balance after ${Math.floor(elapsed / 1000)}s wait. ` +
+            `Available: ${balanceFormatted.toFixed(2)} USDC (requested: ${amount.toFixed(2)} USDC). ` +
+            `Withdrawal fees may have reduced the amount.`
+          );
+          break;
+        }
+        
+        // Timeout after max wait time
         if (elapsed >= maxWaitTime) {
+          if (balanceFormatted > 0) {
+            // If we have some balance, use it instead of failing
+            this.logger.warn(
+              `⚠️ Timeout reached but accepting available balance: ${balanceFormatted.toFixed(2)} USDC ` +
+              `(requested: ${amount.toFixed(2)} USDC). Withdrawal fees may have reduced the amount.`
+            );
+            break;
+          }
           throw new Error(
             `Insufficient USDC balance after ${Math.floor(elapsed / 1000)}s wait. ` +
             `Required: ${amount.toFixed(2)} USDC, Available: ${balanceFormatted.toFixed(2)} USDC. ` +
-            `Funds may still be in transit from withdrawal. Check Hyperliquid withdrawal status.`
+            `Funds may still be in transit from withdrawal. Check withdrawal status.`
           );
         }
 

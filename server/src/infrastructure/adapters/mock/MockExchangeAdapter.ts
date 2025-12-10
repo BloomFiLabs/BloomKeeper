@@ -13,6 +13,7 @@ import { IPerpExchangeAdapter, ExchangeError } from '../../../domain/ports/IPerp
 import { AsterExchangeAdapter } from '../aster/AsterExchangeAdapter';
 import { LighterExchangeAdapter } from '../lighter/LighterExchangeAdapter';
 import { HyperliquidExchangeAdapter } from '../hyperliquid/HyperliquidExchangeAdapter';
+import { ExtendedExchangeAdapter } from '../extended/ExtendedExchangeAdapter';
 
 /**
  * MockExchangeAdapter - Wraps real exchange adapters for testing
@@ -36,22 +37,30 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
   constructor(
     private readonly configService: ConfigService,
     exchangeType: ExchangeType,
-    private readonly asterAdapter: AsterExchangeAdapter,
-    private readonly lighterAdapter: LighterExchangeAdapter,
-    private readonly hyperliquidAdapter: HyperliquidExchangeAdapter,
+    private readonly asterAdapter: AsterExchangeAdapter | null,
+    private readonly lighterAdapter: LighterExchangeAdapter | null,
+    private readonly hyperliquidAdapter: HyperliquidExchangeAdapter | null,
+    private readonly extendedAdapter: ExtendedExchangeAdapter | null = null,
   ) {
     this.exchangeType = exchangeType;
     
     // Get the real adapter for this exchange type
     switch (exchangeType) {
       case ExchangeType.ASTER:
+        if (!asterAdapter) throw new Error('Aster adapter required for mock');
         this.realAdapter = asterAdapter;
         break;
       case ExchangeType.LIGHTER:
+        if (!lighterAdapter) throw new Error('Lighter adapter required for mock');
         this.realAdapter = lighterAdapter;
         break;
       case ExchangeType.HYPERLIQUID:
+        if (!hyperliquidAdapter) throw new Error('Hyperliquid adapter required for mock');
         this.realAdapter = hyperliquidAdapter;
+        break;
+      case ExchangeType.EXTENDED:
+        if (!extendedAdapter) throw new Error('Extended adapter required for mock');
+        this.realAdapter = extendedAdapter;
         break;
       default:
         throw new Error(`Unsupported exchange type: ${exchangeType}`);
@@ -61,8 +70,8 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
     const mockCapital = parseFloat(
       this.configService.get<string>('MOCK_CAPITAL_USD') || '5000000'
     );
-    // Split capital across 3 exchanges (Aster, Lighter, Hyperliquid)
-    this.mockBalance = mockCapital / 3;
+    // Split capital across 4 exchanges (Aster, Lighter, Hyperliquid, Extended)
+    this.mockBalance = mockCapital / 4;
     
     // Use the real adapter's config (it has all the necessary credentials)
     this.config = this.realAdapter.getConfig();

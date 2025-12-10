@@ -191,10 +191,64 @@ export class OrderExecutor implements IOrderExecutor {
     );
 
     try {
-      const [longResponse, shortResponse] = await Promise.all([
-        longAdapter.placeOrder(plan.longOrder),
-        shortAdapter.placeOrder(plan.shortOrder),
+      // Place orders with individual error handling to identify which one failed
+      let longResponse: PerpOrderResponse;
+      let shortResponse: PerpOrderResponse;
+      let longError: any = null;
+      let shortError: any = null;
+
+      // Place orders in parallel but catch errors individually
+      const [longResult, shortResult] = await Promise.allSettled([
+        longAdapter.placeOrder(plan.longOrder).catch((err: any) => {
+          longError = err;
+          const errorMsg = err?.message || String(err);
+          this.logger.error(`❌ Failed to place LONG order on ${opportunity.longExchange}: ${errorMsg}`);
+          throw err;
+        }),
+        shortAdapter.placeOrder(plan.shortOrder).catch((err: any) => {
+          shortError = err;
+          const errorMsg = err?.message || String(err);
+          this.logger.error(`❌ Failed to place SHORT order on ${opportunity.shortExchange}: ${errorMsg}`);
+          throw err;
+        }),
       ]);
+
+      // Extract responses or create error responses
+      if (longResult.status === 'fulfilled') {
+        longResponse = longResult.value;
+      } else {
+        const reason = longResult.reason as any;
+        const errorMsg = longError?.message || reason?.message || String(reason) || 'Unknown error';
+        longResponse = new PerpOrderResponse(
+          'error',
+          OrderStatus.REJECTED,
+          opportunity.symbol,
+          OrderSide.LONG,
+          undefined,
+          undefined,
+          undefined,
+          errorMsg,
+          new Date(),
+        );
+      }
+
+      if (shortResult.status === 'fulfilled') {
+        shortResponse = shortResult.value;
+      } else {
+        const reason = shortResult.reason as any;
+        const errorMsg = shortError?.message || reason?.message || String(reason) || 'Unknown error';
+        shortResponse = new PerpOrderResponse(
+          'error',
+          OrderStatus.REJECTED,
+          opportunity.symbol,
+          OrderSide.SHORT,
+          undefined,
+          undefined,
+          undefined,
+          errorMsg,
+          new Date(),
+        );
+      }
 
       if (longResponse.isSuccess() && shortResponse.isSuccess()) {
         result.opportunitiesExecuted = 1;
@@ -208,18 +262,29 @@ export class OrderExecutor implements IOrderExecutor {
 
         return Result.success(result);
       } else {
-        const longError = longResponse.error || 'unknown';
-        const shortError = shortResponse.error || 'unknown';
+        const longErrorMsg = longResponse.error || (longError as any)?.message || 'unknown';
+        const shortErrorMsg = shortResponse.error || (shortError as any)?.message || 'unknown';
+        
+        this.logger.error(
+          `❌ Order execution failed for ${opportunity.symbol}: ` +
+          `LONG (${opportunity.longExchange}): ${longErrorMsg}, ` +
+          `SHORT (${opportunity.shortExchange}): ${shortErrorMsg}`
+        );
+        
         return Result.failure(
           new OrderExecutionException(
-            `Order execution failed: Long: ${longError}, Short: ${shortError}`,
+            `Order execution failed: Long (${opportunity.longExchange}): ${longErrorMsg}, Short (${opportunity.shortExchange}): ${shortErrorMsg}`,
             longResponse.orderId || shortResponse.orderId || 'unknown',
             opportunity.longExchange,
-            { symbol: opportunity.symbol, longError, shortError },
+            { symbol: opportunity.symbol, longError: longErrorMsg, shortError: shortErrorMsg },
           ),
         );
       }
     } catch (error: any) {
+      this.logger.error(`❌ Unexpected error executing orders for ${opportunity.symbol}: ${error.message}`);
+      if (error.stack) {
+        this.logger.error(`Error stack: ${error.stack}`);
+      }
       return Result.failure(
         new OrderExecutionException(
           `Failed to execute orders: ${error.message}`,

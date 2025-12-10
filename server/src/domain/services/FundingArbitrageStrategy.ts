@@ -101,6 +101,21 @@ export class FundingArbitrageStrategy {
     }
   > = new Map();
 
+  // Single-leg retry tracking: track retry attempts for opening missing side
+  private readonly singleLegRetries: Map<
+    string, // key: `${symbol}-${longExchange}-${shortExchange}`
+    {
+      retryCount: number;
+      longExchange: ExchangeType;
+      shortExchange: ExchangeType;
+      opportunity: ArbitrageOpportunity;
+      lastRetryTime: Date;
+    }
+  > = new Map();
+
+  // Filtered opportunities: opportunities that failed after 5 retries
+  private readonly filteredOpportunities: Set<string> = new Set(); // key: `${symbol}-${longExchange}-${shortExchange}`
+
   // Leverage multiplier (from StrategyConfig, kept for convenience)
   private readonly leverage: number;
 
@@ -160,11 +175,11 @@ export class FundingArbitrageStrategy {
     );
 
     if (result.isFailure) {
-      this.logger.debug(
+          this.logger.debug(
         `Failed to create execution plan for ${opportunity.symbol}: ${result.error.message}`,
       );
-      return null;
-    }
+        return null;
+      }
 
     return result.value;
   }
@@ -994,6 +1009,19 @@ export class FundingArbitrageStrategy {
       // Sort by expected return first, then by maxPortfolio as tiebreaker
       const opportunitiesWithMaxPortfolio = allEvaluatedOpportunities
         .filter((item) => {
+          // Filter out opportunities that are marked as filtered (failed after 5 retries)
+          const filterKey = this.getRetryKey(
+            item.opportunity.symbol,
+            item.opportunity.longExchange,
+            item.opportunity.shortExchange,
+          );
+          if (this.filteredOpportunities.has(filterKey)) {
+            this.logger.debug(
+              `Skipping filtered opportunity ${item.opportunity.symbol} (${item.opportunity.longExchange}/${item.opportunity.shortExchange})`,
+            );
+            return false;
+          }
+          
           // Must have valid maxPortfolioFor35APY and plan
           if (
             item.maxPortfolioFor35APY === null ||
@@ -1036,6 +1064,25 @@ export class FundingArbitrageStrategy {
           (a, b) => b.plan.expectedNetReturn - a.plan.expectedNetReturn,
         );
         const bestOpportunity = executionPlans[0];
+        // Store opportunity for retry tracking
+        if (bestOpportunity.plan && bestOpportunity.opportunity) {
+          const retryKey = this.getRetryKey(
+            bestOpportunity.opportunity.symbol,
+            bestOpportunity.opportunity.longExchange,
+            bestOpportunity.opportunity.shortExchange,
+          );
+          // Only store if not already tracked (don't overwrite existing retry count)
+          if (!this.singleLegRetries.has(retryKey)) {
+            this.singleLegRetries.set(retryKey, {
+              retryCount: 0,
+              longExchange: bestOpportunity.opportunity.longExchange,
+              shortExchange: bestOpportunity.opportunity.shortExchange,
+              opportunity: bestOpportunity.opportunity,
+              lastRetryTime: new Date(),
+            });
+          }
+        }
+        
         return await this.executeSinglePosition(
           bestOpportunity,
           adapters,
@@ -1104,8 +1151,17 @@ export class FundingArbitrageStrategy {
         const maxPortfolio = item.maxPortfolioFor35APY || 0;
         const maxCollateral = maxPortfolio / this.leverage;
 
-        if (existingPair && existingPair.currentCollateral > 0) {
-          // We have an existing position for this opportunity
+        // CRITICAL: Only consider existing positions if they match the opportunity's exchange pair
+        // This prevents opening a third leg (e.g., if we have Aster LONG + Lighter SHORT,
+        // we shouldn't open Hyperliquid LONG + Aster SHORT, as that would create 3 positions)
+        const existingMatchesOpportunity =
+          existingPair &&
+          existingPair.currentCollateral > 0 &&
+          existingPair.long?.exchangeType === item.opportunity.longExchange &&
+          existingPair.short?.exchangeType === item.opportunity.shortExchange;
+
+        if (existingMatchesOpportunity) {
+          // We have an existing position for this opportunity that matches the exchange pair
           const currentCollateral = existingPair.currentCollateral;
           const additionalCollateralNeeded = maxCollateral - currentCollateral;
 
@@ -1161,6 +1217,16 @@ export class FundingArbitrageStrategy {
             cumulativeCapitalUsed += maxCollateral;
             continue;
           }
+        } else if (existingPair && existingPair.currentCollateral > 0) {
+          // Existing positions exist but don't match this opportunity's exchange pair
+          // Skip this opportunity to avoid creating a third leg (breaking delta neutrality)
+          this.logger.warn(
+            `⚠️ Skipping ${symbol}: Existing positions on ${existingPair.long?.exchangeType || '?'} LONG + ${existingPair.short?.exchangeType || '?'} SHORT ` +
+              `don't match opportunity's ${item.opportunity.longExchange} LONG + ${item.opportunity.shortExchange} SHORT ` +
+              `(would create 3 positions, breaking delta neutrality)`,
+          );
+          cumulativeCapitalUsed += maxCollateral; // Reserve space but don't execute
+          continue;
         } else {
           // No existing position - fill it partially with whatever capital we have
           // This is Position 1 in the ladder - we fill it until it's maxed, then move to Position 2
@@ -1234,33 +1300,125 @@ export class FundingArbitrageStrategy {
         }
       }
 
-      // CRITICAL: Detect and close single-leg positions FIRST (before handling asymmetric fills)
-      // Single-leg positions have price exposure and must be closed immediately
+      // CRITICAL: Detect and handle single-leg positions FIRST (before handling asymmetric fills)
+      // Single-leg positions have price exposure - try to open missing side, then close if still missing
       const singleLegPositions = this.positionManager.detectSingleLegPositions(
         currentPositions,
       );
       if (singleLegPositions.length > 0) {
-        this.logger.error(
-          `🚨 CRITICAL: Closing ${singleLegPositions.length} single-leg position(s) immediately to prevent price exposure...`,
+        this.logger.warn(
+          `⚠️ Detected ${singleLegPositions.length} single-leg position(s). Attempting to open missing side...`,
         );
-        const singleLegCloseResult = await this.closeAllPositions(
-          singleLegPositions,
-          adapters,
-          result,
-        );
-        if (singleLegCloseResult.stillOpen.length > 0) {
-          this.logger.error(
-            `❌ CRITICAL: ${singleLegCloseResult.stillOpen.length} single-leg position(s) failed to close! ` +
-              `These positions have price exposure: ${singleLegCloseResult.stillOpen
-                .map((p) => `${p.symbol} (${p.side}) on ${p.exchangeType}`)
-                .join(', ')}. ` +
-              `MANUAL INTERVENTION REQUIRED!`,
-          );
-        } else {
-          this.logger.log(
-            `✅ Successfully closed all ${singleLegPositions.length} single-leg position(s)`,
-          );
+        
+        // Try to open missing side for each single-leg position
+        for (const singleLegPos of singleLegPositions) {
+          // Find retry info by matching symbol and exchange
+          let retryInfo: {
+            retryCount: number;
+            longExchange: ExchangeType;
+            shortExchange: ExchangeType;
+            opportunity: ArbitrageOpportunity;
+            lastRetryTime: Date;
+          } | undefined;
+          let retryKey: string | undefined;
+          
+          for (const [key, info] of this.singleLegRetries.entries()) {
+            if (info.opportunity.symbol === singleLegPos.symbol &&
+                (info.longExchange === singleLegPos.exchangeType || 
+                 info.shortExchange === singleLegPos.exchangeType)) {
+              retryInfo = info;
+              retryKey = key;
+              break;
+            }
+          }
+          
+          if (retryInfo && retryKey && retryInfo.retryCount < 5) {
+            // We know which exchange should have the other side - try to open it
+            const missingExchange = singleLegPos.side === OrderSide.LONG 
+              ? retryInfo.shortExchange 
+              : retryInfo.longExchange;
+            const missingSide = singleLegPos.side === OrderSide.LONG 
+              ? OrderSide.SHORT 
+              : OrderSide.LONG;
+            
+            this.logger.log(
+              `🔄 Retry ${retryInfo.retryCount + 1}/5: Attempting to open missing ${missingSide} side ` +
+              `for ${singleLegPos.symbol} on ${missingExchange}...`,
+            );
+            
+            // Try to open the missing side using the stored opportunity
+            const retrySuccess = await this.retryOpenMissingSide(
+              retryInfo.opportunity,
+              missingExchange,
+              missingSide,
+              adapters,
+            );
+            
+            if (retrySuccess) {
+              this.logger.log(
+                `✅ Successfully opened missing ${missingSide} side for ${singleLegPos.symbol} on ${missingExchange}`,
+              );
+              // Reset retry count on success
+              this.singleLegRetries.delete(retryKey);
+            } else {
+              // Increment retry count
+              retryInfo.retryCount++;
+              retryInfo.lastRetryTime = new Date();
+              this.logger.warn(
+                `⚠️ Retry ${retryInfo.retryCount}/5 failed for ${singleLegPos.symbol}. ` +
+                `Will try again next cycle.`,
+              );
+              
+              // After 5 retries, filter out this opportunity
+              if (retryInfo.retryCount >= 5) {
+                const filterKey = this.getRetryKey(
+                  retryInfo.opportunity.symbol,
+                  retryInfo.longExchange,
+                  retryInfo.shortExchange,
+                );
+                this.filteredOpportunities.add(filterKey);
+                this.logger.error(
+                  `❌ Filtering out ${retryInfo.opportunity.symbol} (${retryInfo.longExchange}/${retryInfo.shortExchange}) ` +
+                  `after 5 failed retry attempts. Moving to next opportunity.`,
+                );
+                // Close the single-leg position since we're giving up
+                await this.closeSingleLegPosition(singleLegPos, adapters, result);
+              }
+            }
+          } else {
+            // No retry info or already exceeded retries - close the position
+            this.logger.error(
+              `🚨 Closing single-leg position ${singleLegPos.symbol} (${singleLegPos.side}) on ${singleLegPos.exchangeType} ` +
+              `- no retry info or exceeded retry limit`,
+            );
+            await this.closeSingleLegPosition(singleLegPos, adapters, result);
+          }
         }
+        
+        // Refresh positions after retry attempts
+        const updatedPositions = await this.getAllPositions(adapters);
+        const stillSingleLeg = this.positionManager.detectSingleLegPositions(updatedPositions);
+        
+        if (stillSingleLeg.length > 0) {
+          this.logger.error(
+            `🚨 Still have ${stillSingleLeg.length} single-leg position(s) after retries. Closing them...`,
+          );
+          const singleLegCloseResult = await this.closeAllPositions(
+            stillSingleLeg,
+            adapters,
+            result,
+          );
+          if (singleLegCloseResult.stillOpen.length > 0) {
+            this.logger.error(
+              `❌ CRITICAL: ${singleLegCloseResult.stillOpen.length} single-leg position(s) failed to close! ` +
+                `These positions have price exposure: ${singleLegCloseResult.stillOpen
+                  .map((p) => `${p.symbol} (${p.side}) on ${p.exchangeType}`)
+                  .join(', ')}. ` +
+                `MANUAL INTERVENTION REQUIRED!`,
+            );
+          }
+        }
+        
         // Remove single-leg positions from positionsToClose to avoid double-closing
         const singleLegSymbols = new Set(
           singleLegPositions.map((p) => `${p.symbol}-${p.exchangeType}`),
@@ -1318,6 +1476,27 @@ export class FundingArbitrageStrategy {
         }
       }
 
+      // Store opportunities for retry tracking before execution
+      for (const opp of selectedOpportunities) {
+        if (opp.plan && opp.opportunity) {
+          const retryKey = this.getRetryKey(
+            opp.opportunity.symbol,
+            opp.opportunity.longExchange,
+            opp.opportunity.shortExchange,
+          );
+          // Only store if not already tracked (don't overwrite existing retry count)
+          if (!this.singleLegRetries.has(retryKey)) {
+            this.singleLegRetries.set(retryKey, {
+              retryCount: 0,
+              longExchange: opp.opportunity.longExchange,
+              shortExchange: opp.opportunity.shortExchange,
+              opportunity: opp.opportunity,
+              lastRetryTime: new Date(),
+            });
+          }
+        }
+      }
+
       // Execute all selected positions
       const executionResult = await this.executeMultiplePositions(
         selectedOpportunities,
@@ -1333,18 +1512,18 @@ export class FundingArbitrageStrategy {
         result.errors.push(executionResult.error.message);
       } else {
         const executionResults = executionResult.value;
-        result.opportunitiesExecuted = executionResults.successfulExecutions;
-        result.ordersPlaced = executionResults.totalOrders;
-        result.totalExpectedReturn = executionResults.totalExpectedReturn;
+      result.opportunitiesExecuted = executionResults.successfulExecutions;
+      result.ordersPlaced = executionResults.totalOrders;
+      result.totalExpectedReturn = executionResults.totalExpectedReturn;
       }
 
       // Log comprehensive performance metrics after execution
       if (!executionResult.isFailure) {
-        await this.logComprehensivePerformanceMetrics(
-          selectedOpportunities,
-          adapters,
+      await this.logComprehensivePerformanceMetrics(
+        selectedOpportunities,
+        adapters,
           executionResult.value.successfulExecutions,
-        );
+      );
       }
 
       // Strategy is successful if it completes execution, even with some errors
@@ -1383,11 +1562,11 @@ export class FundingArbitrageStrategy {
   ): Promise<PerpPosition[]> {
     const result = await this.positionManager.getAllPositions(adapters);
     if (result.isFailure) {
-      this.logger.warn(
+        this.logger.warn(
         `Failed to get all positions: ${result.error.message}`,
-      );
+        );
       return [];
-    }
+      }
     return result.value;
   }
 
@@ -1406,7 +1585,7 @@ export class FundingArbitrageStrategy {
       result,
     );
     if (closeResult.isFailure) {
-      this.logger.warn(
+            this.logger.warn(
         `Failed to close all positions: ${closeResult.error.message}`,
       );
       result.errors.push(closeResult.error.message);
@@ -1432,8 +1611,8 @@ export class FundingArbitrageStrategy {
   ): Promise<PerpOrderResponse> {
     return this.orderExecutor.waitForOrderFill(
       adapter,
-      orderId,
-      symbol,
+            orderId,
+            symbol,
       exchangeType,
       expectedSize,
       maxRetries,
@@ -1491,10 +1670,10 @@ export class FundingArbitrageStrategy {
     const handleResult = await this.positionManager.handleAsymmetricFills(
       adapters,
       fillsArray,
-      result,
-    );
+              result,
+            );
     if (handleResult.isFailure) {
-      this.logger.warn(
+          this.logger.warn(
         `Failed to handle asymmetric fills: ${handleResult.error.message}`,
       );
       result.errors.push(handleResult.error.message);
@@ -1502,7 +1681,7 @@ export class FundingArbitrageStrategy {
 
     // Remove handled fills from the Map
     for (const { key } of fillsToHandle) {
-      this.asymmetricFills.delete(key);
+          this.asymmetricFills.delete(key);
     }
   }
 
@@ -1520,10 +1699,10 @@ export class FundingArbitrageStrategy {
     result: ArbitrageExecutionResult,
   ): Promise<void> {
     const closeResult = await this.positionManager.closeFilledPosition(
-      adapter,
-      symbol,
+          adapter,
+          symbol,
       side,
-      size,
+          size,
       exchangeType,
       result,
     );
@@ -1558,7 +1737,7 @@ export class FundingArbitrageStrategy {
       shortBalance,
     );
     if (rebalanceResult.isFailure) {
-      this.logger.warn(
+            this.logger.warn(
         `Rebalancing failed: ${rebalanceResult.error.message}`,
       );
       return false;
@@ -1593,11 +1772,11 @@ export class FundingArbitrageStrategy {
   }, DomainException>> {
     return this.orderExecutor.executeMultiplePositions(
       opportunities,
-      adapters,
+                  adapters,
       exchangeBalances,
-      result,
-    );
-  }
+                  result,
+                );
+              }
 
 
   /**
@@ -2010,20 +2189,154 @@ export class FundingArbitrageStrategy {
     // Loss tracking should be handled internally by OrderExecutor or removed
     const executionResult = await this.orderExecutor.executeSinglePosition(
       bestOpportunity,
-      adapters,
-      result,
-    );
+        adapters,
+        result,
+      );
 
     if (executionResult.isFailure) {
-      this.logger.warn(
+        this.logger.warn(
         `Failed to execute single position for ${bestOpportunity.opportunity.symbol}: ${executionResult.error.message}`,
       );
       result.errors.push(executionResult.error.message);
     }
 
-    return result;
+        return result;
+      }
+
+
+  /**
+   * Get retry key for single-leg position tracking
+   */
+  private getRetryKey(
+    symbol: string,
+    exchange1: ExchangeType,
+    exchange2?: ExchangeType,
+  ): string {
+    if (exchange2) {
+      // For opportunity tracking: sort exchanges for consistent key
+      const exchanges = [exchange1, exchange2].sort();
+      return `${symbol}-${exchanges[0]}-${exchanges[1]}`;
+    }
+    // For position lookup: find matching retry info by symbol and exchange
+    for (const [key, retryInfo] of this.singleLegRetries.entries()) {
+      if (key.startsWith(`${symbol}-`) && 
+          (retryInfo.longExchange === exchange1 || retryInfo.shortExchange === exchange1)) {
+        return key;
+      }
+    }
+    // Fallback: create key with just symbol and exchange
+    return `${symbol}-${exchange1}`;
   }
 
+  /**
+   * Try to open the missing side of a single-leg position
+   */
+  private async retryOpenMissingSide(
+    opportunity: ArbitrageOpportunity,
+    missingExchange: ExchangeType,
+    missingSide: OrderSide,
+    adapters: Map<ExchangeType, IPerpExchangeAdapter>,
+  ): Promise<boolean> {
+    try {
+      const adapter = adapters.get(missingExchange);
+      if (!adapter) {
+        this.logger.warn(`No adapter found for ${missingExchange}`);
+        return false;
+      }
+
+      // Create execution plan for the missing side
+      const planResult = await this.executionPlanBuilder.buildPlan(
+        opportunity,
+        adapters,
+        {
+          longBalance: 1000000, // Use large balance to allow execution
+          shortBalance: 1000000,
+        },
+        this.strategyConfig,
+      );
+
+      if (planResult.isFailure) {
+        this.logger.warn(
+          `Failed to create execution plan for missing side: ${planResult.error.message}`,
+        );
+        return false;
+      }
+
+      const plan = planResult.value;
+      const orderRequest = missingSide === OrderSide.LONG 
+        ? plan.longOrder 
+        : plan.shortOrder;
+
+      // Place the order
+      const orderResult = await adapter.placeOrder(orderRequest);
+      
+      if (orderResult && orderResult.orderId) {
+        this.logger.log(
+          `✅ Successfully placed ${missingSide} order for ${opportunity.symbol} on ${missingExchange}: ${orderResult.orderId}`,
+        );
+        return true;
+      } else {
+        this.logger.warn(
+          `Failed to place ${missingSide} order for ${opportunity.symbol} on ${missingExchange}`,
+        );
+        return false;
+      }
+    } catch (error: any) {
+      this.logger.warn(
+        `Error retrying missing side for ${opportunity.symbol}: ${error.message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Close a single-leg position
+   */
+  private async closeSingleLegPosition(
+    position: PerpPosition,
+    adapters: Map<ExchangeType, IPerpExchangeAdapter>,
+    result: ArbitrageExecutionResult,
+  ): Promise<void> {
+    try {
+      const adapter = adapters.get(position.exchangeType);
+      if (!adapter) {
+        this.logger.warn(`No adapter found for ${position.exchangeType}`);
+        return;
+      }
+
+      const closeSide = position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
+      const closeOrder = new PerpOrderRequest(
+        position.symbol,
+        closeSide,
+        OrderType.MARKET,
+        position.size,
+        undefined, // price
+        TimeInForce.IOC,
+        true, // reduceOnly
+      );
+
+      const closeResult = await adapter.placeOrder(closeOrder);
+      if (closeResult && closeResult.orderId) {
+        this.logger.log(
+          `✅ Closed single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}`,
+        );
+      } else {
+        this.logger.warn(
+          `⚠️ Failed to close single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}`,
+        );
+        result.errors.push(
+          `Failed to close single-leg position ${position.symbol} on ${position.exchangeType}`,
+        );
+      }
+    } catch (error: any) {
+      this.logger.error(
+        `Error closing single-leg position ${position.symbol}: ${error.message}`,
+      );
+      result.errors.push(
+        `Error closing single-leg position ${position.symbol}: ${error.message}`,
+      );
+    }
+  }
 
   /**
    * Calculate next funding rate payment time
@@ -2070,7 +2383,7 @@ export class FundingArbitrageStrategy {
         `Failed to evaluate opportunity with history: ${evaluationResult.error.message}`,
       );
       // Return default values on failure
-      return {
+    return {
         breakEvenHours: null,
         historicalMetrics: { long: null, short: null },
         worstCaseBreakEvenHours: null,
@@ -2468,9 +2781,9 @@ export class FundingArbitrageStrategy {
     if (balanceResult.isFailure) {
       this.logger.warn(
         `Failed to get wallet balance: ${balanceResult.error.message}`,
-      );
-      return 0;
-    }
+        );
+        return 0;
+      }
     return balanceResult.value;
   }
 

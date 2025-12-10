@@ -4,6 +4,7 @@ import { Percentage } from '../value-objects/Percentage';
 import { AsterFundingDataProvider } from '../../infrastructure/adapters/aster/AsterFundingDataProvider';
 import { LighterFundingDataProvider } from '../../infrastructure/adapters/lighter/LighterFundingDataProvider';
 import { HyperLiquidDataProvider } from '../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider';
+import { ExtendedFundingDataProvider } from '../../infrastructure/adapters/extended/ExtendedFundingDataProvider';
 import { HyperLiquidWebSocketProvider } from '../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider';
 import * as cliProgress from 'cli-progress';
 
@@ -59,6 +60,8 @@ export interface ExchangeSymbolMapping {
   lighterMarketIndex?: number; // Lighter market index (e.g., 0)
   lighterSymbol?: string; // Lighter symbol name (e.g., "ETH")
   hyperliquidSymbol?: string; // Hyperliquid format (e.g., "ETH")
+  extendedSymbol?: string; // Extended format (e.g., "ETH")
+  extendedMarketId?: string; // Extended market ID
 }
 
 /**
@@ -75,6 +78,7 @@ export class FundingRateAggregator {
     private readonly hyperliquidProvider: HyperLiquidDataProvider,
     private readonly hyperliquidWsProvider: HyperLiquidWebSocketProvider,
     @Optional() private readonly lighterWsProvider?: any, // LighterWebSocketProvider (optional to avoid circular dependency)
+    @Optional() private readonly extendedProvider?: ExtendedFundingDataProvider,
   ) {}
 
   /**
@@ -102,10 +106,11 @@ export class FundingRateAggregator {
 
     try {
       // Get all assets from each exchange
-      const [asterSymbols, lighterMarkets, hyperliquidAssets] = await Promise.all([
+      const [asterSymbols, lighterMarkets, hyperliquidAssets, extendedMarkets] = await Promise.all([
         this.asterProvider.getAvailableSymbols().catch(() => []),
         this.lighterProvider.getAvailableMarkets().catch(() => []),
         this.hyperliquidProvider.getAvailableAssets().catch(() => []),
+        Promise.resolve([]), // Extended provider will be discovered via getCurrentFundingRate calls
       ]);
 
       // Build symbol mappings
@@ -184,6 +189,7 @@ export class FundingRateAggregator {
         if (mapping.asterSymbol) exchangeCount++;
         if (mapping.lighterMarketIndex !== undefined) exchangeCount++;
         if (mapping.hyperliquidSymbol) exchangeCount++;
+        if (mapping.extendedSymbol) exchangeCount++;
 
         // Only include if available on at least 2 exchanges (required for arbitrage)
         if (exchangeCount >= 2) {
@@ -218,6 +224,8 @@ export class FundingRateAggregator {
         return mapping.lighterMarketIndex;
       case ExchangeType.HYPERLIQUID:
         return mapping.hyperliquidSymbol;
+      case ExchangeType.EXTENDED:
+        return mapping.extendedSymbol;
       default:
         return undefined;
     }
@@ -380,6 +388,44 @@ export class FundingRateAggregator {
       }
     }
 
+    // Get Extended funding rate
+    if (this.extendedProvider) {
+      try {
+        const mapping = this.getSymbolMapping(symbol);
+        const extendedSymbol = mapping?.extendedSymbol || symbol; // Fallback to normalized symbol
+        
+        // Try to get funding rate (Extended provider will handle symbol lookup internally)
+        const extendedRate = await this.extendedProvider.getCurrentFundingRate(extendedSymbol);
+        const extendedPredicted = await this.extendedProvider.getPredictedFundingRate(extendedSymbol);
+        const extendedMarkPrice = await this.extendedProvider.getMarkPrice(extendedSymbol);
+        
+        // OI is critical - if it fails, log error and skip
+        try {
+          const extendedOI = await this.extendedProvider.getOpenInterest(extendedSymbol);
+
+          rates.push({
+            exchange: ExchangeType.EXTENDED,
+            symbol,
+            currentRate: extendedRate,
+            predictedRate: extendedPredicted,
+            markPrice: extendedMarkPrice,
+            openInterest: extendedOI,
+            timestamp: new Date(),
+          });
+        } catch (oiError: any) {
+          const errorMsg = oiError.message || String(oiError);
+          this.logger.error(`Failed to get Extended OI for ${symbol}: ${errorMsg}`);
+          this.logger.error(`  ⚠️  Skipping Extended for ${symbol} - OI is required but unavailable`);
+          // Don't add rate entry if OI is unavailable
+        }
+      } catch (error: any) {
+        // Only log actual errors (not missing mappings or OI errors which are handled above)
+        if (error.message && !error.message.includes('not found') && !error.message.includes('No funding rates') && !error.message.includes('OI')) {
+          this.logger.error(`Failed to get Extended funding rate for ${symbol}: ${error.message}`);
+        }
+      }
+    }
+
     return rates;
   }
 
@@ -453,78 +499,63 @@ export class FundingRateAggregator {
 
             const symbolOpportunities: ArbitrageOpportunity[] = [];
 
-            // Find best long opportunity (highest positive rate)
-            const positiveRates = comparison.rates.filter((r) => r.currentRate > 0);
-            const bestLong = positiveRates.length > 0 
-              ? positiveRates.reduce((best, current) => current.currentRate > best.currentRate ? current : best)
-              : null;
+            // CORRECT LOGIC FOR FUNDING RATE ARBITRAGE (handles ALL cases):
+            // - LONG position: negative funding rate = we RECEIVE funding (profit)
+            // - SHORT position: positive funding rate = we RECEIVE funding (profit)
+            // 
+            // Cases we capture:
+            // 1. Both negative: LONG on lowest (most negative), SHORT on highest negative (least negative)
+            //    Example: -0.02% (LONG) vs -0.01% (SHORT) → spread = -0.01% - (-0.02%) = 0.01%
+            // 2. Both positive: LONG on lowest positive (least positive), SHORT on highest (most positive)
+            //    Example: 0.01% (LONG) vs 0.02% (SHORT) → spread = 0.02% - 0.01% = 0.01%
+            // 3. Mixed signs: LONG on lowest (negative), SHORT on highest (positive)
+            //    Example: -0.02% (LONG) vs 0.01% (SHORT) → spread = 0.01% - (-0.02%) = 0.03%
+            //
+            // Always: LONG on LOWEST rate, SHORT on HIGHEST rate
+            // Spread = shortRate - longRate (always positive when there's a difference)
 
-            // Find best short opportunity (lowest/most negative rate)
-            const negativeRates = comparison.rates.filter((r) => r.currentRate < 0);
-            const bestShort = negativeRates.length > 0
-              ? negativeRates.reduce((best, current) => current.currentRate < best.currentRate ? current : best)
-              : null;
+            // Find best long opportunity (LOWEST rate overall - most negative = we receive funding)
+            const bestLong = comparison.rates.reduce((best, current) => 
+              current.currentRate < (best?.currentRate ?? Infinity) ? current : best
+            , null as ExchangeFundingRate | null);
 
-            // If we have both long and short opportunities, create arbitrage
+            // Find best short opportunity (HIGHEST rate overall - most positive = we receive funding)
+            const bestShort = comparison.rates.reduce((best, current) => 
+              current.currentRate > (best?.currentRate ?? -Infinity) ? current : best
+            , null as ExchangeFundingRate | null);
+
+            // If we have both long and short opportunities on different exchanges, create arbitrage
+            // This works for ALL cases: both negative, both positive, or mixed signs
             if (bestLong && bestShort && bestLong.exchange !== bestShort.exchange) {
               const longRate = Percentage.fromDecimal(bestLong.currentRate);
               const shortRate = Percentage.fromDecimal(bestShort.currentRate);
-              const spread = longRate.subtract(shortRate);
+              // Spread = shortRate - longRate (positive when profitable)
+              // Examples:
+              //   Both negative: -0.01% - (-0.02%) = 0.01% ✓
+              //   Both positive: 0.02% - 0.01% = 0.01% ✓
+              //   Mixed: 0.01% - (-0.02%) = 0.03% ✓
+              const spread = shortRate.subtract(longRate);
               
-              if (Math.abs(spread.toDecimal()) >= minSpread) {
+              // Only create opportunity if spread is positive and meets minimum threshold
+              if (spread.toDecimal() >= minSpread) {
                 // Calculate expected annualized return
                 // Funding rates are typically hourly (e.g., 0.0013% per hour ≈ 10% annualized)
                 const periodsPerDay = 24; // Hourly funding periods
                 const periodsPerYear = periodsPerDay * 365;
-                const expectedReturn = Percentage.fromDecimal(Math.abs(spread.toDecimal()) * periodsPerYear);
+                const expectedReturn = Percentage.fromDecimal(spread.toDecimal() * periodsPerYear);
 
                 symbolOpportunities.push({
                   symbol,
-                  longExchange: bestLong.exchange,
-                  shortExchange: bestShort.exchange,
+                  longExchange: bestLong.exchange, // Exchange with LOWEST rate (most negative)
+                  shortExchange: bestShort.exchange, // Exchange with HIGHEST rate (most positive)
                   longRate,
                   shortRate,
-                  spread: Percentage.fromDecimal(Math.abs(spread.toDecimal())),
+                  spread: Percentage.fromDecimal(spread.toDecimal()), // Already positive when profitable
                   expectedReturn,
                   longMarkPrice: bestLong.markPrice > 0 ? bestLong.markPrice : undefined,
                   shortMarkPrice: bestShort.markPrice > 0 ? bestShort.markPrice : undefined,
                   longOpenInterest: bestLong.openInterest !== undefined && bestLong.openInterest > 0 ? bestLong.openInterest : undefined,
                   shortOpenInterest: bestShort.openInterest !== undefined && bestShort.openInterest > 0 ? bestShort.openInterest : undefined,
-                  timestamp: new Date(),
-                });
-              }
-            }
-
-            // Also check for simple spread arbitrage (long on highest, short on lowest)
-            if (comparison.highestRate && comparison.lowestRate && 
-                comparison.highestRate.exchange !== comparison.lowestRate.exchange) {
-              const longRate = Percentage.fromDecimal(comparison.highestRate.currentRate);
-              const shortRate = Percentage.fromDecimal(comparison.lowestRate.currentRate);
-              const spread = longRate.subtract(shortRate);
-              
-              if (spread.toDecimal() >= minSpread) {
-                // Funding rates are typically hourly
-                const periodsPerDay = 24; // Hourly funding periods
-                const periodsPerYear = periodsPerDay * 365;
-                const expectedReturn = Percentage.fromDecimal(spread.toDecimal() * periodsPerYear);
-
-                const highestRate = comparison.highestRate;
-                const lowestRate = comparison.lowestRate;
-                const highestMarkPrice = highestRate.markPrice > 0 ? highestRate.markPrice : undefined;
-                const lowestMarkPrice = lowestRate.markPrice > 0 ? lowestRate.markPrice : undefined;
-
-                symbolOpportunities.push({
-                  symbol,
-                  longExchange: highestRate.exchange,
-                  shortExchange: lowestRate.exchange,
-                  longRate,
-                  shortRate,
-                  spread: Percentage.fromDecimal(Math.abs(spread.toDecimal())),
-                  expectedReturn,
-                  longMarkPrice: highestMarkPrice,
-                  shortMarkPrice: lowestMarkPrice,
-                  longOpenInterest: highestRate.openInterest !== undefined && highestRate.openInterest > 0 ? highestRate.openInterest : undefined,
-                  shortOpenInterest: lowestRate.openInterest !== undefined && lowestRate.openInterest > 0 ? lowestRate.openInterest : undefined,
                   timestamp: new Date(),
                 });
               }

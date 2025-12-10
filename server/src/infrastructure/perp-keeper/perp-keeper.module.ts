@@ -6,12 +6,14 @@ import { PerpKeeperPerformanceLogger } from '../logging/PerpKeeperPerformanceLog
 import { AsterExchangeAdapter } from '../adapters/aster/AsterExchangeAdapter';
 import { LighterExchangeAdapter } from '../adapters/lighter/LighterExchangeAdapter';
 import { HyperliquidExchangeAdapter } from '../adapters/hyperliquid/HyperliquidExchangeAdapter';
+import { ExtendedExchangeAdapter } from '../adapters/extended/ExtendedExchangeAdapter';
 import { MockExchangeAdapter } from '../adapters/mock/MockExchangeAdapter';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import { IPerpExchangeAdapter } from '../../domain/ports/IPerpExchangeAdapter';
 import { AsterFundingDataProvider } from '../adapters/aster/AsterFundingDataProvider';
 import { LighterFundingDataProvider } from '../adapters/lighter/LighterFundingDataProvider';
 import { HyperLiquidDataProvider } from '../adapters/hyperliquid/HyperLiquidDataProvider';
+import { ExtendedFundingDataProvider } from '../adapters/extended/ExtendedFundingDataProvider';
 import { HyperLiquidWebSocketProvider } from '../adapters/hyperliquid/HyperLiquidWebSocketProvider';
 import { LighterWebSocketProvider } from '../adapters/lighter/LighterWebSocketProvider';
 import { FundingRateAggregator } from '../../domain/services/FundingRateAggregator';
@@ -40,7 +42,7 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
  * PerpKeeperModule - Module for perpetual keeper functionality
  * 
  * Provides:
- * - Exchange adapters (Aster, Lighter, Hyperliquid)
+ * - Exchange adapters (Aster, Lighter, Hyperliquid, Extended)
  * - Funding data providers
  * - Performance logging
  * - Orchestration services
@@ -129,6 +131,31 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
       },
       inject: [ConfigService, HyperLiquidDataProvider],
     },
+    {
+      provide: ExtendedExchangeAdapter,
+      useFactory: (configService: ConfigService) => {
+        try {
+          return new ExtendedExchangeAdapter(configService);
+        } catch (error: any) {
+          const logger = new Logger('PerpKeeperModule');
+          logger.warn(`Failed to create Extended adapter: ${error.message}`);
+          logger.warn('Adapter will be created lazily when needed');
+          return null;
+        }
+      },
+      inject: [ConfigService],
+    },
+    {
+      provide: 'EXTENDED_ADAPTER',
+      useFactory: (configService: ConfigService) => {
+        try {
+          return new ExtendedExchangeAdapter(configService);
+        } catch (error: any) {
+          return null;
+        }
+      },
+      inject: [ConfigService],
+    },
     
     // Funding data providers
     AsterFundingDataProvider,
@@ -136,6 +163,7 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
     LighterFundingDataProvider,
     HyperLiquidWebSocketProvider, // WebSocket provider for Hyperliquid (reduces rate limits)
     HyperLiquidDataProvider,
+    ExtendedFundingDataProvider,
     
     // Strategy configuration
     {

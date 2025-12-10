@@ -26,6 +26,20 @@ export class PerpKeeperScheduler implements OnModuleInit {
   private lastDiscoveryTime: number = 0;
   private readonly DISCOVERY_CACHE_TTL = 3600000; // 1 hour cache
 
+  // Single-leg retry tracking: track retry attempts for opening missing side
+  private readonly singleLegRetries: Map<
+    string, // key: `${symbol}-${longExchange}-${shortExchange}`
+    {
+      retryCount: number;
+      longExchange: ExchangeType;
+      shortExchange: ExchangeType;
+      lastRetryTime: Date;
+    }
+  > = new Map();
+
+  // Filtered opportunities: opportunities that failed after 5 retries
+  private readonly filteredOpportunities: Set<string> = new Set(); // key: `${symbol}-${longExchange}-${shortExchange}`
+
   constructor(
     private readonly orchestrator: PerpKeeperOrchestrator,
     private readonly configService: ConfigService,
@@ -249,13 +263,25 @@ export class PerpKeeperScheduler implements OnModuleInit {
 
       // Find opportunities across ALL discovered assets (with progress bar)
       this.logger.log(`🔍 Searching for arbitrage opportunities across ${symbols.length} assets...`);
-      const opportunities = await this.orchestrator.findArbitrageOpportunities(
+      const allOpportunities = await this.orchestrator.findArbitrageOpportunities(
         symbols,
         this.minSpread,
         true, // Show progress bar
       );
 
-      this.logger.log(`Found ${opportunities.length} arbitrage opportunities`);
+      // Filter out opportunities that failed after 5 retries
+      const opportunities = allOpportunities.filter((opp) => {
+        const filterKey = this.getRetryKey(opp.symbol, opp.longExchange, opp.shortExchange);
+        if (this.filteredOpportunities.has(filterKey)) {
+          this.logger.debug(
+            `Skipping filtered opportunity ${opp.symbol} (${opp.longExchange}/${opp.shortExchange})`,
+          );
+          return false;
+        }
+        return true;
+      });
+
+      this.logger.log(`Found ${opportunities.length} arbitrage opportunities (${allOpportunities.length - opportunities.length} filtered out)`);
 
       // STEP 1: Close all existing positions to free up margin for rebalancing
       // This ensures we can use locked margin when rebalancing funds
@@ -267,142 +293,36 @@ export class PerpKeeperScheduler implements OnModuleInit {
           // CRITICAL: Detect single-leg positions first (positions without matching pair on another exchange)
           const singleLegPositions = this.detectSingleLegPositions(allPositions);
           if (singleLegPositions.length > 0) {
-            this.logger.error(
-              `🚨 CRITICAL: Detected ${singleLegPositions.length} single-leg position(s) with price exposure: ` +
-                `${singleLegPositions.map((p) => `${p.symbol} (${p.side}) on ${p.exchangeType}`).join(', ')}. ` +
-                `Closing these FIRST to prevent losses...`,
+            this.logger.warn(
+              `⚠️ Detected ${singleLegPositions.length} single-leg position(s). Attempting to open missing side...`,
             );
-            // Close single-leg positions first with progressive price improvement
+            
+            // Try to open missing side for each single-leg position
             for (const position of singleLegPositions) {
-              try {
-                const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
-                const closeSide = position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
-                
-                // Progressive price improvement: start with market, then try worse prices
-                const priceImprovements = [0, 0.001, 0.005, 0.01, 0.02, 0.05]; // 0%, 0.1%, 0.5%, 1%, 2%, 5% worse
-                let positionClosed = false;
-                
-                for (let attempt = 0; attempt < priceImprovements.length; attempt++) {
-                  const priceImprovement = priceImprovements[attempt];
-                  
-                  try {
-                    // Get current market price for limit orders (if not first attempt)
-                    let limitPrice: number | undefined = undefined;
-                    if (attempt > 0 && position.exchangeType === ExchangeType.LIGHTER) {
-                      // For Lighter, get order book price and apply price improvement
-                      try {
-                        const markPrice = await adapter.getMarkPrice(position.symbol);
-                        if (markPrice > 0) {
-                          // For closing LONG: we SELL, so use bid price (worse = lower)
-                          // For closing SHORT: we BUY, so use ask price (worse = higher)
-                          if (position.side === OrderSide.LONG) {
-                            limitPrice = markPrice * (1 - priceImprovement);
-                          } else {
-                            limitPrice = markPrice * (1 + priceImprovement);
-                          }
-                        }
-                      } catch (priceError: any) {
-                        // Fall back to market order
-                      }
-                    }
-                    
-                    const closeOrder = new PerpOrderRequest(
-                      position.symbol,
-                      closeSide,
-                      limitPrice ? OrderType.LIMIT : OrderType.MARKET,
-                      position.size,
-                      limitPrice,
-                      TimeInForce.IOC,
-                      true, // Reduce only
-                    );
-                    
-                    if (attempt === 0) {
-                      this.logger.error(`   🚨 CRITICAL: Closing single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}...`);
-                    } else {
-                      this.logger.warn(
-                        `   🔄 Retry ${attempt}/${priceImprovements.length - 1}: Closing ${position.symbol} with ` +
-                        `${(priceImprovement * 100).toFixed(2)}% worse price`,
-                      );
-                    }
-                    
-                    const closeResponse = await adapter.placeOrder(closeOrder);
-                    
-                    // Wait and check if order filled
-                    if (!closeResponse.isFilled() && closeResponse.orderId) {
-                      const maxRetries = 5;
-                      const pollIntervalMs = 2000;
-                      
-                      for (let pollAttempt = 0; pollAttempt < maxRetries; pollAttempt++) {
-                        if (pollAttempt > 0) {
-                          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-                        }
-                        
-                        try {
-                          const statusResponse = await adapter.getOrderStatus(closeResponse.orderId, position.symbol);
-                          if (statusResponse.isFilled()) {
-                            break;
-                          }
-                          if (statusResponse.status === OrderStatus.CANCELLED || statusResponse.error) {
-                            break;
-                          }
-                        } catch (pollError: any) {
-                          // Continue polling
-                        }
-                      }
-                    }
-                    
-                    // Check if position is actually closed
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    const currentPositions = await adapter.getPositions();
-                    const positionStillExists = currentPositions.some(
-                      (p) =>
-                        p.symbol === position.symbol &&
-                        p.exchangeType === position.exchangeType &&
-                        Math.abs(p.size) > 0.0001,
-                    );
-                    
-                    if (closeResponse.isFilled() && !positionStillExists) {
-                      positionClosed = true;
-                      if (attempt > 0) {
-                        this.logger.log(
-                          `   ✅ Successfully closed single-leg position ${position.symbol} on attempt ${attempt + 1} ` +
-                          `with ${(priceImprovement * 100).toFixed(2)}% worse price`,
-                        );
-                      } else {
-                        this.logger.log(`   ✅ Successfully closed single-leg position: ${position.symbol} on ${position.exchangeType}`);
-                      }
-                      break; // Position closed successfully
-                    }
-                    
-                    if (attempt < priceImprovements.length - 1) {
-                      this.logger.warn(
-                        `   ⚠️ Close order for ${position.symbol} didn't fill on attempt ${attempt + 1}, ` +
-                        `trying with worse price...`,
-                      );
-                      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before next attempt
-                    }
-                  } catch (attemptError: any) {
-                    this.logger.warn(
-                      `   Error on close attempt ${attempt + 1} for ${position.symbol}: ${attemptError.message}`,
-                    );
-                    if (attempt === priceImprovements.length - 1) {
-                      // Last attempt failed
-                      break;
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                  }
-                }
-                
-                if (!positionClosed) {
-                  this.logger.error(
-                    `   ❌ CRITICAL: Failed to close single-leg position ${position.symbol} on ${position.exchangeType} ` +
-                    `after ${priceImprovements.length} attempts with progressive price improvement`,
-                  );
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 500));
-              } catch (error: any) {
-                this.logger.error(`   ❌ CRITICAL: Error closing single-leg position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
+              const retrySuccess = await this.tryOpenMissingSide(position);
+              
+              if (!retrySuccess) {
+                // Retries failed - close the position
+                this.logger.error(
+                  `🚨 Closing single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType} ` +
+                  `after retry attempts failed`,
+                );
+                await this.closeSingleLegPosition(position);
+              }
+            }
+            
+            // Refresh positions after retry attempts
+            const updatedPositionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+            const updatedPositions = updatedPositionsResult.positions;
+            const stillSingleLeg = this.detectSingleLegPositions(updatedPositions);
+            
+            if (stillSingleLeg.length > 0) {
+              this.logger.error(
+                `🚨 Still have ${stillSingleLeg.length} single-leg position(s) after retries. Closing them...`,
+              );
+              // Close remaining single-leg positions with progressive price improvement
+              for (const position of stillSingleLeg) {
+                await this.closeSingleLegPosition(position);
               }
             }
             
@@ -411,135 +331,15 @@ export class PerpKeeperScheduler implements OnModuleInit {
             const remainingPositions = allPositions.filter(
               p => !singleLegSet.has(`${p.symbol}-${p.exchangeType}-${p.side}`)
             );
-            
-            if (remainingPositions.length === 0) {
-              this.logger.log('✅ All positions were single-leg and have been closed');
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              return; // No other positions to close
-            }
-            
-            this.logger.log(`📋 Found ${remainingPositions.length} additional position(s) to close...`);
-            for (const position of remainingPositions) {
-              try {
-                const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
-                const closeOrder = new PerpOrderRequest(
-                  position.symbol,
-                  position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
-                  OrderType.MARKET,
-                  position.size,
-                  0, // No limit price for market orders
-                  TimeInForce.IOC, // Immediate or cancel
-                  true, // Reduce only
-                );
-                
-                this.logger.log(`   Closing ${position.symbol} on ${position.exchangeType}...`);
-                let closeResponse = await adapter.placeOrder(closeOrder);
-                
-                // Wait and retry if order didn't fill immediately
-                if (!closeResponse.isFilled() && closeResponse.orderId) {
-                  this.logger.log(`   ⏳ Order not filled immediately, polling for fill...`);
-                  const maxRetries = 5;
-                  const pollIntervalMs = 2000;
-                  
-                  for (let attempt = 0; attempt < maxRetries; attempt++) {
-                    if (attempt > 0) {
-                      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-                    }
-                    
-                    try {
-                      const statusResponse = await adapter.getOrderStatus(closeResponse.orderId, position.symbol);
-                      if (statusResponse.isFilled()) {
-                        closeResponse = statusResponse;
-                        this.logger.log(`   ✅ Order filled on attempt ${attempt + 1}/${maxRetries}`);
-                        break;
-                      }
-                      if (statusResponse.status === OrderStatus.CANCELLED || statusResponse.error) {
-                        closeResponse = statusResponse;
-                        break;
-                      }
-                      this.logger.debug(`   Order still ${statusResponse.status} (attempt ${attempt + 1}/${maxRetries})...`);
-                    } catch (error: any) {
-                      this.logger.warn(`   Failed to check order status (attempt ${attempt + 1}/${maxRetries}): ${error.message}`);
-                      if (attempt === maxRetries - 1) {
-                        this.logger.warn(`   ⚠️ Could not verify order fill after ${maxRetries} attempts`);
-                      }
-                    }
-                  }
-                }
-                
-                if (closeResponse.isFilled()) {
-                  this.logger.log(`   ✅ Successfully closed position: ${position.symbol} on ${position.exchangeType}`);
-                } else {
-                  this.logger.warn(`   ⚠️ Failed to close position ${position.symbol} on ${position.exchangeType}: ${closeResponse.error || 'order not filled'}`);
-                }
-                
-                // Small delay between closes
-                await new Promise(resolve => setTimeout(resolve, 500));
-              } catch (error: any) {
-                this.logger.warn(`   ⚠️ Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
-              }
-            }
-          } else {
-            this.logger.log(`📋 Found ${allPositions.length} existing position(s) - closing to free up margin...`);
+            allPositions.length = 0;
+            allPositions.push(...remainingPositions);
+          }
+          
+          // Close remaining positions (non-single-leg) with progressive price improvement
+          if (allPositions.length > 0) {
+            this.logger.log(`🔄 Closing ${allPositions.length} existing position(s) to free up margin...`);
             for (const position of allPositions) {
-              try {
-                const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
-              const closeOrder = new PerpOrderRequest(
-                position.symbol,
-                position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
-                OrderType.MARKET,
-                position.size,
-                0, // No limit price for market orders
-                TimeInForce.IOC, // Immediate or cancel
-                true, // Reduce only
-              );
-              
-              this.logger.log(`   Closing ${position.symbol} on ${position.exchangeType}...`);
-              let closeResponse = await adapter.placeOrder(closeOrder);
-              
-              // Wait and retry if order didn't fill immediately
-              if (!closeResponse.isFilled() && closeResponse.orderId) {
-                this.logger.log(`   ⏳ Order not filled immediately, polling for fill...`);
-                const maxRetries = 5;
-                const pollIntervalMs = 2000;
-                
-                for (let attempt = 0; attempt < maxRetries; attempt++) {
-                  if (attempt > 0) {
-                    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-                  }
-                  
-                  try {
-                    const statusResponse = await adapter.getOrderStatus(closeResponse.orderId, position.symbol);
-                    if (statusResponse.isFilled()) {
-                      closeResponse = statusResponse;
-                      this.logger.log(`   ✅ Order filled on attempt ${attempt + 1}/${maxRetries}`);
-                      break;
-                    }
-                    if (statusResponse.status === OrderStatus.CANCELLED || statusResponse.error) {
-                      closeResponse = statusResponse;
-                      break;
-                    }
-                    this.logger.debug(`   Order still ${statusResponse.status} (attempt ${attempt + 1}/${maxRetries})...`);
-                  } catch (error: any) {
-                    this.logger.warn(`   Failed to check order status (attempt ${attempt + 1}/${maxRetries}): ${error.message}`);
-                    if (attempt === maxRetries - 1) {
-                      this.logger.warn(`   ⚠️ Could not verify order fill after ${maxRetries} attempts`);
-                    }
-                  }
-                }
-              }
-              
-              if (closeResponse.isFilled()) {
-                this.logger.log(`   ✅ Successfully closed position: ${position.symbol} on ${position.exchangeType}`);
-              } else {
-                this.logger.warn(`   ⚠️ Failed to close position ${position.symbol} on ${position.exchangeType}: ${closeResponse.error || 'order not filled'}`);
-              }
-              
-                // Small delay between closes
-                await new Promise(resolve => setTimeout(resolve, 500));
-              } catch (error: any) {
-                this.logger.warn(`   ⚠️ Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
-              }
+              await this.closePositionWithRetry(position);
             }
           }
           
@@ -706,6 +506,9 @@ export class PerpKeeperScheduler implements OnModuleInit {
       // Update metrics first to ensure we have current data
       await this.updatePerformanceMetrics();
       
+      // Check for single-leg positions and try to open missing side
+      await this.checkAndRetrySingleLegPositions();
+      
       // Get total capital deployed
       let totalCapital = 0;
       for (const exchangeType of ['ASTER', 'LIGHTER', 'HYPERLIQUID'] as any[]) {
@@ -721,6 +524,43 @@ export class PerpKeeperScheduler implements OnModuleInit {
     } catch (error: any) {
       // Silently fail for compact summary to avoid spam
       this.logger.debug(`Failed to log compact summary: ${error.message}`);
+    }
+  }
+
+  /**
+   * Check for single-leg positions and try to open missing side
+   * Called periodically to handle single-leg positions detected outside of execution cycle
+   */
+  private async checkAndRetrySingleLegPositions(): Promise<void> {
+    try {
+      const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+      const allPositions = positionsResult.positions;
+      
+      if (allPositions.length === 0) {
+        return;
+      }
+
+      const singleLegPositions = this.detectSingleLegPositions(allPositions);
+      if (singleLegPositions.length > 0) {
+        this.logger.warn(
+          `⚠️ Detected ${singleLegPositions.length} single-leg position(s) during periodic check. Attempting to open missing side...`,
+        );
+        
+        // Try to open missing side for each single-leg position
+        for (const position of singleLegPositions) {
+          const retrySuccess = await this.tryOpenMissingSide(position);
+          
+          if (!retrySuccess) {
+            // Retries failed - log but don't close here (let execution cycle handle it)
+            this.logger.error(
+              `🚨 Single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType} ` +
+              `still missing after retry attempts. Will be handled in next execution cycle.`,
+            );
+          }
+        }
+      }
+    } catch (error: any) {
+      this.logger.debug(`Failed to check single-leg positions: ${error.message}`);
     }
   }
 
@@ -1100,6 +940,366 @@ export class PerpKeeperScheduler implements OnModuleInit {
     } catch (error: any) {
       this.logger.debug(`Failed to get wallet USDC balance on Arbitrum: ${error.message}`);
       return 0;
+    }
+  }
+
+  /**
+   * Get retry key for single-leg position tracking
+   */
+  private getRetryKey(
+    symbol: string,
+    exchange1: ExchangeType,
+    exchange2?: ExchangeType,
+  ): string {
+    if (exchange2) {
+      // For opportunity tracking: sort exchanges for consistent key
+      const exchanges = [exchange1, exchange2].sort();
+      return `${symbol}-${exchanges[0]}-${exchanges[1]}`;
+    }
+    // For position lookup: find matching retry info by symbol and exchange
+    for (const [key, retryInfo] of this.singleLegRetries.entries()) {
+      if (key.startsWith(`${symbol}-`) && 
+          (retryInfo.longExchange === exchange1 || retryInfo.shortExchange === exchange1)) {
+        return key;
+      }
+    }
+    // Fallback: create key with just symbol and exchange
+    return `${symbol}-${exchange1}`;
+  }
+
+  /**
+   * Try to open the missing side of a single-leg position
+   * Returns true if successful, false if retries exhausted
+   */
+  private async tryOpenMissingSide(position: PerpPosition): Promise<boolean> {
+    try {
+      // Find opportunity for this symbol to determine which exchange should have the missing side
+      const comparison = await this.orchestrator.compareFundingRates(position.symbol);
+      if (!comparison || comparison.rates.length < 2) {
+        this.logger.warn(
+          `No opportunity found for ${position.symbol} - cannot determine missing exchange`,
+        );
+        return false;
+      }
+
+      // Determine which exchange should have the missing side based on funding rates
+      // LONG on exchange with lowest rate, SHORT on exchange with highest rate
+      const sortedRates = [...comparison.rates].sort((a, b) => a.currentRate - b.currentRate);
+      const expectedLongExchange = sortedRates[0].exchange;
+      const expectedShortExchange = sortedRates[sortedRates.length - 1].exchange;
+
+      // Determine missing exchange and side
+      const missingExchange = position.side === OrderSide.LONG 
+        ? expectedShortExchange 
+        : expectedLongExchange;
+      const missingSide = position.side === OrderSide.LONG 
+        ? OrderSide.SHORT 
+        : OrderSide.LONG;
+
+      // Get retry key
+      const retryKey = this.getRetryKey(position.symbol, expectedLongExchange, expectedShortExchange);
+      
+      // Check if already filtered out
+      if (this.filteredOpportunities.has(retryKey)) {
+        this.logger.debug(
+          `Opportunity ${position.symbol} (${expectedLongExchange}/${expectedShortExchange}) already filtered out`,
+        );
+        return false;
+      }
+
+      // Get or create retry info
+      let retryInfo = this.singleLegRetries.get(retryKey);
+      if (!retryInfo) {
+        retryInfo = {
+          retryCount: 0,
+          longExchange: expectedLongExchange,
+          shortExchange: expectedShortExchange,
+          lastRetryTime: new Date(),
+        };
+        this.singleLegRetries.set(retryKey, retryInfo);
+      }
+
+      // Check retry count
+      if (retryInfo.retryCount >= 5) {
+        this.logger.error(
+          `❌ Filtering out ${position.symbol} (${expectedLongExchange}/${expectedShortExchange}) ` +
+          `after 5 failed retry attempts`,
+        );
+        this.filteredOpportunities.add(retryKey);
+        return false;
+      }
+
+      // Try to open missing side
+      this.logger.log(
+        `🔄 Retry ${retryInfo.retryCount + 1}/5: Attempting to open missing ${missingSide} side ` +
+        `for ${position.symbol} on ${missingExchange}...`,
+      );
+
+      const adapter = this.keeperService.getExchangeAdapter(missingExchange);
+      if (!adapter) {
+        this.logger.warn(`No adapter found for ${missingExchange}`);
+        retryInfo.retryCount++;
+        retryInfo.lastRetryTime = new Date();
+        return false;
+      }
+
+      // Create market order to open missing side (same size as existing position)
+      const openOrder = new PerpOrderRequest(
+        position.symbol,
+        missingSide,
+        OrderType.MARKET,
+        position.size,
+        undefined, // price
+        TimeInForce.IOC,
+        false, // not reduceOnly
+      );
+
+      const orderResult = await adapter.placeOrder(openOrder);
+      
+      if (orderResult && orderResult.orderId) {
+        // Wait a bit and check if position opened
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const updatedPositions = await adapter.getPositions();
+        const positionOpened = updatedPositions.some(
+          (p) =>
+            p.symbol === position.symbol &&
+            p.exchangeType === missingExchange &&
+            p.side === missingSide &&
+            Math.abs(p.size) > 0.0001,
+        );
+
+        if (positionOpened) {
+          this.logger.log(
+            `✅ Successfully opened missing ${missingSide} side for ${position.symbol} on ${missingExchange}`,
+          );
+          // Reset retry count on success
+          this.singleLegRetries.delete(retryKey);
+          return true;
+        } else {
+          this.logger.warn(
+            `⚠️ Order placed but position not detected for ${position.symbol} on ${missingExchange}`,
+          );
+        }
+      }
+
+      // Increment retry count
+      retryInfo.retryCount++;
+      retryInfo.lastRetryTime = new Date();
+      this.logger.warn(
+        `⚠️ Retry ${retryInfo.retryCount}/5 failed for ${position.symbol}. ` +
+        `Will try again next cycle.`,
+      );
+
+      // After 5 retries, filter out this opportunity
+      if (retryInfo.retryCount >= 5) {
+        this.filteredOpportunities.add(retryKey);
+        this.logger.error(
+          `❌ Filtering out ${position.symbol} (${expectedLongExchange}/${expectedShortExchange}) ` +
+          `after 5 failed retry attempts. Moving to next opportunity.`,
+        );
+        return false;
+      }
+
+      return false;
+    } catch (error: any) {
+      this.logger.warn(
+        `Error retrying missing side for ${position.symbol}: ${error.message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Close a single-leg position with progressive price improvement
+   */
+  private async closeSingleLegPosition(position: PerpPosition): Promise<void> {
+    try {
+      const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
+      if (!adapter) {
+        this.logger.warn(`No adapter found for ${position.exchangeType}`);
+        return;
+      }
+
+      const closeSide = position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
+      
+      // Progressive price improvement: start with market, then try worse prices
+      const priceImprovements = [0, 0.001, 0.005, 0.01, 0.02, 0.05]; // 0%, 0.1%, 0.5%, 1%, 2%, 5% worse
+      let positionClosed = false;
+      
+      for (let attempt = 0; attempt < priceImprovements.length; attempt++) {
+        const priceImprovement = priceImprovements[attempt];
+        
+        try {
+          // Get current market price for limit orders (if not first attempt)
+          let limitPrice: number | undefined = undefined;
+          if (attempt > 0 && position.exchangeType === ExchangeType.LIGHTER) {
+            // For Lighter, get order book price and apply price improvement
+            try {
+              const markPrice = await adapter.getMarkPrice(position.symbol);
+              if (markPrice > 0) {
+                // For closing LONG: we SELL, so use bid price (worse = lower)
+                // For closing SHORT: we BUY, so use ask price (worse = higher)
+                if (position.side === OrderSide.LONG) {
+                  limitPrice = markPrice * (1 - priceImprovement);
+                } else {
+                  limitPrice = markPrice * (1 + priceImprovement);
+                }
+              }
+            } catch (priceError: any) {
+              // Fall back to market order
+            }
+          }
+          
+          const closeOrder = new PerpOrderRequest(
+            position.symbol,
+            closeSide,
+            limitPrice ? OrderType.LIMIT : OrderType.MARKET,
+            position.size,
+            limitPrice,
+            TimeInForce.IOC,
+            true, // Reduce only
+          );
+          
+          if (attempt === 0) {
+            this.logger.error(`   🚨 CRITICAL: Closing single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}...`);
+          } else {
+            this.logger.warn(
+              `   🔄 Retry ${attempt}/${priceImprovements.length - 1}: Closing ${position.symbol} with ` +
+              `${(priceImprovement * 100).toFixed(2)}% worse price`,
+            );
+          }
+          
+          const closeResponse = await adapter.placeOrder(closeOrder);
+          
+          // Wait and check if order filled
+          if (!closeResponse.isFilled() && closeResponse.orderId) {
+            const maxRetries = 5;
+            const pollIntervalMs = 2000;
+            
+            for (let pollAttempt = 0; pollAttempt < maxRetries; pollAttempt++) {
+              if (pollAttempt > 0) {
+                await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+              }
+              
+              try {
+                const statusResponse = await adapter.getOrderStatus(closeResponse.orderId, position.symbol);
+                if (statusResponse.isFilled()) {
+                  break;
+                }
+                if (statusResponse.status === OrderStatus.CANCELLED || statusResponse.error) {
+                  break;
+                }
+              } catch (pollError: any) {
+                // Continue polling
+              }
+            }
+          }
+          
+          // Check if position is actually closed
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const currentPositions = await adapter.getPositions();
+          const positionStillExists = currentPositions.some(
+            (p) =>
+              p.symbol === position.symbol &&
+              p.exchangeType === position.exchangeType &&
+              Math.abs(p.size) > 0.0001,
+          );
+          
+          if (closeResponse.isFilled() && !positionStillExists) {
+            positionClosed = true;
+            if (attempt > 0) {
+              this.logger.log(
+                `   ✅ Successfully closed single-leg position ${position.symbol} on attempt ${attempt + 1} ` +
+                `with ${(priceImprovement * 100).toFixed(2)}% worse price`,
+              );
+            } else {
+              this.logger.log(`   ✅ Successfully closed single-leg position: ${position.symbol} on ${position.exchangeType}`);
+            }
+            break; // Position closed successfully
+          }
+          
+          if (attempt < priceImprovements.length - 1) {
+            this.logger.warn(
+              `   ⚠️ Close order for ${position.symbol} didn't fill on attempt ${attempt + 1}, ` +
+              `trying with worse price...`,
+            );
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before next attempt
+          }
+        } catch (attemptError: any) {
+          this.logger.warn(
+            `   Error on close attempt ${attempt + 1} for ${position.symbol}: ${attemptError.message}`,
+          );
+          if (attempt === priceImprovements.length - 1) {
+            // Last attempt failed
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      if (!positionClosed) {
+        this.logger.error(
+          `   ❌ CRITICAL: Failed to close single-leg position ${position.symbol} on ${position.exchangeType} ` +
+          `after ${priceImprovements.length} attempts with progressive price improvement`,
+        );
+      }
+    } catch (error: any) {
+      this.logger.error(`   ❌ CRITICAL: Error closing single-leg position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Close a position with retry logic (for non-single-leg positions)
+   */
+  private async closePositionWithRetry(position: PerpPosition): Promise<void> {
+    try {
+      const adapter = this.keeperService.getExchangeAdapter(position.exchangeType);
+      if (!adapter) {
+        this.logger.warn(`No adapter found for ${position.exchangeType}`);
+        return;
+      }
+
+      const closeOrder = new PerpOrderRequest(
+        position.symbol,
+        position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
+        OrderType.MARKET,
+        position.size,
+        undefined, // price
+        TimeInForce.IOC,
+        true, // Reduce only
+      );
+      
+      this.logger.log(`   Closing ${position.symbol} on ${position.exchangeType}...`);
+      const closeResponse = await adapter.placeOrder(closeOrder);
+      
+      // Wait and retry if order didn't fill immediately
+      if (!closeResponse.isFilled() && closeResponse.orderId) {
+        const maxRetries = 5;
+        const pollIntervalMs = 2000;
+        
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+          if (attempt > 0) {
+            await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+          }
+          
+          try {
+            const statusResponse = await adapter.getOrderStatus(closeResponse.orderId, position.symbol);
+            if (statusResponse.isFilled()) {
+              this.logger.log(`   ✅ Order filled on attempt ${attempt + 1}/${maxRetries}`);
+              break;
+            }
+            if (statusResponse.status === OrderStatus.CANCELLED || statusResponse.error) {
+              break;
+            }
+          } catch (pollError: any) {
+            // Continue polling
+          }
+        }
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error: any) {
+      this.logger.error(`   Error closing position ${position.symbol} on ${position.exchangeType}: ${error.message}`);
     }
   }
 }

@@ -669,34 +669,68 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
 
       const positions: PerpPosition[] = [];
       if (Array.isArray(response.data)) {
+        this.logger.debug(`🔍 Aster API returned ${response.data.length} position entries`);
+        
+        // Log first few raw entries to see what we're getting
+        const sampleEntries = response.data.slice(0, 5);
+        this.logger.debug(`📋 Sample Aster raw position entries (first 5): ${JSON.stringify(sampleEntries, null, 2)}`);
+        
+        // Count positions with non-zero amounts
+        let nonZeroCount = 0;
+        let zeroCount = 0;
+        
         for (const pos of response.data) {
           const positionAmt = parseFloat(pos.positionAmt || '0');
+          
+          // Log details for positions we're filtering out
+          if (positionAmt === 0) {
+            zeroCount++;
+            if (zeroCount <= 3) {
+              this.logger.debug(
+                `🚫 Filtered out Aster position: symbol="${pos.symbol}", positionAmt="${pos.positionAmt}" (parsed: ${positionAmt}), ` +
+                `markPrice="${pos.markPrice}", entryPrice="${pos.entryPrice}"`
+              );
+            }
+          } else {
+            nonZeroCount++;
+          }
+          
           if (positionAmt !== 0) {
             const side = positionAmt > 0 ? OrderSide.LONG : OrderSide.SHORT;
             const markPrice = parseFloat(pos.markPrice || '0');
             const entryPrice = parseFloat(pos.entryPrice || '0');
             const unrealizedPnl = parseFloat(pos.unRealizedProfit || '0');
 
-            positions.push(
-              new PerpPosition(
-                ExchangeType.ASTER,
-                pos.symbol,
-                side,
-                Math.abs(positionAmt),
-                entryPrice,
-                markPrice,
-                unrealizedPnl,
-                parseFloat(pos.leverage || '1'),
-                parseFloat(pos.liquidationPrice || '0') || undefined,
-                parseFloat(pos.initialMargin || '0') || undefined,
-                undefined,
-                new Date(),
-              ),
+            const position = new PerpPosition(
+              ExchangeType.ASTER,
+              pos.symbol,
+              side,
+              Math.abs(positionAmt),
+              entryPrice,
+              markPrice,
+              unrealizedPnl,
+              parseFloat(pos.leverage || '1'),
+              parseFloat(pos.liquidationPrice || '0') || undefined,
+              parseFloat(pos.initialMargin || '0') || undefined,
+              undefined,
+              new Date(),
             );
+            
+            this.logger.debug(
+              `📍 Aster Position: symbol="${pos.symbol}", side=${side}, size=${Math.abs(positionAmt)}, ` +
+              `entryPrice=${entryPrice}, markPrice=${markPrice}, pnl=${unrealizedPnl}`
+            );
+            
+            positions.push(position);
           }
         }
+        
+        this.logger.debug(
+          `📊 Aster position filtering summary: ${nonZeroCount} non-zero positions, ${zeroCount} zero positions filtered out`
+        );
       }
 
+      this.logger.debug(`✅ Aster getPositions() returning ${positions.length} positions: ${positions.map(p => `${p.symbol}(${p.side})`).join(', ')}`);
       return positions;
     } catch (error: any) {
       // Handle authentication errors gracefully (401 = invalid/expired credentials)

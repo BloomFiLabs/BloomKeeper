@@ -438,16 +438,29 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
           `Spread: ${(opportunity.spread?.toPercent() || 0).toFixed(4)}%`,
       );
 
-      // Calculate limit prices with price improvement
-      const longLimitPrice =
-        longBidAsk.bestBid * (1 + config.limitOrderPriceImprovement.toDecimal());
-      const shortLimitPrice =
-        shortBidAsk.bestAsk * (1 - config.limitOrderPriceImprovement.toDecimal());
+      // Calculate limit prices: use mark price directly for Hyperliquid and Lighter
+      // This ensures orders are close to mark price and fill quickly, avoiding "price too high" rejections
+      // For other exchanges: use best bid/ask without price improvement
+      // LONG orders: at mark price (for Hyperliquid/Lighter) or best bid (for others)
+      // SHORT orders: at mark price (for Hyperliquid/Lighter) or best ask (for others)
+      const longLimitPrice = (opportunity.longExchange === ExchangeType.HYPERLIQUID || 
+                              opportunity.longExchange === ExchangeType.LIGHTER)
+        ? finalLongMarkPrice
+        : longBidAsk.bestBid;
+      const shortLimitPrice = (opportunity.shortExchange === ExchangeType.HYPERLIQUID || 
+                               opportunity.shortExchange === ExchangeType.LIGHTER)
+        ? finalShortMarkPrice
+        : shortBidAsk.bestAsk;
 
+      const longPriceSource = (opportunity.longExchange === ExchangeType.HYPERLIQUID || 
+                               opportunity.longExchange === ExchangeType.LIGHTER) ? 'mark' : 'best bid';
+      const shortPriceSource = (opportunity.shortExchange === ExchangeType.HYPERLIQUID || 
+                                opportunity.shortExchange === ExchangeType.LIGHTER) ? 'mark' : 'best ask';
+      
       this.logger.debug(
         `Limit order prices for ${opportunity.symbol}: ` +
-          `LONG @ ${longLimitPrice.toFixed(4)} (best bid: ${longBidAsk.bestBid.toFixed(4)}), ` +
-          `SHORT @ ${shortLimitPrice.toFixed(4)} (best ask: ${shortBidAsk.bestAsk.toFixed(4)}), ` +
+          `LONG @ ${longLimitPrice.toFixed(4)} (${longPriceSource}: ${finalLongMarkPrice.toFixed(4)}, best bid: ${longBidAsk.bestBid.toFixed(4)}), ` +
+          `SHORT @ ${shortLimitPrice.toFixed(4)} (${shortPriceSource}: ${finalShortMarkPrice.toFixed(4)}, best ask: ${shortBidAsk.bestAsk.toFixed(4)}), ` +
           `Slippage cost: $${totalSlippageCost.toFixed(2)}`,
       );
 

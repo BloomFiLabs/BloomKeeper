@@ -62,10 +62,13 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       undefined,
       undefined,
       undefined,
-      undefined,
-      undefined,
-      undefined,
-      isTestnet,
+      undefined, // recvWindow
+      undefined, // starkKey
+      undefined, // vaultNumber
+      undefined, // starknetRpcUrl
+      undefined, // rateLimitRps
+      undefined, // timeout
+      isTestnet, // testnet
     );
 
     this.transport = new HttpTransport({ isTestnet });
@@ -150,6 +153,11 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
   async placeOrder(request: PerpOrderRequest): Promise<PerpOrderResponse> {
     try {
+      this.logger.log(
+        `📤 Placing ${request.side} order on Hyperliquid: ${request.size} ${request.symbol} @ ${request.price || 'MARKET'} ` +
+        `(type: ${request.type}, reduceOnly: ${request.reduceOnly || false})`
+      );
+      
       await this.ensureSymbolConverter();
       
       // Get asset ID and decimals
@@ -328,7 +336,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           throw new Error('Unknown order status');
         }
 
-        return new PerpOrderResponse(
+        const response = new PerpOrderResponse(
           orderId,
           orderStatus,
           request.symbol,
@@ -339,6 +347,13 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           undefined,
           new Date(),
         );
+        
+        this.logger.log(
+          `✅ Hyperliquid order ${orderStatus === OrderStatus.FILLED ? 'filled' : 'placed'} successfully: ` +
+          `${orderId} (${request.side} ${request.size} ${request.symbol} @ ${avgFillPrice || request.price || 'MARKET'})`
+        );
+        
+        return response;
       }
 
       throw new Error('Unknown response format from Hyperliquid');
