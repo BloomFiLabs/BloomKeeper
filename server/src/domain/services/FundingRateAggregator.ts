@@ -639,7 +639,7 @@ export class FundingRateAggregator {
               }
             }
 
->>>>>>> f8ad4ef224d979acf8cf19008e9c466cb3b3699f
+
             return symbolOpportunities;
           } catch (error: any) {
             // Only log actual errors (not expected failures like missing data)
