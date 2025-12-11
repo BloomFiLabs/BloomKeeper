@@ -19,6 +19,7 @@ import * as cliProgress from 'cli-progress';
 export class PerpKeeperScheduler implements OnModuleInit {
   private readonly logger = new Logger(PerpKeeperScheduler.name);
   private symbols: string[] = []; // Will be populated by auto-discovery or configuration
+  private readonly blacklistedSymbols: Set<string>; // Symbols to exclude from trading
   private readonly minSpread: number;
   private readonly maxPositionSizeUsd: number;
   private isRunning = false;
@@ -36,17 +37,40 @@ export class PerpKeeperScheduler implements OnModuleInit {
     this.orchestrator.initialize(adapters);
     this.logger.log(`Orchestrator initialized with ${adapters.size} exchange adapters`);
 
+    // Load blacklisted symbols from environment variable
+    const blacklistEnv = this.configService.get<string>('KEEPER_BLACKLISTED_SYMBOLS');
+    if (blacklistEnv) {
+      this.blacklistedSymbols = new Set(
+        blacklistEnv.split(',').map(s => s.trim().toUpperCase())
+      );
+      this.logger.log(
+        `Blacklisted symbols: ${Array.from(this.blacklistedSymbols).join(', ')}`
+      );
+    } else {
+      // Default blacklist: NVDA (experimental market)
+      this.blacklistedSymbols = new Set(['NVDA']);
+      this.logger.log(
+        `Using default blacklist: ${Array.from(this.blacklistedSymbols).join(', ')}`
+      );
+    }
+
     // Load configuration
     const symbolsEnv = this.configService.get<string>('KEEPER_SYMBOLS');
     // If KEEPER_SYMBOLS is explicitly set, use it; otherwise auto-discover
     if (symbolsEnv) {
-      this.symbols = symbolsEnv.split(',').map(s => s.trim());
+      this.symbols = symbolsEnv.split(',').map(s => s.trim()).filter(s => !this.blacklistedSymbols.has(s.toUpperCase()));
       this.logger.log(
         `Scheduler initialized with configured symbols: ${this.symbols.join(',')}`
       );
+      if (symbolsEnv.split(',').length !== this.symbols.length) {
+        const filtered = symbolsEnv.split(',').map(s => s.trim()).filter(s => this.blacklistedSymbols.has(s.toUpperCase()));
+        this.logger.warn(
+          `Filtered out blacklisted symbols from KEEPER_SYMBOLS: ${filtered.join(', ')}`
+        );
+      }
     } else {
       this.logger.log(
-        `Scheduler initialized - will auto-discover all assets on first run`
+        `Scheduler initialized - will auto-discover all assets on first run (excluding blacklisted symbols)`
       );
     }
     
@@ -85,11 +109,24 @@ export class PerpKeeperScheduler implements OnModuleInit {
     // Auto-discover all assets
     try {
       this.logger.log('Auto-discovering all available assets across exchanges...');
-      this.symbols = await this.orchestrator.discoverCommonAssets();
+      const discoveredSymbols = await this.orchestrator.discoverCommonAssets();
+      
+      // Filter out blacklisted symbols
+      this.symbols = discoveredSymbols.filter(s => !this.blacklistedSymbols.has(s.toUpperCase()));
       this.lastDiscoveryTime = now;
-      this.logger.log(
-        `Auto-discovery complete: Found ${this.symbols.length} common assets: ${this.symbols.join(', ')}`
-      );
+      
+      const filteredCount = discoveredSymbols.length - this.symbols.length;
+      if (filteredCount > 0) {
+        const filtered = discoveredSymbols.filter(s => this.blacklistedSymbols.has(s.toUpperCase()));
+        this.logger.log(
+          `Auto-discovery complete: Found ${discoveredSymbols.length} common assets, ` +
+          `filtered out ${filteredCount} blacklisted: ${filtered.join(', ')}`
+        );
+      } else {
+        this.logger.log(
+          `Auto-discovery complete: Found ${this.symbols.length} common assets: ${this.symbols.join(', ')}`
+        );
+      }
       return this.symbols;
     } catch (error: any) {
       this.logger.error(`Asset discovery failed: ${error.message}`);
