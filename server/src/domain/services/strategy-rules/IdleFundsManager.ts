@@ -381,10 +381,28 @@ export class IdleFundsManager implements IIdleFundsManager {
         }
 
         // Create execution plan for the opportunity
-        const planResult = await this.executionPlanBuilder.buildExecutionPlan(
+        // Need to get balances first
+        const longAdapter = adapters.get(opportunity.longExchange);
+        const shortAdapter = adapters.get(opportunity.shortExchange);
+        
+        if (!longAdapter || !shortAdapter) {
+          this.logger.warn(`Missing adapters for ${opportunity.symbol}, skipping allocation`);
+          continue;
+        }
+
+        const [longBalance, shortBalance] = await Promise.all([
+          longAdapter.getBalance().catch(() => 0),
+          shortAdapter.getBalance().catch(() => 0),
+        ]);
+
+        const planResult = await this.executionPlanBuilder.buildPlan(
           opportunity,
           adapters,
+          { longBalance, shortBalance },
           this.config,
+          opportunity.longMarkPrice,
+          opportunity.shortMarkPrice,
+          amount * this.config.leverage, // Use allocation as max position size
         );
 
         if (planResult.isFailure) {
