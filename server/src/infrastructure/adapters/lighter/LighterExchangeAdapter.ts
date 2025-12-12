@@ -451,8 +451,11 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
             ? Date.now() + 60000  // 1 minute for IOC orders
             : Date.now() + 3600000; // 1 hour for GTC orders
 
-          // orderExpiry: Must always be 0 for limit orders (both GTC and IOC)
-          // Based on actual Lighter API payload: OrderExpiry: 0 for all limit orders
+          // orderExpiry: Must be a future timestamp > expiredAt
+          // Based on testing: orderExpiry must be significantly greater than expiredAt
+          // Set to expiredAt + 1 hour to ensure it's always valid for both IOC and GTC
+          const orderExpiry = expiredAt + 3600000; // Always 1 hour after expiredAt
+          
           orderParams = {
             marketIndex,
             clientOrderIndex: Date.now(),
@@ -462,7 +465,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
             orderType: LighterOrderType.LIMIT,
             timeInForce, // 0 = GTC, 1 = IOC
             reduceOnly: request.reduceOnly ? 1 : 0, // Critical: must be 1 for closing orders
-            orderExpiry: 0, // Always 0 for limit orders (per Lighter API spec)
+            orderExpiry, // Future timestamp (1 hour) - must be > expiredAt
             expiredAt,
           };
         }
