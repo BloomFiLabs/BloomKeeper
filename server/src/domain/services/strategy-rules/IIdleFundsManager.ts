@@ -82,3 +82,4 @@ export interface IIdleFundsManager {
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
   ): Promise<Result<{ allocated: number; allocations: number }, DomainException>>;
 }
+

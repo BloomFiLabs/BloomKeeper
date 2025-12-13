@@ -125,6 +125,10 @@ export class FundingArbitrageStrategy {
   // Open orders tracking: orders that are still pending
   private readonly openOrders: Map<ExchangeType, string[]> = new Map();
 
+  // Position open time tracking: track when positions were opened to enforce minimum hold time
+  // Key: `${symbol}-${longExchange}-${shortExchange}`, Value: timestamp when position was opened
+  private readonly positionOpenTimes: Map<string, Date> = new Map();
+
   // Leverage multiplier (from StrategyConfig, kept for convenience)
   private readonly leverage: number;
 
@@ -1368,6 +1372,34 @@ export class FundingArbitrageStrategy {
         }
       }
 
+      // POSITION STICKINESS: Filter positions to close based on stickiness rules
+      // This prevents closing positions that are still profitable just because a slightly better one exists
+      if (positionsToClose.length > 0) {
+        // Get the best new opportunity spread for comparison
+        const bestNewOpportunitySpread = selectedOpportunities.length > 0 && selectedOpportunities[0].opportunity
+          ? selectedOpportunities[0].opportunity.spread.toDecimal()
+          : null;
+        
+        this.logger.log(`\n🔒 Evaluating ${positionsToClose.length} candidate position(s) for closing with stickiness rules...`);
+        
+        const stickinessResult = await this.filterPositionsToCloseWithStickiness(
+          positionsToClose,
+          existingPositionsBySymbol,
+          bestNewOpportunitySpread,
+        );
+        
+        // Update positionsToClose with only the positions that should actually be closed
+        const originalCount = positionsToClose.length;
+        positionsToClose = stickinessResult.toClose;
+        
+        if (stickinessResult.toKeep.length > 0) {
+          this.logger.log(
+            `✅ Stickiness check: Keeping ${stickinessResult.toKeep.length} position(s), ` +
+            `closing ${positionsToClose.length} of ${originalCount} candidates`
+          );
+        }
+      }
+
       // CRITICAL: Detect and handle single-leg positions FIRST (before handling asymmetric fills)
       // Single-leg positions have price exposure - try to open missing side, then close if still missing
       const singleLegPositions = this.positionManager.detectSingleLegPositions(
@@ -1513,6 +1545,19 @@ export class FundingArbitrageStrategy {
               `Their margin remains locked: ${closeResult.stillOpen.map((p) => `${p.symbol} on ${p.exchangeType}`).join(', ')}`,
           );
         }
+        
+        // Remove position open time tracking for successfully closed positions
+        for (const closedPos of closeResult.closed) {
+          // Find the matching pair to get both exchanges
+          const pair = existingPositionsBySymbol.get(closedPos.symbol);
+          if (pair && pair.long && pair.short) {
+            this.removePositionOpenTime(
+              closedPos.symbol,
+              pair.long.exchangeType,
+              pair.short.exchangeType,
+            );
+          }
+        }
 
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -1580,9 +1625,21 @@ export class FundingArbitrageStrategy {
         result.errors.push(executionResult.error.message);
       } else {
         const executionResults = executionResult.value;
-      result.opportunitiesExecuted = executionResults.successfulExecutions;
-      result.ordersPlaced = executionResults.totalOrders;
-      result.totalExpectedReturn = executionResults.totalExpectedReturn;
+        result.opportunitiesExecuted = executionResults.successfulExecutions;
+        result.ordersPlaced = executionResults.totalOrders;
+        result.totalExpectedReturn = executionResults.totalExpectedReturn;
+        
+        // Record position open times for newly opened positions (for stickiness tracking)
+        // Only record for new positions, not top-ups of existing ones
+        for (const opp of selectedOpportunities) {
+          if (opp.opportunity && !opp.isExisting) {
+            this.recordPositionOpenTime(
+              opp.opportunity.symbol,
+              opp.opportunity.longExchange,
+              opp.opportunity.shortExchange,
+            );
+          }
+        }
       }
 
       // Log comprehensive performance metrics after execution
@@ -2918,4 +2975,249 @@ export class FundingArbitrageStrategy {
       uniqueExchanges,
     );
   }
+
+  // ==================== Position Stickiness Methods ====================
+  // These methods prevent unnecessary position churn by evaluating whether
+  // existing positions should be kept vs closed and replaced
+
+  /**
+   * Get the position key for tracking open times
+   */
+  private getPositionKey(symbol: string, longExchange: ExchangeType, shortExchange: ExchangeType): string {
+    return `${symbol}-${longExchange}-${shortExchange}`;
+  }
+
+  /**
+   * Record when a position pair was opened
+   */
+  recordPositionOpenTime(symbol: string, longExchange: ExchangeType, shortExchange: ExchangeType): void {
+    const key = this.getPositionKey(symbol, longExchange, shortExchange);
+    this.positionOpenTimes.set(key, new Date());
+    this.logger.debug(`📝 Recorded position open time for ${key}`);
+  }
+
+  /**
+   * Remove position open time tracking when position is closed
+   */
+  removePositionOpenTime(symbol: string, longExchange: ExchangeType, shortExchange: ExchangeType): void {
+    const key = this.getPositionKey(symbol, longExchange, shortExchange);
+    this.positionOpenTimes.delete(key);
+    this.logger.debug(`🗑️ Removed position open time for ${key}`);
+  }
+
+  /**
+   * Get hours since position was opened
+   * Returns null if position open time is not tracked (assume it's old enough)
+   */
+  getPositionAgeHours(symbol: string, longExchange: ExchangeType, shortExchange: ExchangeType): number | null {
+    const key = this.getPositionKey(symbol, longExchange, shortExchange);
+    const openTime = this.positionOpenTimes.get(key);
+    if (!openTime) {
+      // If we don't have tracking, assume it's been open long enough
+      // This handles positions opened before tracking was added
+      return null;
+    }
+    const ageMs = Date.now() - openTime.getTime();
+    return ageMs / (1000 * 60 * 60); // Convert to hours
+  }
+
+  /**
+   * Get the current funding rate spread for an existing position pair
+   * Returns the spread as a decimal (positive = profitable, negative = losing money)
+   */
+  async getCurrentSpreadForPosition(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+  ): Promise<number | null> {
+    try {
+      const rates = await this.aggregator.getFundingRates(symbol);
+      
+      const longRate = rates.find(r => r.exchange === longExchange);
+      const shortRate = rates.find(r => r.exchange === shortExchange);
+      
+      if (!longRate || !shortRate) {
+        this.logger.debug(
+          `Cannot get current spread for ${symbol}: ` +
+          `longRate=${longRate?.currentRate ?? 'missing'}, shortRate=${shortRate?.currentRate ?? 'missing'}`
+        );
+        return null;
+      }
+      
+      // Spread = shortRate - longRate (positive when we receive funding on both)
+      // Long position: we PAY when rate is positive, RECEIVE when negative
+      // Short position: we RECEIVE when rate is positive, PAY when negative
+      // Net spread = shortRate - longRate
+      const spread = shortRate.currentRate - longRate.currentRate;
+      
+      return spread;
+    } catch (error: any) {
+      this.logger.debug(`Error getting current spread for ${symbol}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Determine if an existing position should be kept vs closed
+   * 
+   * A position should be KEPT if:
+   * 1. It's still earning positive funding (spread > closeSpreadThreshold)
+   * 2. OR it hasn't been held long enough (age < minHoldHours) AND spread is not severely negative
+   * 3. OR there's no significantly better opportunity to replace it with
+   * 
+   * @param symbol The symbol of the position pair
+   * @param longExchange Exchange holding the long position
+   * @param shortExchange Exchange holding the short position
+   * @param bestNewOpportunitySpread The spread of the best alternative opportunity (if any)
+   * @returns Object with shouldKeep boolean and reason string
+   */
+  async shouldKeepPosition(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+    bestNewOpportunitySpread: number | null,
+  ): Promise<{ shouldKeep: boolean; reason: string }> {
+    const currentSpread = await this.getCurrentSpreadForPosition(symbol, longExchange, shortExchange);
+    const positionAgeHours = this.getPositionAgeHours(symbol, longExchange, shortExchange);
+    
+    const closeThreshold = this.strategyConfig.closeSpreadThreshold.toDecimal();
+    const minHoldHours = this.strategyConfig.minHoldHours;
+    const churnCostMultiplier = this.strategyConfig.churnCostMultiplier;
+    
+    // Calculate churn cost for this position pair
+    const churnCost = this.strategyConfig.calculateChurnCost(longExchange, shortExchange);
+    
+    this.logger.debug(
+      `🔍 Evaluating position ${symbol} (${longExchange}/${shortExchange}): ` +
+      `spread=${currentSpread !== null ? (currentSpread * 100).toFixed(4) + '%' : 'unknown'}, ` +
+      `age=${positionAgeHours !== null ? positionAgeHours.toFixed(1) + 'h' : 'unknown'}, ` +
+      `closeThreshold=${(closeThreshold * 100).toFixed(4)}%, ` +
+      `churnCost=${(churnCost * 100).toFixed(4)}%`
+    );
+    
+    // Case 1: Can't get current spread - be conservative and keep position
+    if (currentSpread === null) {
+      return {
+        shouldKeep: true,
+        reason: `Cannot determine current spread for ${symbol} - keeping position (conservative)`,
+      };
+    }
+    
+    // Case 2: Position has severely negative spread - CLOSE IT regardless of age
+    // Severely negative = losing more than 2x the close threshold
+    const severelyNegativeThreshold = closeThreshold * 2;
+    if (currentSpread < severelyNegativeThreshold) {
+      return {
+        shouldKeep: false,
+        reason: `${symbol} spread (${(currentSpread * 100).toFixed(4)}%) is severely negative (< ${(severelyNegativeThreshold * 100).toFixed(4)}%) - closing to stop losses`,
+      };
+    }
+    
+    // Case 3: Position is below minimum hold time - keep unless spread is negative
+    if (positionAgeHours !== null && positionAgeHours < minHoldHours) {
+      if (currentSpread > 0) {
+        return {
+          shouldKeep: true,
+          reason: `${symbol} is still young (${positionAgeHours.toFixed(1)}h < ${minHoldHours}h min) and profitable (${(currentSpread * 100).toFixed(4)}%) - keeping`,
+        };
+      } else if (currentSpread > closeThreshold) {
+        return {
+          shouldKeep: true,
+          reason: `${symbol} is young (${positionAgeHours.toFixed(1)}h) and spread (${(currentSpread * 100).toFixed(4)}%) > close threshold (${(closeThreshold * 100).toFixed(4)}%) - keeping`,
+        };
+      }
+    }
+    
+    // Case 4: Spread is above close threshold - keep position
+    if (currentSpread > closeThreshold) {
+      // But check if there's a SIGNIFICANTLY better opportunity
+      if (bestNewOpportunitySpread !== null) {
+        const spreadImprovement = bestNewOpportunitySpread - currentSpread;
+        const requiredImprovement = churnCost * churnCostMultiplier;
+        
+        if (spreadImprovement > requiredImprovement) {
+          return {
+            shouldKeep: false,
+            reason: `${symbol} spread (${(currentSpread * 100).toFixed(4)}%) is profitable but ` +
+              `new opportunity (${(bestNewOpportunitySpread * 100).toFixed(4)}%) is ${(spreadImprovement * 100).toFixed(4)}% better, ` +
+              `exceeding churn threshold (${(requiredImprovement * 100).toFixed(4)}%) - replacing`,
+          };
+        }
+      }
+      
+      return {
+        shouldKeep: true,
+        reason: `${symbol} spread (${(currentSpread * 100).toFixed(4)}%) > close threshold (${(closeThreshold * 100).toFixed(4)}%) - keeping`,
+      };
+    }
+    
+    // Case 5: Spread is at or below close threshold - close position
+    return {
+      shouldKeep: false,
+      reason: `${symbol} spread (${(currentSpread * 100).toFixed(4)}%) <= close threshold (${(closeThreshold * 100).toFixed(4)}%) - closing`,
+    };
+  }
+
+  /**
+   * Filter positions to close based on stickiness rules
+   * Only returns positions that should actually be closed
+   * 
+   * @param positionsToClose Candidate positions for closing
+   * @param existingPositionsBySymbol Map of existing position pairs
+   * @param bestOpportunitySpread Spread of the best new opportunity available
+   * @returns Filtered list of positions that should actually be closed
+   */
+  async filterPositionsToCloseWithStickiness(
+    positionsToClose: PerpPosition[],
+    existingPositionsBySymbol: Map<string, {
+      long?: PerpPosition;
+      short?: PerpPosition;
+      currentValue: number;
+      currentCollateral: number;
+    }>,
+    bestOpportunitySpread: number | null,
+  ): Promise<{ toClose: PerpPosition[]; toKeep: PerpPosition[]; reasons: Map<string, string> }> {
+    const toClose: PerpPosition[] = [];
+    const toKeep: PerpPosition[] = [];
+    const reasons = new Map<string, string>();
+    
+    // Group positions by symbol (we need to evaluate pairs together)
+    const symbolsToEvaluate = new Set<string>();
+    for (const position of positionsToClose) {
+      symbolsToEvaluate.add(position.symbol);
+    }
+    
+    for (const symbol of symbolsToEvaluate) {
+      const pair = existingPositionsBySymbol.get(symbol);
+      if (!pair || !pair.long || !pair.short) {
+        // Single-leg position - should be handled by single-leg detection, not stickiness
+        const positions = positionsToClose.filter(p => p.symbol === symbol);
+        toClose.push(...positions);
+        reasons.set(symbol, 'Single-leg position - handled separately');
+        continue;
+      }
+      
+      // Evaluate if we should keep this position pair
+      const { shouldKeep, reason } = await this.shouldKeepPosition(
+        symbol,
+        pair.long.exchangeType,
+        pair.short.exchangeType,
+        bestOpportunitySpread,
+      );
+      
+      reasons.set(symbol, reason);
+      
+      const positionsForSymbol = positionsToClose.filter(p => p.symbol === symbol);
+      if (shouldKeep) {
+        toKeep.push(...positionsForSymbol);
+        this.logger.log(`🔒 KEEPING position ${symbol}: ${reason}`);
+      } else {
+        toClose.push(...positionsForSymbol);
+        this.logger.log(`🔓 CLOSING position ${symbol}: ${reason}`);
+      }
+    }
+    
+    return { toClose, toKeep, reasons };
+  }
+  // ==================== End Position Stickiness Methods ====================
 }
