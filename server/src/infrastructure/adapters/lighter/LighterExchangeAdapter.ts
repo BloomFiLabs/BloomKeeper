@@ -448,10 +448,17 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
             throw new Error('Limit price is required for LIMIT orders');
           }
 
-          // LIMIT orders always use GTC (Good Till Cancel) - they can sit on the order book
+          // LIMIT orders always use GTC (Good Till Cancel/Time) - they can sit on the order book
           // Only MARKET orders use IOC (Immediate Or Cancel) for immediate execution
-          const timeInForce = 0; // Always GTC for LIMIT orders
+          // Note: We ignore request.timeInForce for LIMIT orders and always use GTC
+          // Lighter API mapping: 0 = IOC, 1 = GTC/GTT (Good Till Time)
+          const timeInForce = 1; // Always GTC/GTT (1) for LIMIT orders, regardless of request.timeInForce
           const expiredAt = Date.now() + 3600000; // 1 hour expiry for GTC orders
+          
+          this.logger.debug(
+            `LIMIT order for ${request.symbol}: Using GTC/GTT (timeInForce=1) ` +
+            `(request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}, but LIMIT orders always use GTC)`
+          );
 
           // orderExpiry: Based on testing with lighter-open-position-test.ts
           // For opening orders (reduceOnly = false): orderExpiry = 0 works
@@ -468,13 +475,22 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
             price: market.priceToUnits(request.price),
             isAsk,
             orderType: LighterOrderType.LIMIT,
-            timeInForce, // 0 = GTC, 1 = IOC
+            timeInForce, // 0 = IOC, 1 = GTC/GTT (Good Till Time)
             reduceOnly: request.reduceOnly ? 1 : 0, // Critical: must be 1 for closing orders
             orderExpiry, // 0 for opening orders, expiredAt + 1 hour for closing orders
             expiredAt,
           };
         }
 
+        // Log timeInForce value to verify LIMIT orders use GTC
+        if (request.type === OrderType.LIMIT) {
+          this.logger.log(
+            `📋 LIMIT order for ${request.symbol}: timeInForce=${orderParams.timeInForce} ` +
+            `(${orderParams.timeInForce === 1 ? 'GTC/GTT' : 'IOC'}) - ` +
+            `request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}`
+          );
+        }
+        
         this.logger.debug(`Creating unified order with params: ${JSON.stringify({
           marketIndex: orderParams.marketIndex,
           clientOrderIndex: orderParams.clientOrderIndex,
