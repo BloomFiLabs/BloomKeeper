@@ -24,6 +24,7 @@ import { HistoricalFundingRateService } from '../services/HistoricalFundingRateS
 import { PositionLossTracker } from '../services/PositionLossTracker';
 import { PortfolioRiskAnalyzer } from '../services/PortfolioRiskAnalyzer';
 import { RealFundingPaymentsService } from '../services/RealFundingPaymentsService';
+import { OptimalLeverageService } from '../services/OptimalLeverageService';
 import { PerpKeeperController } from '../controllers/PerpKeeperController';
 import { FundingRateController } from '../controllers/FundingRateController';
 import { PortfolioOptimizer } from '../../domain/services/strategy-rules/PortfolioOptimizer';
@@ -267,6 +268,27 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
     // Real funding payments service
     RealFundingPaymentsService,
     
+    // Optimal leverage service
+    {
+      provide: OptimalLeverageService,
+      useFactory: (
+        configService: ConfigService,
+        fundingPaymentsService: RealFundingPaymentsService,
+        historicalService: IHistoricalFundingRateService,
+      ) => {
+        return new OptimalLeverageService(
+          configService,
+          fundingPaymentsService,
+          historicalService,
+        );
+      },
+      inject: [ConfigService, RealFundingPaymentsService, 'IHistoricalFundingRateService'],
+    },
+    {
+      provide: 'IOptimalLeverageService',
+      useExisting: OptimalLeverageService,
+    },
+    
     // Performance logging
     {
       provide: PerpKeeperPerformanceLogger,
@@ -286,6 +308,7 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
     PerpKeeperPerformanceLogger,
     PerpKeeperOrchestrator,
     RealFundingPaymentsService,
+    OptimalLeverageService,
   ],
 })
 export class PerpKeeperModule {}

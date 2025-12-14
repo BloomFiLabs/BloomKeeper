@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional, Inject } from '@nestjs/common';
 import { Cron, CronExpression, Interval } from '@nestjs/schedule';
 import { PerpKeeperOrchestrator } from '../../domain/services/PerpKeeperOrchestrator';
 import { ConfigService } from '@nestjs/config';
@@ -9,6 +9,7 @@ import { PerpOrderRequest, OrderSide, OrderType, TimeInForce, OrderStatus } from
 import { PerpPosition } from '../../domain/entities/PerpPosition';
 import { Contract, JsonRpcProvider, Wallet, formatUnits } from 'ethers';
 import * as cliProgress from 'cli-progress';
+import type { IOptimalLeverageService, LeverageAlert } from '../../domain/ports/IOptimalLeverageService';
 
 /**
  * PerpKeeperScheduler - Scheduled execution for funding rate arbitrage
@@ -46,6 +47,8 @@ export class PerpKeeperScheduler implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly performanceLogger: PerpKeeperPerformanceLogger,
     private readonly keeperService: PerpKeeperService,
+    @Optional() @Inject('IOptimalLeverageService')
+    private readonly optimalLeverageService?: IOptimalLeverageService,
   ) {
     // Initialize orchestrator with exchange adapters
     const adapters = this.keeperService.getExchangeAdapters();
@@ -968,6 +971,99 @@ export class PerpKeeperScheduler implements OnModuleInit {
       return balanceUsd;
     } catch (error: any) {
       return 0;
+    }
+  }
+
+  /**
+   * Periodic leverage health check - runs every 15 minutes
+   * Checks if current positions have optimal leverage and generates alerts
+   */
+  @Interval(900000) // Every 15 minutes (900000 ms)
+  async checkLeverageHealth() {
+    if (!this.optimalLeverageService) {
+      return;
+    }
+
+    try {
+      // Get all current positions
+      const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+      if (!positionsResult || positionsResult.positions.length === 0) {
+        return;
+      }
+
+      const positions = positionsResult.positions;
+      const alerts: LeverageAlert[] = [];
+
+      // Check leverage for each unique symbol
+      const checkedSymbols = new Set<string>();
+      
+      for (const position of positions) {
+        const normalizedSymbol = position.symbol
+          .replace('USDT', '')
+          .replace('USDC', '')
+          .replace('-PERP', '')
+          .toUpperCase();
+        
+        if (checkedSymbols.has(normalizedSymbol)) {
+          continue;
+        }
+        checkedSymbols.add(normalizedSymbol);
+
+        try {
+          const currentLeverage = position.leverage ?? 2; // Default assumption
+          const result = await this.optimalLeverageService.shouldAdjustLeverage(
+            normalizedSymbol,
+            position.exchangeType,
+            currentLeverage,
+          );
+
+          if (result.shouldAdjust) {
+            const urgency = Math.abs(currentLeverage - result.recommendedLeverage) > 3
+              ? 'HIGH'
+              : Math.abs(currentLeverage - result.recommendedLeverage) > 1
+                ? 'MEDIUM'
+                : 'LOW';
+
+            const alertType = result.recommendedLeverage > currentLeverage
+              ? 'INCREASE'
+              : 'DECREASE';
+
+            alerts.push({
+              symbol: normalizedSymbol,
+              exchange: position.exchangeType,
+              alertType,
+              currentLeverage,
+              recommendedLeverage: result.recommendedLeverage,
+              reason: result.reason,
+              urgency,
+              timestamp: new Date(),
+            });
+          }
+        } catch (error: any) {
+          // Skip symbol on error
+        }
+      }
+
+      // Log alerts if any
+      if (alerts.length > 0) {
+        this.logger.warn('');
+        this.logger.warn('⚠️ LEVERAGE ADJUSTMENT RECOMMENDED');
+        this.logger.warn('═'.repeat(60));
+        
+        for (const alert of alerts) {
+          const emoji = alert.urgency === 'HIGH' ? '🔴' : alert.urgency === 'MEDIUM' ? '🟡' : '🟢';
+          this.logger.warn(
+            `${emoji} ${alert.symbol} (${alert.exchange}): ${alert.alertType} ` +
+            `${alert.currentLeverage}x → ${alert.recommendedLeverage}x`
+          );
+          this.logger.warn(`   Reason: ${alert.reason}`);
+        }
+        
+        this.logger.warn('═'.repeat(60));
+        this.logger.warn('');
+      }
+    } catch (error: any) {
+      this.logger.debug(`Error in leverage health check: ${error.message}`);
     }
   }
 

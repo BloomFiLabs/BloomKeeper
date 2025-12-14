@@ -42,6 +42,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
     longMarkPrice?: number,
     shortMarkPrice?: number,
     maxPositionSizeUsd?: number,
+    leverageOverride?: number,
   ): Promise<Result<ArbitrageExecutionPlan, DomainException>> {
     return this.createExecutionPlanWithBalances(
       opportunity,
@@ -52,6 +53,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       balances.longBalance,
       balances.shortBalance,
       config,
+      leverageOverride,
     );
   }
 
@@ -63,6 +65,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
     config: StrategyConfig,
     longMarkPrice?: number,
     shortMarkPrice?: number,
+    leverageOverride?: number,
   ): Promise<Result<ArbitrageExecutionPlan, DomainException>> {
     // For allocation mode, use allocation as max position size
     return this.createExecutionPlanWithBalances(
@@ -74,6 +77,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       balances.longBalance,
       balances.shortBalance,
       config,
+      leverageOverride,
     );
   }
 
@@ -86,7 +90,11 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
     longBalance: number,
     shortBalance: number,
     config: StrategyConfig,
+    leverageOverride?: number,
   ): Promise<Result<ArbitrageExecutionPlan, DomainException>> {
+    // Use override leverage if provided, otherwise use config leverage
+    const leverage = leverageOverride ?? config.leverage;
+    
     try {
       const longAdapter = adapters.get(opportunity.longExchange);
       const shortAdapter = adapters.get(opportunity.shortExchange);
@@ -149,7 +157,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       // Determine position size based on actual available capital
       const minBalance = Math.min(longBalance, shortBalance);
       const availableCapital = minBalance * config.balanceUsagePercent.toDecimal();
-      const leveragedCapital = availableCapital * config.leverage;
+      const leveragedCapital = availableCapital * leverage;
       const maxSize = maxPositionSizeUsd || Infinity;
 
       // Calculate position size
@@ -160,7 +168,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
         maxPositionSizeUsd >= config.minPositionSizeUsd
       ) {
         // Portfolio allocation mode
-        const requiredCollateral = maxPositionSizeUsd / config.leverage;
+        const requiredCollateral = maxPositionSizeUsd / leverage;
         if (minBalance >= requiredCollateral) {
           positionSizeUsd = maxPositionSizeUsd;
         } else {
@@ -467,7 +475,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       // Create PositionSize value object
       const positionSize = PositionSize.fromBaseAsset(
         positionSizeBaseAsset,
-        config.leverage,
+        leverage,
       );
 
       // Create LIMIT order requests

@@ -9,6 +9,7 @@ import { Percentage } from './Percentage';
 export class StrategyConfig {
   private readonly _exchangeFeeRates: Map<ExchangeType, Percentage>;
   private readonly _takerFeeRates: Map<ExchangeType, Percentage>;
+  private readonly _leverageOverrides: Map<string, number>;
 
   constructor(
     public readonly defaultMinSpread: Percentage,
@@ -29,9 +30,17 @@ export class StrategyConfig {
     public readonly maxBackoffDelayOpening: number,
     public readonly maxBackoffDelayClosing: number,
     public readonly minFillBalance: Percentage,
+    // Dynamic leverage configuration
+    public readonly useDynamicLeverage: boolean = false,
+    public readonly minLeverage: number = 1,
+    public readonly maxLeverage: number = 10,
+    public readonly volatilityLookbackHours: number = 24,
+    leverageOverrides: Map<string, number> = new Map(),
   ) {
     this._exchangeFeeRates = new Map(exchangeFeeRates);
     this._takerFeeRates = new Map(takerFeeRates);
+    this._leverageOverrides = new Map(leverageOverrides);
+    
     // Validation
     if (minPositionSizeUsd <= 0) {
       throw new Error('minPositionSizeUsd must be greater than 0');
@@ -43,6 +52,18 @@ export class StrategyConfig {
 
     if (leverage < 1) {
       throw new Error('leverage must be at least 1');
+    }
+
+    if (minLeverage < 1) {
+      throw new Error('minLeverage must be at least 1');
+    }
+
+    if (maxLeverage < minLeverage) {
+      throw new Error('maxLeverage must be greater than or equal to minLeverage');
+    }
+
+    if (volatilityLookbackHours < 1) {
+      throw new Error('volatilityLookbackHours must be at least 1');
     }
 
     if (maxExecutionRetries <= 0) {
@@ -107,21 +128,66 @@ export class StrategyConfig {
   }
 
   /**
+   * Get leverage overrides map
+   */
+  get leverageOverrides(): Map<string, number> {
+    return new Map(this._leverageOverrides);
+  }
+
+  /**
+   * Get leverage for a specific symbol (uses override if available)
+   */
+  getLeverageForSymbol(symbol: string): number {
+    const normalized = symbol.toUpperCase().replace('USDT', '').replace('USDC', '').replace('-PERP', '');
+    return this._leverageOverrides.get(normalized) ?? this.leverage;
+  }
+
+  /**
    * Create StrategyConfig from ConfigService
-   * Reads KEEPER_LEVERAGE from environment, uses defaults for other values
+   * Reads leverage settings from environment
    */
   static fromConfigService(configService: ConfigService): StrategyConfig {
     const leverage = parseFloat(
       configService.get<string>('KEEPER_LEVERAGE') || '2.0',
     );
+    const useDynamicLeverage = configService.get<string>('USE_DYNAMIC_LEVERAGE') === 'true';
+    const minLeverage = parseFloat(configService.get<string>('LEVERAGE_MIN') || '1');
+    const maxLeverage = parseFloat(configService.get<string>('LEVERAGE_MAX') || '10');
+    const volatilityLookbackHours = parseInt(configService.get<string>('LEVERAGE_LOOKBACK_HOURS') || '24');
 
-    return StrategyConfig.withDefaults(leverage);
+    // Parse leverage overrides from env (format: "BTC:5,ETH:3,DOGE:2")
+    const leverageOverrides = new Map<string, number>();
+    const overridesStr = configService.get<string>('LEVERAGE_OVERRIDES') || '';
+    if (overridesStr) {
+      for (const pair of overridesStr.split(',')) {
+        const [symbol, lev] = pair.split(':');
+        if (symbol && lev) {
+          leverageOverrides.set(symbol.trim().toUpperCase(), parseFloat(lev));
+        }
+      }
+    }
+
+    return StrategyConfig.withDefaults(
+      leverage,
+      useDynamicLeverage,
+      minLeverage,
+      maxLeverage,
+      volatilityLookbackHours,
+      leverageOverrides,
+    );
   }
 
   /**
    * Create StrategyConfig with default values
    */
-  static withDefaults(leverage: number = 2.0): StrategyConfig {
+  static withDefaults(
+    leverage: number = 2.0,
+    useDynamicLeverage: boolean = false,
+    minLeverage: number = 1,
+    maxLeverage: number = 10,
+    volatilityLookbackHours: number = 24,
+    leverageOverrides: Map<string, number> = new Map(),
+  ): StrategyConfig {
     const exchangeFeeRates = new Map<ExchangeType, Percentage>([
       [ExchangeType.HYPERLIQUID, Percentage.fromDecimal(0.00015)], // 0.0150% maker fee (tier 0)
       [ExchangeType.ASTER, Percentage.fromDecimal(0.00005)], // 0.0050% maker fee
@@ -155,6 +221,11 @@ export class StrategyConfig {
       8000, // maxBackoffDelayOpening
       32000, // maxBackoffDelayClosing
       Percentage.fromDecimal(0.95), // minFillBalance
+      useDynamicLeverage,
+      minLeverage,
+      maxLeverage,
+      volatilityLookbackHours,
+      leverageOverrides,
     );
   }
 }

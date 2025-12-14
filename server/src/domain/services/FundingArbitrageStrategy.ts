@@ -21,6 +21,7 @@ import type { IHistoricalFundingRateService } from '../ports/IHistoricalFundingR
 import type { IPositionLossTracker } from '../ports/IPositionLossTracker';
 import type { IPortfolioRiskAnalyzer } from '../ports/IPortfolioRiskAnalyzer';
 import type { IPerpKeeperPerformanceLogger } from '../ports/IPerpKeeperPerformanceLogger';
+import type { IOptimalLeverageService } from '../ports/IOptimalLeverageService';
 import { ExchangeBalanceRebalancer } from './ExchangeBalanceRebalancer';
 import { PortfolioOptimizer } from './strategy-rules/PortfolioOptimizer';
 import { OrderExecutor } from './strategy-rules/OrderExecutor';
@@ -156,12 +157,47 @@ export class FundingArbitrageStrategy {
     @Optional() private readonly eventBus?: IEventBus,
     @Optional()
     private readonly idleFundsManager?: any, // IIdleFundsManager - using any to avoid circular dependency
+    @Optional() @Inject('IOptimalLeverageService')
+    private readonly optimalLeverageService?: IOptimalLeverageService,
   ) {
     // Use leverage from StrategyConfig
     // Leverage improves net returns: 2x leverage = 2x funding returns, but fees stay same %
     // Example: $100 capital, 2x leverage = $200 notional, 10% APY = $20/year vs $10/year (2x improvement)
     this.leverage = this.strategyConfig.leverage;
     // Removed strategy initialization log - only execution logs shown
+  }
+
+  /**
+   * Get leverage for a specific symbol
+   * Uses dynamic calculation if enabled, otherwise returns static leverage
+   */
+  async getLeverageForSymbol(symbol: string, exchange: ExchangeType): Promise<number> {
+    // Check for per-symbol override first
+    const override = this.strategyConfig.getLeverageForSymbol(symbol);
+    if (override !== this.strategyConfig.leverage) {
+      return override;
+    }
+
+    // Use dynamic leverage if enabled and service available
+    if (this.strategyConfig.useDynamicLeverage && this.optimalLeverageService) {
+      try {
+        const recommendation = await this.optimalLeverageService.calculateOptimalLeverage(
+          symbol,
+          exchange,
+        );
+        this.logger.debug(
+          `Dynamic leverage for ${symbol}: ${recommendation.optimalLeverage}x ` +
+          `(volatility: ${(recommendation.factors.volatilityScore * 100).toFixed(0)}%, ` +
+          `liquidity: ${(recommendation.factors.liquidityScore * 100).toFixed(0)}%)`
+        );
+        return recommendation.optimalLeverage;
+      } catch (error: any) {
+        this.logger.warn(`Failed to get dynamic leverage for ${symbol}: ${error.message}`);
+      }
+    }
+
+    // Fallback to static leverage
+    return this.leverage;
   }
 
   /**
@@ -177,6 +213,12 @@ export class FundingArbitrageStrategy {
     longBalance: number,
     shortBalance: number,
   ): Promise<ArbitrageExecutionPlan | null> {
+    // Get dynamic leverage for this symbol if enabled
+    const leverage = await this.getLeverageForSymbol(
+      opportunity.symbol,
+      opportunity.longExchange,
+    );
+    
     const result = await this.executionPlanBuilder.buildPlan(
       opportunity,
       adapters,
@@ -185,6 +227,7 @@ export class FundingArbitrageStrategy {
       longMarkPrice,
       shortMarkPrice,
       maxPositionSizeUsd,
+      leverage,
     );
 
     if (result.isFailure) {
@@ -2420,6 +2463,10 @@ export class FundingArbitrageStrategy {
       }
 
       // Create execution plan for the missing side
+      const leverage = await this.getLeverageForSymbol(
+        opportunity.symbol,
+        opportunity.longExchange,
+      );
       const planResult = await this.executionPlanBuilder.buildPlan(
         opportunity,
         adapters,
@@ -2428,6 +2475,10 @@ export class FundingArbitrageStrategy {
           shortBalance: 1000000,
         },
         this.strategyConfig,
+        undefined, // longMarkPrice
+        undefined, // shortMarkPrice
+        undefined, // maxPositionSizeUsd
+        leverage,
       );
 
       if (planResult.isFailure) {

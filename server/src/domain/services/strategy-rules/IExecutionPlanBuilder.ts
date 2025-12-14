@@ -20,6 +20,7 @@ export interface IExecutionPlanBuilder {
     longMarkPrice?: number,
     shortMarkPrice?: number,
     maxPositionSizeUsd?: number,
+    leverageOverride?: number,
   ): Promise<Result<ArbitrageExecutionPlan, DomainException>>;
 
   buildPlanWithAllocation(
@@ -30,6 +31,7 @@ export interface IExecutionPlanBuilder {
     config: StrategyConfig,
     longMarkPrice?: number,
     shortMarkPrice?: number,
+    leverageOverride?: number,
   ): Promise<Result<ArbitrageExecutionPlan, DomainException>>;
 }
 
