@@ -1465,5 +1465,41 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       );
     }
   }
+
+  /**
+   * Get all open orders
+   * @returns Array of open orders with timestamp for stale order detection
+   */
+  async getOpenOrders(): Promise<import('../../../domain/ports/IPerpExchangeAdapter').OpenOrder[]> {
+    try {
+      await this.ensureSymbolConverter();
+      
+      const openOrders = await this.infoClient.openOrders({ user: this.walletAddress });
+      
+      return openOrders.map((order: any) => {
+        const orderId = typeof order.oid === 'bigint' 
+          ? order.oid.toString() 
+          : String(order.oid || '');
+        
+        return {
+          orderId,
+          symbol: order.coin || '',
+          side: order.side === 'B' ? 'buy' : 'sell',
+          price: parseFloat(order.limitPx || '0'),
+          size: parseFloat(order.sz || '0'),
+          filledSize: parseFloat(order.sz || '0') - parseFloat(order.origSz || order.sz || '0'),
+          timestamp: new Date(order.timestamp || Date.now()),
+        };
+      });
+    } catch (error: any) {
+      this.logger.error(`Failed to get open orders: ${error.message}`);
+      throw new ExchangeError(
+        `Failed to get open orders: ${error.message}`,
+        ExchangeType.HYPERLIQUID,
+        undefined,
+        error,
+      );
+    }
+  }
 }
 

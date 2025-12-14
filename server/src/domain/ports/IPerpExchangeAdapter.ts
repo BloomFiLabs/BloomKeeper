@@ -172,6 +172,26 @@ export interface IPerpExchangeAdapter {
    * @throws ExchangeError if fetch fails
    */
   getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]>;
+
+  /**
+   * Get all open orders
+   * @returns Array of open orders with order ID, symbol, side, price, size, and timestamp
+   * @throws ExchangeError if fetch fails
+   */
+  getOpenOrders?(): Promise<OpenOrder[]>;
+}
+
+/**
+ * Open order information
+ */
+export interface OpenOrder {
+  orderId: string;
+  symbol: string;
+  side: 'buy' | 'sell';
+  price: number;
+  size: number;
+  filledSize: number;
+  timestamp: Date;
 }
 
 

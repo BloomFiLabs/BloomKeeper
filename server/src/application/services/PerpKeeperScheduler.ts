@@ -1068,6 +1068,59 @@ export class PerpKeeperScheduler implements OnModuleInit {
   }
 
   /**
+   * Periodic stale order cleanup - runs every 10 minutes
+   * Cancels limit orders that have been sitting unfilled for too long
+   */
+  @Interval(600000) // Every 10 minutes (600000 ms)
+  async cleanupStaleOrders() {
+    const STALE_ORDER_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+    
+    try {
+      const adapters = this.keeperService.getExchangeAdapters();
+      let totalCancelled = 0;
+      
+      for (const [exchangeType, adapter] of adapters) {
+        try {
+          // Check if adapter supports getOpenOrders
+          if (typeof (adapter as any).getOpenOrders !== 'function') {
+            continue;
+          }
+          
+          const openOrders = await (adapter as any).getOpenOrders();
+          const now = Date.now();
+          
+          for (const order of openOrders) {
+            const orderAge = now - order.timestamp.getTime();
+            
+            if (orderAge > STALE_ORDER_THRESHOLD_MS) {
+              const ageMinutes = Math.floor(orderAge / 60000);
+              this.logger.warn(
+                `🗑️ Cancelling stale order on ${exchangeType}: ${order.symbol} ${order.side} ` +
+                `${order.size} @ ${order.price} (${ageMinutes} minutes old)`
+              );
+              
+              try {
+                await adapter.cancelOrder(order.orderId, order.symbol);
+                totalCancelled++;
+              } catch (cancelError: any) {
+                this.logger.debug(`Failed to cancel stale order ${order.orderId}: ${cancelError.message}`);
+              }
+            }
+          }
+        } catch (error: any) {
+          this.logger.debug(`Error checking stale orders on ${exchangeType}: ${error.message}`);
+        }
+      }
+      
+      if (totalCancelled > 0) {
+        this.logger.log(`✅ Cleaned up ${totalCancelled} stale order(s)`);
+      }
+    } catch (error: any) {
+      this.logger.debug(`Error in stale order cleanup: ${error.message}`);
+    }
+  }
+
+  /**
    * Get retry key for single-leg position tracking
    */
   private getRetryKey(
