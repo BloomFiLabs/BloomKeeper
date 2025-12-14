@@ -13,7 +13,7 @@ import {
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError } from '../../../domain/ports/IPerpExchangeAdapter';
+import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
 
 /**
  * LighterExchangeAdapter - Implements IPerpExchangeAdapter for Lighter Protocol
@@ -2065,6 +2065,88 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
       this.logger.error(`Failed to withdraw ${asset} to ${destination}: ${error.message}`);
       throw new ExchangeError(
         `Failed to withdraw: ${error.message}`,
+        ExchangeType.LIGHTER,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Get historical funding payments for the account
+   * Uses the Lighter positionFunding endpoint with authentication
+   * @param startTime Optional start time in milliseconds (not used by Lighter API)
+   * @param endTime Optional end time in milliseconds (not used by Lighter API)
+   * @returns Array of funding payments
+   */
+  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+    try {
+      await this.ensureInitialized();
+
+      this.logger.debug(`Fetching funding payments from Lighter for account ${this.config.accountIndex}`);
+
+      // Create auth token for the request
+      const authToken = await this.signerClient!.createAuthTokenWithExpiry(600); // 10 minutes
+
+      // Call the positionFunding endpoint
+      const response = await axios.get(`${this.config.baseUrl}/api/v1/positionFunding`, {
+        params: {
+          account_index: this.config.accountIndex,
+          limit: 100,
+          auth: authToken,
+        },
+        timeout: 30000,
+        headers: {
+          'accept': 'application/json',
+        },
+      });
+
+      const data = response.data;
+      
+      // Parse response: { code: 200, position_fundings: [...] }
+      let fundingData: any[] = [];
+      if (data.position_fundings && Array.isArray(data.position_fundings)) {
+        fundingData = data.position_fundings;
+      } else if (Array.isArray(data)) {
+        fundingData = data;
+      }
+
+      const payments: FundingPayment[] = [];
+
+      // Get market symbol mapping
+      await this.refreshMarketIndexCache();
+
+      for (const entry of fundingData) {
+        // Lighter API response format:
+        // { timestamp, market_id, funding_id, change, rate, position_size, position_side }
+        const amount = parseFloat(entry.change || '0');
+        const marketId = entry.market_id || 0;
+        
+        // Get symbol from market index
+        let symbol = `Market-${marketId}`;
+        for (const [sym, idx] of this.marketIndexCache.entries()) {
+          if (idx === marketId) {
+            symbol = sym;
+            break;
+          }
+        }
+
+        payments.push({
+          exchange: ExchangeType.LIGHTER,
+          symbol: symbol,
+          amount: amount,
+          fundingRate: parseFloat(entry.rate || '0'),
+          positionSize: parseFloat(entry.position_size || '0'),
+          timestamp: new Date((entry.timestamp || Date.now() / 1000) * 1000), // Unix seconds to ms
+        });
+      }
+
+      this.logger.debug(`Retrieved ${payments.length} funding payments from Lighter`);
+      return payments;
+    } catch (error: any) {
+      this.logger.error(`Failed to get funding payments: ${error.message}`);
+      throw new ExchangeError(
+        `Failed to get funding payments: ${error.message}`,
         ExchangeType.LIGHTER,
         undefined,
         error,

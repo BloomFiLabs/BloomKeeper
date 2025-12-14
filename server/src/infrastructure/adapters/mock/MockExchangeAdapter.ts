@@ -9,7 +9,7 @@ import {
   OrderStatus,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError } from '../../../domain/ports/IPerpExchangeAdapter';
+import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
 import { AsterExchangeAdapter } from '../aster/AsterExchangeAdapter';
 import { LighterExchangeAdapter } from '../lighter/LighterExchangeAdapter';
 import { HyperliquidExchangeAdapter } from '../hyperliquid/HyperliquidExchangeAdapter';
@@ -451,6 +451,18 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       bestBid: markPrice - spread / 2,
       bestAsk: markPrice + spread / 2,
     };
+  }
+
+  /**
+   * Get funding payments - delegates to real adapter
+   */
+  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+    // In mock mode, return empty array (no real positions = no real funding)
+    // But if you want to see real funding for testing, delegate to real adapter
+    if ('getFundingPayments' in this.realAdapter && typeof (this.realAdapter as any).getFundingPayments === 'function') {
+      return await this.realAdapter.getFundingPayments(startTime, endTime);
+    }
+    return [];
   }
 }
 

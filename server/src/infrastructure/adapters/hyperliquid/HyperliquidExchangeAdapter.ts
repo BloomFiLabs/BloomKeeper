@@ -14,7 +14,7 @@ import {
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError } from '../../../domain/ports/IPerpExchangeAdapter';
+import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
 import { HyperLiquidDataProvider } from './HyperLiquidDataProvider';
 
 /**
@@ -1387,6 +1387,78 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       
       throw new ExchangeError(
         `Failed to withdraw: ${errorMessage}`,
+        ExchangeType.HYPERLIQUID,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Get historical funding payments for the account
+   * Uses the Hyperliquid userFunding endpoint
+   * @param startTime Optional start time in milliseconds (default: 7 days ago)
+   * @param endTime Optional end time in milliseconds (default: now)
+   * @returns Array of funding payments
+   */
+  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+    try {
+      const now = Date.now();
+      const start = startTime || now - (7 * 24 * 60 * 60 * 1000); // Default: 7 days ago
+      const end = endTime || now;
+
+      this.logger.debug(
+        `Fetching funding payments from Hyperliquid for ${this.walletAddress} ` +
+        `(${new Date(start).toISOString()} to ${new Date(end).toISOString()})`
+      );
+
+      // Call the userFunding endpoint
+      const response = await axios.post(
+        `${this.config.baseUrl}/info`,
+        {
+          type: 'userFunding',
+          user: this.walletAddress,
+          startTime: start,
+          endTime: end,
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 30000,
+        }
+      );
+
+      const data = response.data;
+      
+      if (!Array.isArray(data)) {
+        this.logger.warn(`Unexpected userFunding response format: ${JSON.stringify(data).substring(0, 200)}`);
+        return [];
+      }
+
+      const payments: FundingPayment[] = [];
+
+      for (const entry of data) {
+        if (entry.delta?.type === 'funding') {
+          const amount = parseFloat(entry.delta.usdc || '0');
+          const rate = parseFloat(entry.delta.fundingRate || '0');
+          const size = parseFloat(entry.delta.szi || '0');
+
+          payments.push({
+            exchange: ExchangeType.HYPERLIQUID,
+            symbol: entry.delta.coin,
+            amount: amount,
+            fundingRate: rate,
+            positionSize: Math.abs(size),
+            timestamp: new Date(entry.time),
+          });
+        }
+      }
+
+      this.logger.debug(`Retrieved ${payments.length} funding payments from Hyperliquid`);
+      return payments;
+    } catch (error: any) {
+      this.logger.error(`Failed to get funding payments: ${error.message}`);
+      throw new ExchangeError(
+        `Failed to get funding payments: ${error.message}`,
         ExchangeType.HYPERLIQUID,
         undefined,
         error,

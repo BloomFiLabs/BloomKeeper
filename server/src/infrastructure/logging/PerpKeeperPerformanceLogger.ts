@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import { PerpPosition } from '../../domain/entities/PerpPosition';
 import { FundingRateComparison, ArbitrageOpportunity } from '../../domain/services/FundingRateAggregator';
 import { ArbitrageExecutionResult } from '../../domain/services/FundingArbitrageStrategy';
 import { IPerpKeeperPerformanceLogger } from '../../domain/ports/IPerpKeeperPerformanceLogger';
+import { RealFundingPaymentsService, CombinedFundingSummary } from '../services/RealFundingPaymentsService';
 
 /**
  * Performance metrics for a single exchange
@@ -105,7 +106,13 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
   private arbitrageOpportunitiesFound: number = 0;
   private arbitrageOpportunitiesExecuted: number = 0;
   
-  constructor() {
+  // Real funding data (from exchange APIs)
+  private realFundingSummary: CombinedFundingSummary | null = null;
+  private totalTradingCosts: number = 0;
+  
+  constructor(
+    @Optional() private readonly realFundingService?: RealFundingPaymentsService,
+  ) {
     // Initialize exchange metrics
     for (const exchangeType of [ExchangeType.ASTER, ExchangeType.LIGHTER, ExchangeType.HYPERLIQUID]) {
       this.exchangeMetrics.set(exchangeType, {
@@ -121,6 +128,94 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
         ordersFailed: 0,
         lastUpdateTime: new Date(),
       });
+    }
+  }
+
+  /**
+   * Record trading costs (fees, slippage, etc.) for break-even calculation
+   */
+  recordTradingCosts(amount: number): void {
+    this.totalTradingCosts += amount;
+    if (this.realFundingService) {
+      this.realFundingService.recordTradingCosts(amount);
+    }
+  }
+
+  /**
+   * Get total trading costs
+   */
+  getTotalTradingCosts(): number {
+    return this.totalTradingCosts;
+  }
+
+  /**
+   * Refresh real funding data from exchange APIs
+   */
+  async refreshRealFundingData(days: number = 30, capitalDeployed: number = 0): Promise<CombinedFundingSummary | null> {
+    if (!this.realFundingService) {
+      return null;
+    }
+
+    try {
+      this.realFundingSummary = await this.realFundingService.getCombinedSummary(days, capitalDeployed);
+      return this.realFundingSummary;
+    } catch (error: any) {
+      this.logger.error(`Failed to refresh real funding data: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get cached real funding summary
+   */
+  getRealFundingSummary(): CombinedFundingSummary | null {
+    return this.realFundingSummary;
+  }
+
+  /**
+   * Calculate break-even hours based on trading costs and funding rate
+   */
+  calculateBreakEvenHours(capitalDeployed: number): number | null {
+    // If we have real funding data, use it
+    if (this.realFundingSummary) {
+      return this.realFundingSummary.breakEvenHours;
+    }
+
+    // Fallback: calculate from recorded payments
+    if (this.realizedFundingPayments.length === 0 || this.totalTradingCosts <= 0) {
+      return null;
+    }
+
+    const totalFunding = this.realizedFundingPayments.reduce((sum, p) => sum + p.amount, 0);
+    const runtimeDays = this.getRuntimeDays();
+    
+    if (runtimeDays <= 0) return null;
+    
+    const dailyFunding = totalFunding / runtimeDays;
+    
+    if (dailyFunding <= 0) {
+      return Infinity; // Never breaks even
+    }
+
+    const daysToBreakEven = this.totalTradingCosts / dailyFunding;
+    return daysToBreakEven * 24; // Convert to hours
+  }
+
+  /**
+   * Format break-even time for display
+   */
+  formatBreakEvenTime(hours: number | null): string {
+    if (hours === null) return 'N/A';
+    if (!isFinite(hours)) return '∞ (never)';
+    if (hours <= 0) return '✅ Already profitable';
+    
+    if (hours < 1) {
+      return `${(hours * 60).toFixed(0)} minutes`;
+    } else if (hours < 24) {
+      return `${hours.toFixed(1)} hours`;
+    } else {
+      const days = hours / 24;
+      return `${days.toFixed(1)} days (${hours.toFixed(0)}h)`;
     }
   }
 
@@ -380,8 +475,15 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
 
   /**
    * Calculate realized APY based on actual funding payments
+   * Prefers real exchange API data over locally recorded payments
    */
   calculateRealizedAPY(capitalDeployed: number): number {
+    // Prefer real funding data from exchange APIs
+    if (this.realFundingSummary && capitalDeployed > 0) {
+      return this.realFundingSummary.realAPY;
+    }
+
+    // Fallback to locally recorded payments
     if (capitalDeployed === 0 || this.realizedFundingPayments.length === 0) return 0;
 
     const totalFunding = this.realizedFundingPayments.reduce((sum, p) => sum + p.amount, 0);
@@ -396,6 +498,19 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
     const annualizedAPY = dailyReturn * 365 * 100; // Convert to percentage
 
     return annualizedAPY;
+  }
+
+  /**
+   * Get real funding metrics (from exchange APIs)
+   */
+  getRealFundingMetrics(): { netFunding: number; dailyAverage: number; annualized: number } | null {
+    if (!this.realFundingSummary) return null;
+    
+    return {
+      netFunding: this.realFundingSummary.netFunding,
+      dailyAverage: this.realFundingSummary.dailyAverage,
+      annualized: this.realFundingSummary.annualized,
+    };
   }
 
   /**
@@ -546,6 +661,44 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
     this.logger.log(`   📉 Max Drawdown: ${metrics.maxDrawdown.toFixed(2)}%`);
     this.logger.log('');
 
+    // Break-Even Analysis
+    const breakEvenHours = this.calculateBreakEvenHours(metrics.capitalDeployed);
+    this.logger.log('⏱️  BREAK-EVEN ANALYSIS');
+    this.logger.log(`   💸 Total Trading Costs: $${this.totalTradingCosts.toFixed(4)}`);
+    this.logger.log(`   ⏱️  Time to Break-Even: ${this.formatBreakEvenTime(breakEvenHours)}`);
+    if (breakEvenHours !== null && isFinite(breakEvenHours) && breakEvenHours > 0) {
+      const hoursElapsed = metrics.runtimeHours;
+      const progressPct = Math.min(100, (hoursElapsed / breakEvenHours) * 100);
+      this.logger.log(`   📊 Progress: ${progressPct.toFixed(1)}% (${hoursElapsed.toFixed(1)}h / ${breakEvenHours.toFixed(1)}h)`);
+    }
+    this.logger.log('');
+
+    // Real Funding Data (from exchange APIs)
+    if (this.realFundingSummary) {
+      this.logger.log('📡 REAL FUNDING (from Exchange APIs)');
+      const sign = this.realFundingSummary.netFunding >= 0 ? '+' : '';
+      this.logger.log(`   💰 Net Funding (30d): ${sign}$${this.realFundingSummary.netFunding.toFixed(4)}`);
+      this.logger.log(`   📅 Daily Average: ${sign}$${this.realFundingSummary.dailyAverage.toFixed(4)}`);
+      this.logger.log(`   📈 Annualized: ${sign}$${this.realFundingSummary.annualized.toFixed(2)}`);
+      this.logger.log(`   ✅ Real APY: ${this.realFundingSummary.realAPY.toFixed(2)}%`);
+      this.logger.log('');
+
+      // Win Rate Metrics
+      const wr = this.realFundingSummary.winRateMetrics;
+      if (wr.totalPayments > 0) {
+        const wrEmoji = wr.winRate >= 70 ? '🔥' : wr.winRate >= 55 ? '✅' : wr.winRate >= 45 ? '⚠️' : '❌';
+        const pfStatus = wr.profitFactor >= 2.0 ? '🔥' : wr.profitFactor >= 1.5 ? '✅' : wr.profitFactor >= 1.0 ? '⚠️' : '❌';
+        
+        this.logger.log('📊 WIN RATE ANALYSIS');
+        this.logger.log(`   ${wrEmoji} Win Rate: ${wr.winRate.toFixed(1)}% (${wr.winningPayments}W / ${wr.losingPayments}L)`);
+        this.logger.log(`   ${pfStatus} Profit Factor: ${wr.profitFactor === Infinity ? '∞' : wr.profitFactor.toFixed(2)}`);
+        this.logger.log(`   💵 Avg Win: +$${wr.averageWin.toFixed(4)} | Avg Loss: -$${wr.averageLoss.toFixed(4)}`);
+        this.logger.log(`   🎯 Win/Loss Ratio: ${wr.winLossRatio === Infinity ? '∞' : wr.winLossRatio.toFixed(2)}x`);
+        this.logger.log(`   📊 Expectancy: ${wr.expectancy >= 0 ? '+' : ''}$${wr.expectancy.toFixed(4)}/payment`);
+        this.logger.log('');
+      }
+    }
+
     // Exchange-specific metrics
     this.logger.log('🏦 EXCHANGE-SPECIFIC METRICS');
     for (const [exchange, exchangeMetrics] of metrics.exchangeMetrics.entries()) {
@@ -572,13 +725,16 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
       ? `${metrics.runtimeDays.toFixed(1)}d`
       : `${metrics.runtimeHours.toFixed(1)}h`;
 
+    const breakEvenHours = this.calculateBreakEvenHours(metrics.capitalDeployed);
+    const breakEvenStr = this.formatBreakEvenTime(breakEvenHours);
+
     this.logger.log(
       `📊 [${runtimeStr}] ` +
       `Est APY: ${metrics.estimatedAPY.toFixed(2)}% | ` +
       `Real APY: ${metrics.realizedAPY.toFixed(2)}% | ` +
       `Net Funding: $${metrics.netFundingCaptured.toFixed(2)} | ` +
       `Positions: ${metrics.totalPositions} | ` +
-      `P&L: $${(metrics.totalUnrealizedPnl + metrics.totalRealizedPnl).toFixed(2)}`
+      `Break-Even: ${breakEvenStr}`
     );
   }
 
@@ -608,6 +764,8 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
     this.totalTradeVolume = 0;
     this.arbitrageOpportunitiesFound = 0;
     this.arbitrageOpportunitiesExecuted = 0;
+    this.realFundingSummary = null;
+    this.totalTradingCosts = 0;
 
     // Re-initialize exchange metrics
     for (const exchangeType of [ExchangeType.ASTER, ExchangeType.LIGHTER, ExchangeType.HYPERLIQUID]) {

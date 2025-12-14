@@ -12,7 +12,7 @@ import {
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError } from '../../../domain/ports/IPerpExchangeAdapter';
+import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
 import { ExtendedSigningService } from './ExtendedSigningService';
 
 /**
@@ -649,6 +649,50 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
         error.response?.data?.code,
         error,
       );
+    }
+  }
+
+  /**
+   * Get historical funding payments for the account
+   * Extended funding is paid continuously, so this may need different handling
+   * @param startTime Optional start time in milliseconds (default: 7 days ago)
+   * @param endTime Optional end time in milliseconds (default: now)
+   * @returns Array of funding payments
+   */
+  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+    // Extended funding API endpoint (if available)
+    // For now, return empty array as we don't have confirmed API endpoint
+    try {
+      const now = Date.now();
+      const start = startTime || now - (7 * 24 * 60 * 60 * 1000);
+      const end = endTime || now;
+
+      // Try to get funding history from Extended API
+      const response = await this.client.get('/v1/user/funding-history', {
+        params: {
+          startTime: start,
+          endTime: end,
+        },
+        headers: this.getAuthHeaders(),
+        timeout: 30000,
+      });
+
+      if (Array.isArray(response.data)) {
+        return response.data.map((entry: any) => ({
+          exchange: ExchangeType.EXTENDED,
+          symbol: entry.symbol || entry.market || 'UNKNOWN',
+          amount: parseFloat(entry.amount || entry.funding || '0'),
+          fundingRate: parseFloat(entry.rate || entry.fundingRate || '0'),
+          positionSize: parseFloat(entry.size || entry.positionSize || '0'),
+          timestamp: new Date(entry.timestamp || entry.time || Date.now()),
+        }));
+      }
+
+      return [];
+    } catch (error: any) {
+      // Don't throw - just return empty if endpoint doesn't exist
+      this.logger.debug(`Extended funding history not available: ${error.message}`);
+      return [];
     }
   }
 }

@@ -13,7 +13,7 @@ import {
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError } from '../../../domain/ports/IPerpExchangeAdapter';
+import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
 
 /**
  * AsterExchangeAdapter - Implements IPerpExchangeAdapter for Aster DEX
@@ -1613,6 +1613,131 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         undefined,
         error,
       );
+    }
+  }
+
+  /**
+   * Get historical funding payments for the account
+   * Uses the Aster /fapi/v1/income endpoint with incomeType=FUNDING_FEE
+   * @param startTime Optional start time in milliseconds (default: 7 days ago)
+   * @param endTime Optional end time in milliseconds (default: now)
+   * @returns Array of funding payments
+   */
+  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+    try {
+      const now = Date.now();
+      const start = startTime || now - (7 * 24 * 60 * 60 * 1000); // Default: 7 days ago
+      const end = endTime || now;
+
+      this.logger.debug(
+        `Fetching funding payments from Aster ` +
+        `(${new Date(start).toISOString()} to ${new Date(end).toISOString()})`
+      );
+
+      // Try with API key authentication first (HMAC)
+      if (this.apiKey && this.apiSecret) {
+        const params = this.signParamsWithApiKey({
+          incomeType: 'FUNDING_FEE',
+          startTime: start,
+          endTime: end,
+          limit: 1000,
+        });
+
+        // Build query string with signature last
+        const queryParams: string[] = [];
+        const signatureParam: string[] = [];
+        
+        for (const [key, value] of Object.entries(params)) {
+          if (key === 'signature') {
+            signatureParam.push(`signature=${value}`);
+          } else {
+            queryParams.push(`${key}=${value}`);
+          }
+        }
+        
+        queryParams.sort();
+        const queryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+
+        try {
+          const response = await this.client.get(`/fapi/v1/income?${queryString}`, {
+            headers: {
+              'X-MBX-APIKEY': this.apiKey,
+            },
+            timeout: 30000,
+          });
+
+          if (Array.isArray(response.data)) {
+            const payments: FundingPayment[] = [];
+            
+            for (const entry of response.data) {
+              const amount = parseFloat(entry.income || '0');
+              
+              payments.push({
+                exchange: ExchangeType.ASTER,
+                symbol: entry.symbol || 'UNKNOWN',
+                amount: amount,
+                fundingRate: 0, // Not provided in income endpoint
+                positionSize: 0, // Not provided in income endpoint
+                timestamp: new Date(entry.time),
+              });
+            }
+
+            this.logger.debug(`Retrieved ${payments.length} funding payments from Aster`);
+            return payments;
+          }
+        } catch (hmacError: any) {
+          this.logger.debug(`HMAC auth failed for funding payments: ${hmacError.message}`);
+          // Fall through to try Ethereum signature
+        }
+      }
+
+      // Try with Ethereum signature authentication
+      if (this.wallet) {
+        const nonce = Math.floor(Date.now() * 1000);
+        const params = this.signParams({
+          incomeType: 'FUNDING_FEE',
+          startTime: start,
+          endTime: end,
+          limit: 1000,
+        }, nonce);
+
+        try {
+          const response = await this.client.get('/fapi/v3/income', {
+            params,
+            timeout: 30000,
+          });
+
+          if (Array.isArray(response.data)) {
+            const payments: FundingPayment[] = [];
+            
+            for (const entry of response.data) {
+              const amount = parseFloat(entry.income || '0');
+              
+              payments.push({
+                exchange: ExchangeType.ASTER,
+                symbol: entry.symbol || 'UNKNOWN',
+                amount: amount,
+                fundingRate: 0,
+                positionSize: 0,
+                timestamp: new Date(entry.time),
+              });
+            }
+
+            this.logger.debug(`Retrieved ${payments.length} funding payments from Aster`);
+            return payments;
+          }
+        } catch (ethError: any) {
+          this.logger.debug(`Ethereum signature auth failed for funding payments: ${ethError.message}`);
+        }
+      }
+
+      // All methods failed
+      this.logger.warn('Could not fetch funding payments from Aster - both auth methods failed');
+      return [];
+    } catch (error: any) {
+      this.logger.error(`Failed to get funding payments: ${error.message}`);
+      // Return empty array instead of throwing to allow system to continue
+      return [];
     }
   }
 }

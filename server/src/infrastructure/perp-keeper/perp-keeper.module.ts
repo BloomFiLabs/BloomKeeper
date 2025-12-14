@@ -23,6 +23,7 @@ import { ExchangeBalanceRebalancer } from '../../domain/services/ExchangeBalance
 import { HistoricalFundingRateService } from '../services/HistoricalFundingRateService';
 import { PositionLossTracker } from '../services/PositionLossTracker';
 import { PortfolioRiskAnalyzer } from '../services/PortfolioRiskAnalyzer';
+import { RealFundingPaymentsService } from '../services/RealFundingPaymentsService';
 import { PerpKeeperController } from '../controllers/PerpKeeperController';
 import { FundingRateController } from '../controllers/FundingRateController';
 import { PortfolioOptimizer } from '../../domain/services/strategy-rules/PortfolioOptimizer';
@@ -263,18 +264,28 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
     PerpKeeperService,
     PerpKeeperScheduler,
     
+    // Real funding payments service
+    RealFundingPaymentsService,
+    
     // Performance logging
     {
-      provide: 'IPerpKeeperPerformanceLogger',
-      useClass: PerpKeeperPerformanceLogger,
+      provide: PerpKeeperPerformanceLogger,
+      useFactory: (realFundingService: RealFundingPaymentsService) => {
+        return new PerpKeeperPerformanceLogger(realFundingService);
+      },
+      inject: [RealFundingPaymentsService],
     },
-    PerpKeeperPerformanceLogger, // Keep for backward compatibility
+    {
+      provide: 'IPerpKeeperPerformanceLogger',
+      useExisting: PerpKeeperPerformanceLogger,
+    },
   ],
   exports: [
     PerpKeeperService,
     PerpKeeperScheduler,
     PerpKeeperPerformanceLogger,
     PerpKeeperOrchestrator,
+    RealFundingPaymentsService,
   ],
 })
 export class PerpKeeperModule {}

@@ -83,3 +83,4 @@ export interface IIdleFundsManager {
   ): Promise<Result<{ allocated: number; allocations: number }, DomainException>>;
 }
 
+

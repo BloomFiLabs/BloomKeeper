@@ -3,6 +3,24 @@ import { PerpOrderRequest, PerpOrderResponse } from '../value-objects/PerpOrder'
 import { PerpPosition } from '../entities/PerpPosition';
 
 /**
+ * Funding payment received or paid on a position
+ */
+export interface FundingPayment {
+  /** Exchange name */
+  exchange: string;
+  /** Trading symbol (e.g., 'ETH', 'BTC') */
+  symbol: string;
+  /** USD amount (positive = received, negative = paid) */
+  amount: number;
+  /** Funding rate applied */
+  fundingRate: number;
+  /** Position size at time of funding */
+  positionSize: number;
+  /** When the funding was applied */
+  timestamp: Date;
+}
+
+/**
  * Exchange-specific error
  */
 export class ExchangeError extends Error {
@@ -145,6 +163,15 @@ export interface IPerpExchangeAdapter {
    * @throws ExchangeError if withdrawal fails
    */
   withdrawExternal(amount: number, asset: string, destination: string): Promise<string>;
+
+  /**
+   * Get historical funding payments for the account
+   * @param startTime Optional start time (default: 7 days ago)
+   * @param endTime Optional end time (default: now)
+   * @returns Array of funding payments
+   * @throws ExchangeError if fetch fails
+   */
+  getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]>;
 }
 
 
