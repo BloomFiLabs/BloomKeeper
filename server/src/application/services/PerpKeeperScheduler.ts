@@ -610,10 +610,11 @@ export class PerpKeeperScheduler implements OnModuleInit {
 
   /**
    * Check for single-leg positions and try to open missing side
-   * Called periodically to handle single-leg positions detected outside of execution cycle
+   * Runs every 5 minutes to handle single-leg positions detected outside of execution cycle
    * Policy: After all retries fail, close the single leg and move to next opportunity
    */
-  private async checkAndRetrySingleLegPositions(): Promise<void> {
+  @Interval(300000) // Every 5 minutes (300000 ms)
+  async checkAndRetrySingleLegPositions(): Promise<void> {
     try {
       const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
       // Filter out positions with very small sizes (likely rounding errors or stale data)
