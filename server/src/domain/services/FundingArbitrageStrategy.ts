@@ -950,7 +950,7 @@ export class FundingArbitrageStrategy {
             const hasAcceptableBreakEven =
               item.breakEvenHours !== null &&
               isFinite(item.breakEvenHours) &&
-              item.breakEvenHours <= maxBreakEvenHours &&
+              item.breakEvenHours <= maxBreakEvenHoursForPortfolio &&
               item.netReturn > -Infinity; // Must have calculated metrics
             
             return (
@@ -3052,7 +3052,7 @@ export class FundingArbitrageStrategy {
         worstCase.plan.shortOrder,
       );
 
-      if (longResponse.isSuccess && shortResponse.isSuccess) {
+      if (longResponse.isSuccess() && shortResponse.isSuccess()) {
         result.opportunitiesExecuted = 1;
         result.ordersPlaced = 2;
         // Worst-case opportunity executed successfully - no log needed for routine operation
