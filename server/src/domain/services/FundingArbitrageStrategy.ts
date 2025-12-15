@@ -281,6 +281,29 @@ export class FundingArbitrageStrategy {
     );
   }
 
+  /**
+   * Calculate max portfolio with optimal leverage
+   * Returns both the max position size AND the optimal leverage to use
+   */
+  private async calculateMaxPortfolioWithLeverage(
+    opportunity: ArbitrageOpportunity,
+    longBidAsk: { bestBid: number; bestAsk: number },
+    shortBidAsk: { bestBid: number; bestAsk: number },
+    targetNetAPY: number = 0.35,
+  ): Promise<{
+    maxPortfolio: number;
+    optimalLeverage: number;
+    requiredCollateral: number;
+    estimatedAPY: number;
+  } | null> {
+    return this.portfolioOptimizer.calculateMaxPortfolioWithLeverage(
+      opportunity,
+      longBidAsk,
+      shortBidAsk,
+      targetNetAPY,
+    );
+  }
+
 
   /**
    * Calculate optimal portfolio allocation across all opportunities
@@ -322,6 +345,7 @@ export class FundingArbitrageStrategy {
     opportunities: Array<{
       opportunity: ArbitrageOpportunity;
       maxPortfolioFor35APY: number | null;
+      optimalLeverage?: number | null; // Optimal leverage for this position
       longBidAsk: { bestBid: number; bestAsk: number };
       shortBidAsk: { bestBid: number; bestAsk: number };
     }>,
@@ -335,9 +359,11 @@ export class FundingArbitrageStrategy {
     dataQualityWarnings: string[];
   }> {
     // Convert to PortfolioOptimizationInput format
+    // Include optimal leverage for each opportunity (from OptimalLeverageService)
     const portfolioInputs = opportunities.map((opp) => ({
       opportunity: opp.opportunity,
       maxPortfolioFor35APY: opp.maxPortfolioFor35APY,
+      optimalLeverage: opp.optimalLeverage ?? undefined,
       longBidAsk: opp.longBidAsk,
       shortBidAsk: opp.shortBidAsk,
     }));
@@ -678,6 +704,7 @@ export class FundingArbitrageStrategy {
         positionValueUsd: number;
         breakEvenHours: number | null;
         maxPortfolioFor35APY: number | null;
+        optimalLeverage: number | null; // Optimal leverage for this position
         longBidAsk: { bestBid: number; bestAsk: number } | null;
         shortBidAsk: { bestBid: number; bestAsk: number } | null;
       }> = [];
@@ -702,6 +729,7 @@ export class FundingArbitrageStrategy {
           let netReturn = -Infinity;
           let breakEvenHours: number | null = null;
           let maxPortfolioFor35APY: number | null = null;
+          let optimalLeverage: number | null = null;
 
           // Fetch bid/ask data for max portfolio calculation (needed for all opportunities)
           const longExchangeSymbol = this.aggregator.getExchangeSymbol(
@@ -733,13 +761,19 @@ export class FundingArbitrageStrategy {
             opportunity.shortExchange,
           );
 
-          // Calculate max portfolio for 35% APY (uses historical weighted averages)
-          maxPortfolioFor35APY = await this.calculateMaxPortfolioForTargetAPY(
+          // Calculate max portfolio for 35% APY with optimal leverage
+          // This returns both the max position size AND the optimal leverage to use
+          const portfolioResult = await this.calculateMaxPortfolioWithLeverage(
             opportunity,
             longBidAsk,
             shortBidAsk,
             0.35,
           );
+          
+          if (portfolioResult) {
+            maxPortfolioFor35APY = portfolioResult.maxPortfolio;
+            optimalLeverage = portfolioResult.optimalLeverage;
+          }
 
           // Log result with historical context
           if (maxPortfolioFor35APY !== null) {
@@ -753,7 +787,7 @@ export class FundingArbitrageStrategy {
             ).length;
             const hasHistoricalData = longDataPoints > 0 || shortDataPoints > 0;
             this.logger.debug(
-              `✅ Max Portfolio (${opportunity.symbol}): $${(maxPortfolioFor35APY / 1000).toFixed(1)}k ` +
+              `✅ Max Portfolio (${opportunity.symbol}): $${(maxPortfolioFor35APY / 1000).toFixed(1)}k @ ${optimalLeverage?.toFixed(1)}x leverage ` +
                 `(${hasHistoricalData ? 'historical' : 'current'} rates)`,
             );
           }
@@ -865,6 +899,7 @@ export class FundingArbitrageStrategy {
             positionValueUsd,
             breakEvenHours,
             maxPortfolioFor35APY,
+            optimalLeverage,
             longBidAsk,
             shortBidAsk,
           });

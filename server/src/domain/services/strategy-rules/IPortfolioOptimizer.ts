@@ -11,8 +11,16 @@ export interface PortfolioAllocation {
 export interface PortfolioOptimizationInput {
   opportunity: ArbitrageOpportunity;
   maxPortfolioFor35APY: number | null;
+  optimalLeverage?: number; // Optimal leverage for this position (from OptimalLeverageService)
   longBidAsk: { bestBid: number; bestAsk: number };
   shortBidAsk: { bestBid: number; bestAsk: number };
+}
+
+export interface MaxPortfolioWithLeverage {
+  maxPortfolio: number;
+  optimalLeverage: number;
+  requiredCollateral: number;
+  estimatedAPY: number;
 }
 
 export interface IPortfolioOptimizer {
@@ -22,6 +30,17 @@ export interface IPortfolioOptimizer {
     shortBidAsk: { bestBid: number; bestAsk: number },
     targetNetAPY?: number,
   ): Promise<number | null>;
+
+  /**
+   * Calculate max portfolio with optimal leverage
+   * Returns both the max position size AND the optimal leverage to use
+   */
+  calculateMaxPortfolioWithLeverage(
+    opportunity: ArbitrageOpportunity,
+    longBidAsk: { bestBid: number; bestAsk: number },
+    shortBidAsk: { bestBid: number; bestAsk: number },
+    targetNetAPY?: number,
+  ): Promise<MaxPortfolioWithLeverage | null>;
 
   calculateOptimalAllocation(
     opportunities: PortfolioOptimizationInput[],

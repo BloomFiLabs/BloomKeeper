@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { IPortfolioOptimizer, PortfolioOptimizationInput } from './IPortfolioOptimizer';
 import { CostCalculator } from './CostCalculator';
 import type { IHistoricalFundingRateService } from '../../ports/IHistoricalFundingRateService';
+import type { IOptimalLeverageService } from '../../ports/IOptimalLeverageService';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
@@ -10,6 +11,11 @@ import { OrderType } from '../../value-objects/PerpOrder';
 /**
  * Portfolio optimizer for funding arbitrage strategy
  * Calculates optimal position sizes and allocations across multiple opportunities
+ * 
+ * Key concepts:
+ * - maxPortfolioFor35APY: The maximum POSITION size that still yields 35% APY on COLLATERAL
+ * - optimalLeverage: The leverage that maximizes position capacity while maintaining target APY
+ * - APY is always calculated on COLLATERAL (actual capital deployed), not position value
  */
 @Injectable()
 export class PortfolioOptimizer implements IPortfolioOptimizer {
@@ -19,15 +25,79 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     private readonly costCalculator: CostCalculator,
     private readonly historicalService: IHistoricalFundingRateService,
     private readonly config: StrategyConfig,
+    @Optional() @Inject('IOptimalLeverageService')
+    private readonly leverageService?: IOptimalLeverageService,
   ) {}
 
+  /**
+   * Calculate max portfolio size that yields target APY on collateral
+   * Returns both the max position size AND the optimal leverage to use
+   */
   async calculateMaxPortfolioForTargetAPY(
     opportunity: ArbitrageOpportunity,
     longBidAsk: { bestBid: number; bestAsk: number },
     shortBidAsk: { bestBid: number; bestAsk: number },
     targetNetAPY: number = 0.35,
   ): Promise<number | null> {
+    const result = await this.calculateMaxPortfolioWithLeverage(
+      opportunity,
+      longBidAsk,
+      shortBidAsk,
+      targetNetAPY,
+    );
+    return result?.maxPortfolio ?? null;
+  }
+
+  /**
+   * Calculate max portfolio with optimal leverage
+   * Returns the max position size, optimal leverage, and required collateral
+   */
+  async calculateMaxPortfolioWithLeverage(
+    opportunity: ArbitrageOpportunity,
+    longBidAsk: { bestBid: number; bestAsk: number },
+    shortBidAsk: { bestBid: number; bestAsk: number },
+    targetNetAPY: number = 0.35,
+  ): Promise<{
+    maxPortfolio: number;
+    optimalLeverage: number;
+    requiredCollateral: number;
+    estimatedAPY: number;
+  } | null> {
     const periodsPerYear = 24 * 365;
+
+    // Get optimal leverage for this symbol (considers volatility, liquidity, win rate)
+    let optimalLeverage = this.config.leverage;
+    if (this.leverageService) {
+      try {
+        // Get optimal leverage from each exchange and take the more conservative
+        const [longLevRec, shortLevRec] = await Promise.all([
+          this.leverageService.calculateOptimalLeverage(
+            opportunity.symbol,
+            opportunity.longExchange,
+            10000, // Test with $10k position
+          ),
+          this.leverageService.calculateOptimalLeverage(
+            opportunity.symbol,
+            opportunity.shortExchange,
+            10000,
+          ),
+        ]);
+        // Use the more conservative (lower) leverage between the two exchanges
+        optimalLeverage = Math.min(
+          longLevRec.optimalLeverage,
+          shortLevRec.optimalLeverage,
+        );
+        this.logger.debug(
+          `${opportunity.symbol}: Optimal leverage ${optimalLeverage}x ` +
+          `(${opportunity.longExchange}: ${longLevRec.optimalLeverage}x, ` +
+          `${opportunity.shortExchange}: ${shortLevRec.optimalLeverage}x)`,
+        );
+      } catch (error: any) {
+        this.logger.debug(
+          `Failed to get optimal leverage for ${opportunity.symbol}, using default ${this.config.leverage}x: ${error.message}`,
+        );
+      }
+    }
 
     // Get historical weighted average rates (more robust than current snapshot)
     const currentLongRate =
@@ -88,6 +158,7 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     let high = Math.min(minOI * 0.1, 10000000); // Max 10% of OI or $10M
     let maxPortfolio: number | null = null;
     let finalEffectiveGrossAPY: number = 0;
+    let finalNetAPY: number = 0;
 
     // Iterate to find max position size
     for (let iter = 0; iter < 50; iter++) {
@@ -144,19 +215,26 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
       const grossReturnPerHour =
         (effectiveGrossAPY / periodsPerYear) * testPosition;
       const netReturnPerHour = grossReturnPerHour - amortizedCostsPerHour;
+      
+      // IMPORTANT: APY should be calculated on COLLATERAL (actual capital deployed), not position value
+      // With leverage, you earn funding on the full position but only deploy collateral = position / leverage
+      // Example: $100k position with 2x leverage = $50k collateral, 35% position APY = 70% collateral APY
+      const collateralRequired = testPosition / optimalLeverage;
       const netAPY =
-        testPosition > 0
-          ? (netReturnPerHour * periodsPerYear) / testPosition
+        collateralRequired > 0
+          ? (netReturnPerHour * periodsPerYear) / collateralRequired
           : 0;
 
       if (Math.abs(netAPY - targetNetAPY) < 0.001) {
         maxPortfolio = testPosition;
         finalEffectiveGrossAPY = effectiveGrossAPY;
+        finalNetAPY = netAPY;
         break;
       } else if (netAPY > targetNetAPY) {
         low = testPosition;
         maxPortfolio = testPosition;
         finalEffectiveGrossAPY = effectiveGrossAPY;
+        finalNetAPY = netAPY;
       } else {
         high = testPosition;
       }
@@ -253,11 +331,25 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
         // Ensure minimum portfolio size ($1k)
         const finalMaxPortfolio = Math.max(1000, volatilityAdjustedMaxPortfolio);
 
-        return finalMaxPortfolio;
+        return {
+          maxPortfolio: finalMaxPortfolio,
+          optimalLeverage,
+          requiredCollateral: finalMaxPortfolio / optimalLeverage,
+          estimatedAPY: finalNetAPY,
+        };
       }
     }
 
-    return maxPortfolio;
+    if (maxPortfolio === null) {
+      return null;
+    }
+
+    return {
+      maxPortfolio,
+      optimalLeverage,
+      requiredCollateral: maxPortfolio / optimalLeverage,
+      estimatedAPY: finalNetAPY,
+    };
   }
 
   async calculateOptimalAllocation(
@@ -497,16 +589,20 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
             );
             const adjustedGrossAPY = adjustedSpread * periodsPerYear;
 
-            // Calculate net APY
+            // Calculate net APY on COLLATERAL (actual capital deployed)
+            // With leverage, funding is earned on position value but APY should be on collateral
+            // Use optimal leverage if available, otherwise use default from config
+            const positionLeverage = item.optimalLeverage ?? this.config.leverage;
             const totalOneTimeCosts =
               totalSlippageCost + allocation * totalFeeRate;
             const amortizedCostsPerHour = totalOneTimeCosts / periodsPerYear;
             const grossReturnPerHour =
               (adjustedGrossAPY / periodsPerYear) * allocation;
             const netReturnPerHour = grossReturnPerHour - amortizedCostsPerHour;
+            const collateral = allocation / positionLeverage;
             let estimatedNetAPY =
-              allocation > 0
-                ? (netReturnPerHour * periodsPerYear) / allocation
+              collateral > 0
+                ? (netReturnPerHour * periodsPerYear) / collateral
                 : 0;
 
             // Apply volatility risk adjustment
@@ -526,8 +622,9 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
               estimatedNetAPY = estimatedNetAPY * (1 - totalRiskDiscount);
             }
 
-            totalWeightedReturn += allocation * estimatedNetAPY;
-            totalAllocated += allocation;
+            // Weight by collateral since APY is calculated on collateral
+            totalWeightedReturn += collateral * estimatedNetAPY;
+            totalAllocated += collateral;
           }
         }
       });

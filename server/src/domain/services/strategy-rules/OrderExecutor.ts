@@ -306,48 +306,113 @@ export class OrderExecutor implements IOrderExecutor {
       this.logger.debug(`Pre-flight cancel failed (non-critical): ${error.message}`);
     }
 
-    // PRE-FLIGHT CHECK: Verify both exchanges have sufficient margin
+    // PRE-FLIGHT CHECK: Scale position to available capital
     try {
       const [longBalance, shortBalance] = await Promise.all([
         longAdapter.getBalance(),
         shortAdapter.getBalance(),
       ]);
-      const requiredMargin = plan.positionSize.toUSD(
-        (plan.longOrder.price || 0 + (plan.shortOrder.price || 0)) / 2
-      ) / (this.config?.leverage || 2);
+      const avgPrice = ((plan.longOrder.price || 0) + (plan.shortOrder.price || 0)) / 2;
+      const leverage = this.config?.leverage || 2;
+      const originalPositionUsd = plan.positionSize.toUSD(avgPrice);
+      const originalRequiredMargin = originalPositionUsd / leverage;
+      const minBalance = Math.min(longBalance, shortBalance);
       
-      if (longBalance < requiredMargin) {
+      // Scale down position to fit available capital (use 90% for safety margin)
+      let actualPositionUsd = originalPositionUsd;
+      let actualRequiredMargin = originalRequiredMargin;
+      
+      if (minBalance < originalRequiredMargin) {
+        // Not enough for original position - scale down
+        const usableBalance = minBalance * 0.9;
+        actualPositionUsd = usableBalance * leverage;
+        actualRequiredMargin = usableBalance;
+        
+        // Check if scaled position is too small
+        if (actualPositionUsd < this.config.minPositionSizeUsd) {
+          const insufficientExchange = longBalance < shortBalance 
+            ? opportunity.longExchange 
+            : opportunity.shortExchange;
+          return Result.failure(
+            new InsufficientBalanceException(
+              this.config.minPositionSizeUsd / leverage,
+              minBalance,
+              'USDC',
+              { 
+                symbol: opportunity.symbol, 
+                exchange: insufficientExchange,
+                message: `Cannot scale down to available capital. Min position: $${this.config.minPositionSizeUsd}, Available: $${minBalance.toFixed(2)}`,
+              },
+            ),
+          );
+        }
+        
+        this.logger.log(
+          `📉 Scaling ${opportunity.symbol} from $${originalPositionUsd.toFixed(2)} to $${actualPositionUsd.toFixed(2)} ` +
+          `(available collateral: $${usableBalance.toFixed(2)} per exchange)`
+        );
+      }
+      
+      // Create scaled orders if position was scaled down
+      let longOrder = plan.longOrder;
+      let shortOrder = plan.shortOrder;
+      
+      if (actualPositionUsd < originalPositionUsd * 0.99) {
+        // Need to scale the orders
+        const scaledSizeBaseAsset = actualPositionUsd / avgPrice;
+        longOrder = new PerpOrderRequest(
+          plan.longOrder.symbol,
+          plan.longOrder.side,
+          plan.longOrder.type,
+          scaledSizeBaseAsset,
+          plan.longOrder.price,
+          plan.longOrder.timeInForce,
+          plan.longOrder.reduceOnly,
+        );
+        shortOrder = new PerpOrderRequest(
+          plan.shortOrder.symbol,
+          plan.shortOrder.side,
+          plan.shortOrder.type,
+          scaledSizeBaseAsset,
+          plan.shortOrder.price,
+          plan.shortOrder.timeInForce,
+          plan.shortOrder.reduceOnly,
+        );
+      }
+      
+      // Store scaled orders for use after try block
+      // Use plan.longOrder/shortOrder which we already updated above
+      
+      // Validation checks (now just validation since we already scaled)
+      if (longBalance < actualRequiredMargin * 0.95) {
         return Result.failure(
           new InsufficientBalanceException(
-            requiredMargin,
+            actualRequiredMargin,
             longBalance,
             'USDC',
             { symbol: opportunity.symbol, exchange: opportunity.longExchange },
           ),
         );
       }
-      if (shortBalance < requiredMargin) {
+      if (shortBalance < actualRequiredMargin * 0.95) {
         return Result.failure(
           new InsufficientBalanceException(
-            requiredMargin,
+            actualRequiredMargin,
             shortBalance,
             'USDC',
             { symbol: opportunity.symbol, exchange: opportunity.shortExchange },
           ),
         );
       }
-    } catch (error: any) {
-      this.logger.warn(`Pre-flight balance check failed: ${error.message}`);
-    }
 
-    // Place orders
-    this.logger.log(
-      `📤 Executing orders for ${opportunity.symbol}: ` +
-        `LONG ${plan.positionSize.toBaseAsset().toFixed(4)} on ${opportunity.longExchange}, ` +
-        `SHORT ${plan.positionSize.toBaseAsset().toFixed(4)} on ${opportunity.shortExchange}`,
-    );
+      // Place orders (inside try block to use scaled orders)
+      const scaledSizeBaseAsset = longOrder.size;
+      this.logger.log(
+        `📤 Executing orders for ${opportunity.symbol}: ` +
+          `LONG ${scaledSizeBaseAsset.toFixed(4)} ($${actualPositionUsd.toFixed(2)}) on ${opportunity.longExchange}, ` +
+          `SHORT ${scaledSizeBaseAsset.toFixed(4)} ($${actualPositionUsd.toFixed(2)}) on ${opportunity.shortExchange}`,
+      );
 
-    try {
       // Place orders with individual error handling to identify which one failed
       let longResponse: PerpOrderResponse;
       let shortResponse: PerpOrderResponse;
@@ -356,13 +421,13 @@ export class OrderExecutor implements IOrderExecutor {
 
       // Place orders in parallel but catch errors individually
       const [longResult, shortResult] = await Promise.allSettled([
-        longAdapter.placeOrder(plan.longOrder).catch((err: any) => {
+        longAdapter.placeOrder(longOrder).catch((err: any) => {
           longError = err;
           const errorMsg = err?.message || String(err);
           this.logger.error(`❌ Failed to place LONG order on ${opportunity.longExchange}: ${errorMsg}`);
           throw err;
         }),
-        shortAdapter.placeOrder(plan.shortOrder).catch((err: any) => {
+        shortAdapter.placeOrder(shortOrder).catch((err: any) => {
           shortError = err;
           const errorMsg = err?.message || String(err);
           this.logger.error(`❌ Failed to place SHORT order on ${opportunity.shortExchange}: ${errorMsg}`);
