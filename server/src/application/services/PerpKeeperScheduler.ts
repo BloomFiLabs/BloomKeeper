@@ -13,6 +13,7 @@ import type { IOptimalLeverageService, LeverageAlert } from '../../domain/ports/
 import { DiagnosticsService } from '../../infrastructure/services/DiagnosticsService';
 import { WithdrawalFulfiller } from '../../infrastructure/adapters/blockchain/WithdrawalFulfiller';
 import { NAVReporter } from '../../infrastructure/adapters/blockchain/NAVReporter';
+import { RealFundingPaymentsService } from '../../infrastructure/services/RealFundingPaymentsService';
 
 /**
  * PerpKeeperScheduler - Scheduled execution for funding rate arbitrage
@@ -55,6 +56,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
     @Optional() private readonly withdrawalFulfiller?: WithdrawalFulfiller,
     @Optional() private readonly navReporter?: NAVReporter,
+    @Optional() private readonly fundingPaymentsService?: RealFundingPaymentsService,
   ) {
     // Initialize orchestrator with exchange adapters
     const adapters = this.keeperService.getExchangeAdapters();
@@ -503,7 +505,8 @@ export class PerpKeeperScheduler implements OnModuleInit {
         this.performanceLogger.recordArbitrageOpportunity(false, true);
       }
 
-      // Update position metrics with current funding rates
+      // Sync funding payments and update position metrics
+      await this.syncFundingPayments();
       await this.updatePerformanceMetrics();
 
       const duration = Date.now() - startTime;
@@ -538,6 +541,33 @@ export class PerpKeeperScheduler implements OnModuleInit {
       this.logger.error(`Hourly execution failed: ${error.message}`, error.stack);
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * Sync funding payments from all exchanges
+   * This ensures Real APY and Net Funding are up-to-date
+   */
+  private async syncFundingPayments(): Promise<void> {
+    if (!this.fundingPaymentsService) {
+      return; // Service not available
+    }
+
+    try {
+      // Fetch funding payments from all exchanges (cached, won't spam APIs)
+      const payments = await this.fundingPaymentsService.fetchAllFundingPayments(30);
+      
+      // Record each payment in the performance logger
+      for (const payment of payments) {
+        this.performanceLogger.recordFundingPayment(payment.exchange, payment.amount);
+      }
+      
+      this.logger.debug(
+        `Synced ${payments.length} funding payments for performance metrics`
+      );
+    } catch (error: any) {
+      this.logger.warn(`Failed to sync funding payments: ${error.message}`);
+      // Don't fail execution if funding sync fails
     }
   }
 
