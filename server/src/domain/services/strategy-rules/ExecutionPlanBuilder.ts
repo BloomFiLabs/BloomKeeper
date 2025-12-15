@@ -181,12 +181,14 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
 
       // Check minimum position size
       if (positionSizeUsd < config.minPositionSizeUsd) {
-        if (positionSizeUsd >= config.minPositionSizeUsd * 0.8) {
-          this.logger.debug(
-            `Insufficient balance for ${opportunity.symbol}: ` +
-              `Need $${config.minPositionSizeUsd}, have $${positionSizeUsd.toFixed(2)}`,
-          );
-        }
+        // Log at WARN level so it's visible
+        this.logger.warn(
+          `❌ Insufficient balance for ${opportunity.symbol}: ` +
+            `Need $${config.minPositionSizeUsd}, have $${positionSizeUsd.toFixed(2)} ` +
+            `(minBalance: $${Math.min(longBalance, shortBalance).toFixed(2)}, ` +
+            `availableCapital: $${(Math.min(longBalance, shortBalance) * config.balanceUsagePercent.toDecimal()).toFixed(2)}, ` +
+            `leveragedCapital: $${(Math.min(longBalance, shortBalance) * config.balanceUsagePercent.toDecimal() * leverage).toFixed(2)})`,
+        );
         return Result.failure(
           new InsufficientBalanceException(
             config.minPositionSizeUsd,
@@ -502,17 +504,14 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
             ? totalCostsWithExit /
               Math.max(1, Math.min(24, Math.ceil(breakEvenHours)))
             : totalCostsWithExit / 24;
-        this.logger.debug(
-          `Opportunity ${opportunity.symbol} rejected (profitability): ` +
+        // Log at WARN level so it's visible - this is important for debugging
+        this.logger.warn(
+          `❌ Opportunity ${opportunity.symbol} rejected: ` +
             `Position: $${positionSizeUsd.toFixed(2)}, ` +
             `Hourly return: $${expectedReturnPerPeriod.toFixed(4)}, ` +
-            `Entry fees: $${totalEntryFees.toFixed(4)}, ` +
-            `Exit fees: $${totalExitFees.toFixed(4)}, ` +
-            `Slippage: $${totalSlippageCost.toFixed(4)}, ` +
-            `Total costs: $${totalCostsWithExit.toFixed(4)}, ` +
+            `Net return/hour: $${expectedNetReturn.toFixed(4)}, ` +
             `Break-even: ${breakEvenHours !== null ? breakEvenHours.toFixed(1) : 'N/A'}h (max: ${maxBreakEvenHours.toFixed(1)}h), ` +
-            `Amortized costs/hour: $${amortizedCosts.toFixed(4)}, ` +
-            `Net return/hour: $${expectedNetReturn.toFixed(4)}`,
+            `Total costs: $${totalCostsWithExit.toFixed(4)}`,
         );
         return Result.failure(
           new ValidationException(

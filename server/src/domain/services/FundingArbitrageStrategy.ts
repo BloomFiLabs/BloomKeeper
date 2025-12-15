@@ -974,11 +974,29 @@ export class FundingArbitrageStrategy {
         0,
       );
 
+      this.logger.log(
+        `💰 Available Capital: $${totalCapital.toFixed(2)} (${portfolioOptimizationData.length} opportunities with valid plans/break-even)`,
+      );
+
       const optimalPortfolio = await this.calculateOptimalPortfolioAllocation(
         portfolioOptimizationData,
         totalCapital > 0 ? totalCapital : null,
         0.35,
       );
+      
+      // Scale portfolio allocations to actual available capital if needed
+      if (optimalPortfolio.totalPortfolio > totalCapital && totalCapital > 0) {
+        const scaleFactor = totalCapital / optimalPortfolio.totalPortfolio;
+        this.logger.warn(
+          `⚠️ Portfolio allocation ($${optimalPortfolio.totalPortfolio.toFixed(2)}) exceeds available capital ($${totalCapital.toFixed(2)}). ` +
+          `Scaling by ${(scaleFactor * 100).toFixed(1)}%`,
+        );
+        // Scale all allocations
+        for (const [symbol, allocation] of optimalPortfolio.allocations.entries()) {
+          optimalPortfolio.allocations.set(symbol, allocation * scaleFactor);
+        }
+        optimalPortfolio.totalPortfolio = totalCapital;
+      }
 
       // Sort ALL evaluated opportunities by net return (highest first) for logging
       allEvaluatedOpportunities.sort((a, b) => b.netReturn - a.netReturn);
@@ -1139,28 +1157,99 @@ export class FundingArbitrageStrategy {
 
       if (executionPlans.length === 0) {
         this.logger.warn(
-          'No profitable execution plans created from opportunities',
+          'No instantly profitable execution plans created from opportunities',
         );
 
-        // Try worst-case scenario selection if no profitable opportunities exist
-        // Only consider opportunities with valid OI data (exclude N/A OI)
-        const worstCaseResult = await this.selectWorstCaseOpportunity(
-          opportunitiesWithValidOI,
-          adapters,
-          maxPositionSizeUsd,
-          exchangeBalances,
+        // Try to create execution plans for opportunities with acceptable break-even times
+        // Even if not instantly profitable, they can still be executed
+        const maxBreakEvenHours = this.strategyConfig.maxWorstCaseBreakEvenDays * 24;
+        this.logger.log(
+          `🔍 Checking opportunities with acceptable break-even times (≤${maxBreakEvenHours.toFixed(1)}h)...`,
         );
 
-        if (worstCaseResult) {
-          // Execute worst-case opportunity
-          return await this.executeWorstCaseOpportunity(
-            worstCaseResult,
-            adapters,
-            result,
-          );
+        for (const item of allEvaluatedOpportunities) {
+          // Skip if already has a plan or doesn't meet break-even criteria
+          if (item.plan !== null) continue;
+          
+          const hasAcceptableBreakEven =
+            item.breakEvenHours !== null &&
+            isFinite(item.breakEvenHours) &&
+            item.breakEvenHours <= maxBreakEvenHours &&
+            item.netReturn > -Infinity &&
+            item.opportunity.expectedReturn &&
+            item.opportunity.expectedReturn.toAPY() > 0; // Must have positive expected return
+
+          if (hasAcceptableBreakEven) {
+            // Try to create execution plan with available capital
+            const longBalance =
+              exchangeBalances.get(item.opportunity.longExchange) ?? 0;
+            const shortBalance =
+              exchangeBalances.get(item.opportunity.shortExchange) ?? 0;
+
+            if (longBalance > 0 && shortBalance > 0) {
+              try {
+                const planResult = await this.executionPlanBuilder.buildPlan(
+                  item.opportunity,
+                  adapters,
+                  { longBalance, shortBalance },
+                  this.strategyConfig,
+                  item.opportunity.longMarkPrice,
+                  item.opportunity.shortMarkPrice,
+                  undefined, // Use available capital, not portfolio allocation
+                );
+
+                if (planResult.isSuccess()) {
+                  executionPlans.push({
+                    plan: planResult.value,
+                    opportunity: item.opportunity,
+                  });
+                  this.logger.log(
+                    `✅ Created execution plan for ${item.opportunity.symbol} (break-even: ${item.breakEvenHours!.toFixed(1)}h)`,
+                  );
+                  // Update the item's plan so it's included in portfolio optimization
+                  item.plan = planResult.value;
+                } else {
+                  this.logger.debug(
+                    `Failed to create plan for ${item.opportunity.symbol}: ${planResult.error.message}`,
+                  );
+                }
+              } catch (error: any) {
+                this.logger.debug(
+                  `Error creating plan for ${item.opportunity.symbol}: ${error.message}`,
+                );
+              }
+            }
+          }
         }
 
-        return result;
+        // If we still have no plans, try worst-case scenario
+        if (executionPlans.length === 0) {
+          this.logger.warn(
+            'No execution plans created (including break-even opportunities). Trying worst-case scenario...',
+          );
+          
+          const worstCaseResult = await this.selectWorstCaseOpportunity(
+            opportunitiesWithValidOI,
+            adapters,
+            maxPositionSizeUsd,
+            exchangeBalances,
+          );
+
+          if (worstCaseResult) {
+            // Execute worst-case opportunity
+            return await this.executeWorstCaseOpportunity(
+              worstCaseResult,
+              adapters,
+              result,
+            );
+          }
+
+          return result;
+        } else {
+          this.logger.log(
+            `✅ Created ${executionPlans.length} execution plan(s) based on break-even time criteria`,
+          );
+        }
       }
 
       // MULTI-POSITION PORTFOLIO EXECUTION
@@ -1243,7 +1332,8 @@ export class FundingArbitrageStrategy {
       this.logger.log(
         `📊 Ladder: ${ladderOpportunities.length} opportunities available ` +
         `(${ladderOpportunities.filter(o => o.maxPortfolioFor35APY !== null).length} with max portfolio caps, ` +
-        `${ladderOpportunities.filter(o => o.maxPortfolioFor35APY === null).length} using available capital)`,
+        `${ladderOpportunities.filter(o => o.maxPortfolioFor35APY === null).length} using available capital), ` +
+        `${ladderOpportunities.filter(o => o.plan !== null).length} with execution plans`,
       );
 
       // Ladder allocation: Fill positions sequentially, completely filling each before moving to the next
