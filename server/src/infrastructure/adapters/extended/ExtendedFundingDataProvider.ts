@@ -20,6 +20,13 @@ export class ExtendedFundingDataProvider {
   private symbolToMarketIdCache: Map<string, string> = new Map();
   private marketIdCacheTimestamp: number = 0;
   private readonly MARKET_ID_CACHE_TTL = 3600000; // 1 hour
+  
+  // Track API availability to avoid spamming a dead API
+  private isApiAvailable: boolean = true;
+  private lastApiCheckTime: number = 0;
+  private readonly API_CHECK_INTERVAL = 300000; // 5 minutes - don't retry too frequently
+  private consecutiveFailures: number = 0;
+  private readonly MAX_CONSECUTIVE_FAILURES = 3; // Disable after 3 consecutive failures
 
   constructor(private readonly configService: ConfigService) {
     const baseUrl = this.configService.get<string>('EXTENDED_API_BASE_URL') || 'https://api.extended.exchange';
@@ -31,15 +38,39 @@ export class ExtendedFundingDataProvider {
   }
 
   /**
+   * Check if the API should be considered unavailable
+   */
+  private shouldSkipApiCall(): boolean {
+    if (!this.isApiAvailable) {
+      const now = Date.now();
+      // Re-check periodically to see if API came back online
+      if ((now - this.lastApiCheckTime) < this.API_CHECK_INTERVAL) {
+        return true; // Skip, API is disabled and not enough time has passed
+      }
+      // Enough time has passed, allow a retry
+      this.logger.debug('Extended API was disabled, attempting to reconnect...');
+    }
+    return false;
+  }
+
+  /**
    * Refresh symbol to market ID cache
    */
   private async refreshSymbolCache(): Promise<void> {
     const now = Date.now();
+    
+    // Check if we should skip due to API being unavailable
+    if (this.shouldSkipApiCall()) {
+      return;
+    }
+    
+    // Check if cache is still valid
     if (this.symbolToMarketIdCache.size > 0 && (now - this.marketIdCacheTimestamp) < this.MARKET_ID_CACHE_TTL) {
       return;
     }
 
     try {
+      this.lastApiCheckTime = now;
       const response = await this.client.get('/v1/public/markets');
       if (response.data && Array.isArray(response.data)) {
         this.symbolToMarketIdCache.clear();
@@ -49,10 +80,26 @@ export class ExtendedFundingDataProvider {
           }
         }
         this.marketIdCacheTimestamp = now;
+        this.consecutiveFailures = 0; // Reset on success
+        this.isApiAvailable = true;
         this.logger.debug(`Cached ${this.symbolToMarketIdCache.size} market IDs from Extended API`);
       }
     } catch (error: any) {
-      this.logger.debug(`Failed to refresh symbol cache: ${error.message}`);
+      this.consecutiveFailures++;
+      
+      // Only log on first failure or when disabling
+      if (this.consecutiveFailures === 1) {
+        this.logger.debug(`Extended API unavailable: ${error.message}`);
+      }
+      
+      // Disable API after too many consecutive failures
+      if (this.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES && this.isApiAvailable) {
+        this.isApiAvailable = false;
+        this.logger.warn(
+          `Extended API disabled after ${this.consecutiveFailures} consecutive failures. ` +
+          `Will retry in ${this.API_CHECK_INTERVAL / 60000} minutes.`
+        );
+      }
     }
   }
 
@@ -75,6 +122,11 @@ export class ExtendedFundingDataProvider {
    * @returns Funding rate as decimal (e.g., 0.0001 = 0.01%)
    */
   async getCurrentFundingRate(symbol: string): Promise<number> {
+    // Skip if API is disabled
+    if (!this.isApiAvailable && this.shouldSkipApiCall()) {
+      throw new Error('Extended API is temporarily disabled');
+    }
+
     try {
       const marketId = await this.getMarketId(symbol);
       const response = await this.client.get(`/v1/public/markets/${marketId}/funding-rate`);
@@ -89,7 +141,10 @@ export class ExtendedFundingDataProvider {
       return fundingRate;
     } catch (error: any) {
       const errorMsg = error.response?.data?.message || error.message || String(error);
-      this.logger.debug(`Failed to get funding rate for ${symbol}: ${errorMsg}`);
+      // Only log if API is supposedly available (avoid spam when disabled)
+      if (this.isApiAvailable) {
+        this.logger.debug(`Failed to get funding rate for ${symbol}: ${errorMsg}`);
+      }
       throw new Error(`Failed to get Extended funding rate: ${errorMsg}`);
     }
   }
@@ -131,6 +186,11 @@ export class ExtendedFundingDataProvider {
    * @returns Open interest in USD
    */
   async getOpenInterest(symbol: string): Promise<number> {
+    // Skip if API is disabled
+    if (!this.isApiAvailable && this.shouldSkipApiCall()) {
+      throw new Error('Extended API is temporarily disabled');
+    }
+
     try {
       const marketId = await this.getMarketId(symbol);
       const response = await this.client.get(`/v1/public/markets/${marketId}/open-interest`);
@@ -171,7 +231,10 @@ export class ExtendedFundingDataProvider {
       throw new Error(`Open interest not found in response: ${JSON.stringify(response.data)}`);
     } catch (error: any) {
       const errorMsg = error.response?.data?.message || error.message || String(error);
-      this.logger.debug(`Failed to get open interest for ${symbol}: ${errorMsg}`);
+      // Only log if API is supposedly available
+      if (this.isApiAvailable) {
+        this.logger.debug(`Failed to get open interest for ${symbol}: ${errorMsg}`);
+      }
       throw new Error(`Failed to get Extended open interest: ${errorMsg}`);
     }
   }
@@ -182,6 +245,11 @@ export class ExtendedFundingDataProvider {
    * @returns Mark price
    */
   async getMarkPrice(symbol: string): Promise<number> {
+    // Skip if API is disabled
+    if (!this.isApiAvailable && this.shouldSkipApiCall()) {
+      throw new Error('Extended API is temporarily disabled');
+    }
+
     try {
       const marketId = await this.getMarketId(symbol);
       const response = await this.client.get(`/v1/public/markets/${marketId}/mark-price`);
@@ -195,7 +263,10 @@ export class ExtendedFundingDataProvider {
       return markPrice;
     } catch (error: any) {
       const errorMsg = error.response?.data?.message || error.message || String(error);
-      this.logger.debug(`Failed to get mark price for ${symbol}: ${errorMsg}`);
+      // Only log if API is supposedly available
+      if (this.isApiAvailable) {
+        this.logger.debug(`Failed to get mark price for ${symbol}: ${errorMsg}`);
+      }
       throw new Error(`Failed to get Extended mark price: ${errorMsg}`);
     }
   }
