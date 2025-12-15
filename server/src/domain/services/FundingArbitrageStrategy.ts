@@ -2448,6 +2448,9 @@ export class FundingArbitrageStrategy {
 
   /**
    * Try to open the missing side of a single-leg position
+   * 
+   * IMPORTANT: Checks for existing pending orders before placing new ones to prevent
+   * duplicate orders (e.g., 4 Lighter orders for 1 Hyperliquid position)
    */
   private async retryOpenMissingSide(
     opportunity: ArbitrageOpportunity,
@@ -2461,6 +2464,63 @@ export class FundingArbitrageStrategy {
         this.logger.warn(`No adapter found for ${missingExchange}`);
         return false;
       }
+
+      // ========== CRITICAL: Check for existing pending orders BEFORE placing new ones ==========
+      // This prevents duplicate orders when single-leg detection runs multiple times
+      const PENDING_ORDER_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 minutes - give orders time to fill
+      
+      if (typeof (adapter as any).getOpenOrders === 'function') {
+        try {
+          const openOrders = await (adapter as any).getOpenOrders();
+          const pendingOrdersForSymbol = openOrders.filter((order: any) => {
+            // Match by symbol (handle different formats: YZY, YZY-USD, YZYUSD)
+            const normalizedOrderSymbol = order.symbol?.toUpperCase()?.replace('-USD', '')?.replace('USD', '');
+            const normalizedOpportunitySymbol = opportunity.symbol?.toUpperCase()?.replace('-USD', '')?.replace('USD', '');
+            return normalizedOrderSymbol === normalizedOpportunitySymbol && 
+                   order.side?.toUpperCase() === missingSide.toUpperCase();
+          });
+
+          if (pendingOrdersForSymbol.length > 0) {
+            // Check age of oldest pending order
+            const now = Date.now();
+            const oldestOrder = pendingOrdersForSymbol.reduce((oldest: any, order: any) => {
+              const orderTime = order.timestamp ? new Date(order.timestamp).getTime() : now;
+              const oldestTime = oldest.timestamp ? new Date(oldest.timestamp).getTime() : now;
+              return orderTime < oldestTime ? order : oldest;
+            }, pendingOrdersForSymbol[0]);
+
+            const orderAge = now - (oldestOrder.timestamp ? new Date(oldestOrder.timestamp).getTime() : now);
+
+            if (orderAge < PENDING_ORDER_GRACE_PERIOD_MS) {
+              // Orders are still fresh - wait for them to fill, don't place more
+              this.logger.debug(
+                `⏳ Waiting for ${pendingOrdersForSymbol.length} pending ${missingSide} order(s) for ${opportunity.symbol} ` +
+                `on ${missingExchange} (${Math.round(orderAge / 1000)}s old, grace period: ${PENDING_ORDER_GRACE_PERIOD_MS / 1000}s)`,
+              );
+              return false; // Don't place new order, but also don't exhaust retries
+            } else {
+              // Orders are stale (> 5 min) - cancel them before placing new one
+              this.logger.warn(
+                `🗑️ Cancelling ${pendingOrdersForSymbol.length} stale pending order(s) for ${opportunity.symbol} ` +
+                `on ${missingExchange} (${Math.round(orderAge / 60000)} minutes old)`,
+              );
+              for (const order of pendingOrdersForSymbol) {
+                try {
+                  await adapter.cancelOrder(order.orderId, opportunity.symbol);
+                } catch (cancelError: any) {
+                  this.logger.debug(`Failed to cancel stale order ${order.orderId}: ${cancelError.message}`);
+                }
+              }
+              // Wait for cancellations to process
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+        } catch (openOrdersError: any) {
+          this.logger.debug(`Could not check open orders on ${missingExchange}: ${openOrdersError.message}`);
+          // Continue - we'll place the order anyway
+        }
+      }
+      // ========================================================================================
 
       // Create execution plan for the missing side
       const leverage = await this.getLeverageForSymbol(

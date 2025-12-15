@@ -1148,6 +1148,9 @@ export class PerpKeeperScheduler implements OnModuleInit {
   /**
    * Try to open the missing side of a single-leg position
    * Returns true if successful, false if retries exhausted
+   * 
+   * IMPORTANT: Checks for existing pending orders before placing new ones to prevent
+   * duplicate orders (e.g., 4 Lighter orders for 1 Hyperliquid position)
    */
   private async tryOpenMissingSide(position: PerpPosition): Promise<boolean> {
     try {
@@ -1179,6 +1182,68 @@ export class PerpKeeperScheduler implements OnModuleInit {
         return false;
       }
 
+      const adapter = this.keeperService.getExchangeAdapter(missingExchange);
+      if (!adapter) {
+        return false;
+      }
+
+      // ========== CRITICAL: Check for existing pending orders BEFORE placing new ones ==========
+      // This prevents duplicate orders when the single-leg check runs multiple times
+      const PENDING_ORDER_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 minutes - give orders time to fill
+      
+      if (typeof (adapter as any).getOpenOrders === 'function') {
+        try {
+          const openOrders = await (adapter as any).getOpenOrders();
+          const pendingOrdersForSymbol = openOrders.filter((order: any) => {
+            // Match by symbol (handle different formats: YZY, YZY-USD, YZYUSD)
+            const normalizedOrderSymbol = order.symbol?.toUpperCase()?.replace('-USD', '')?.replace('USD', '');
+            const normalizedPositionSymbol = position.symbol?.toUpperCase()?.replace('-USD', '')?.replace('USD', '');
+            return normalizedOrderSymbol === normalizedPositionSymbol && 
+                   order.side?.toUpperCase() === missingSide.toUpperCase();
+          });
+
+          if (pendingOrdersForSymbol.length > 0) {
+            // Check age of oldest pending order
+            const now = Date.now();
+            const oldestOrder = pendingOrdersForSymbol.reduce((oldest: any, order: any) => {
+              const orderTime = order.timestamp ? new Date(order.timestamp).getTime() : now;
+              const oldestTime = oldest.timestamp ? new Date(oldest.timestamp).getTime() : now;
+              return orderTime < oldestTime ? order : oldest;
+            }, pendingOrdersForSymbol[0]);
+
+            const orderAge = now - (oldestOrder.timestamp ? new Date(oldestOrder.timestamp).getTime() : now);
+
+            if (orderAge < PENDING_ORDER_GRACE_PERIOD_MS) {
+              // Orders are still fresh - wait for them to fill, don't place more
+              this.logger.debug(
+                `⏳ Waiting for ${pendingOrdersForSymbol.length} pending ${missingSide} order(s) for ${position.symbol} ` +
+                `on ${missingExchange} (${Math.round(orderAge / 1000)}s old, grace period: ${PENDING_ORDER_GRACE_PERIOD_MS / 1000}s)`,
+              );
+              return false; // Don't place new order, but also don't exhaust retries
+            } else {
+              // Orders are stale (> 5 min) - cancel them and retry
+              this.logger.warn(
+                `🗑️ Cancelling ${pendingOrdersForSymbol.length} stale pending order(s) for ${position.symbol} ` +
+                `on ${missingExchange} (${Math.round(orderAge / 60000)} minutes old)`,
+              );
+              for (const order of pendingOrdersForSymbol) {
+                try {
+                  await adapter.cancelOrder(order.orderId, position.symbol);
+                } catch (cancelError: any) {
+                  this.logger.debug(`Failed to cancel stale order ${order.orderId}: ${cancelError.message}`);
+                }
+              }
+              // Wait for cancellations to process
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+        } catch (openOrdersError: any) {
+          this.logger.debug(`Could not check open orders on ${missingExchange}: ${openOrdersError.message}`);
+          // Continue - we'll place the order anyway
+        }
+      }
+      // ========================================================================================
+
       // Get or create retry info
       let retryInfo = this.singleLegRetries.get(retryKey);
       if (!retryInfo) {
@@ -1201,13 +1266,6 @@ export class PerpKeeperScheduler implements OnModuleInit {
       this.logger.log(
         `🔄 Retry ${retryInfo.retryCount + 1}/5: Opening missing ${missingSide} side for ${position.symbol} on ${missingExchange}`,
       );
-
-      const adapter = this.keeperService.getExchangeAdapter(missingExchange);
-      if (!adapter) {
-        retryInfo.retryCount++;
-        retryInfo.lastRetryTime = new Date();
-        return false;
-      }
 
       // Create market order to open missing side (same size as existing position)
       const openOrder = new PerpOrderRequest(

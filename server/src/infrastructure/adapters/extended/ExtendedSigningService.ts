@@ -1,11 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ec, hash, typedData } from 'starknet';
+import { ec, typedData, StarknetDomain } from 'starknet';
 
 /**
  * ExtendedSigningService - Handles Starknet SNIP12/EIP712 signing for Extended exchange
  * 
  * Extended uses SNIP12 standard (EIP712 for Starknet) for signing orders and withdrawals
- * Domain: { name: "Perpetuals", version: "v0", chainId: "SN_MAIN" } (or "SN_SEPOLIA" for testnet)
+ * Domain: { name: "Perpetuals", version: "v0", chainId: "SN_MAIN", revision: "1" }
+ * 
+ * API Docs: https://api.docs.extended.exchange/#order-management
  */
 @Injectable()
 export class ExtendedSigningService {
@@ -22,9 +24,10 @@ export class ExtendedSigningService {
   }
 
   /**
-   * Get the EIP712 domain for Extended exchange
+   * Get the SNIP12 domain for Extended exchange
+   * Per SDK config: StarknetDomain(name="Perpetuals", version="v0", chainId="SN_MAIN", revision="1")
    */
-  private getDomain(): any {
+  private getDomain(): StarknetDomain {
     return {
       name: 'Perpetuals',
       version: 'v0',
@@ -34,9 +37,93 @@ export class ExtendedSigningService {
   }
 
   /**
-   * Sign an order using SNIP12/EIP712
+   * Sign an order using SNIP12/EIP712 and return r,s components
+   * Extended API requires signature as { r: "0x...", s: "0x..." } format
+   * 
    * @param orderData Order data to sign
-   * @returns Signature string
+   * @returns Signature with r and s components
+   */
+  async signOrderWithComponents(orderData: {
+    symbol: string;
+    side: 'buy' | 'sell';
+    orderType: 'limit' | 'market';
+    size: string;
+    price?: string;
+    timeInForce?: string;
+    reduceOnly?: boolean;
+    postOnly?: boolean;
+    expiration?: number;
+    clientOrderId?: string;
+  }): Promise<{ r: string; s: string }> {
+    const domain = this.getDomain();
+    
+    // Extended order types based on SDK reference implementation
+    const types = {
+      StarknetDomain: [
+        { name: 'name', type: 'shortstring' },
+        { name: 'version', type: 'shortstring' },
+        { name: 'chainId', type: 'shortstring' },
+        { name: 'revision', type: 'shortstring' },
+      ],
+      Order: [
+        { name: 'market', type: 'felt' },
+        { name: 'side', type: 'felt' },
+        { name: 'type', type: 'felt' },
+        { name: 'size', type: 'felt' },
+        { name: 'price', type: 'felt' },
+        { name: 'timeInForce', type: 'felt' },
+        { name: 'reduceOnly', type: 'bool' },
+        { name: 'postOnly', type: 'bool' },
+        { name: 'expiration', type: 'felt' },
+        { name: 'clientOrderId', type: 'felt' },
+      ],
+    };
+
+    const message = {
+      market: orderData.symbol,
+      side: orderData.side.toUpperCase(),
+      type: orderData.orderType.toUpperCase(),
+      size: orderData.size,
+      price: orderData.price || '0',
+      timeInForce: orderData.timeInForce || 'GTT',
+      reduceOnly: orderData.reduceOnly || false,
+      postOnly: orderData.postOnly || false,
+      expiration: (orderData.expiration || Math.floor(Date.now() / 1000) + 86400).toString(),
+      clientOrderId: orderData.clientOrderId || '',
+    };
+
+    try {
+      // Build typed data object
+      const typedDataObj = {
+        domain,
+        types,
+        primaryType: 'Order',
+        message,
+      };
+      
+      // Get account address (public key) from private key
+      const publicKey = ec.starkCurve.getStarkKey(this.starkPrivateKey);
+      
+      // Get message hash
+      const messageHash = typedData.getMessageHash(typedDataObj, publicKey);
+      
+      // Sign the hash
+      const signature = ec.starkCurve.sign(messageHash, this.starkPrivateKey);
+      
+      // Return r,s as hex strings with 0x prefix
+      return {
+        r: `0x${signature.r.toString(16).padStart(64, '0')}`,
+        s: `0x${signature.s.toString(16).padStart(64, '0')}`,
+      };
+    } catch (error: any) {
+      this.logger.error(`Failed to sign order: ${error.message}`);
+      throw new Error(`Order signing failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Sign an order (legacy method returning concatenated signature)
+   * @deprecated Use signOrderWithComponents instead
    */
   async signOrder(orderData: {
     symbol: string;
@@ -50,90 +137,51 @@ export class ExtendedSigningService {
     expiration?: number;
     clientOrderId?: string;
   }): Promise<string> {
-    const domain = this.getDomain();
-    
-    // Extended order types (based on API docs)
-    const types = {
-      Order: [
-        { name: 'symbol', type: 'felt252' },
-        { name: 'side', type: 'felt252' },
-        { name: 'orderType', type: 'felt252' },
-        { name: 'size', type: 'u256' },
-        { name: 'price', type: 'u256' },
-        { name: 'timeInForce', type: 'felt252' },
-        { name: 'reduceOnly', type: 'bool' },
-        { name: 'postOnly', type: 'bool' },
-        { name: 'expiration', type: 'u64' },
-        { name: 'clientOrderId', type: 'felt252' },
-      ],
-    };
-
-    const message = {
-      symbol: orderData.symbol,
-      side: orderData.side,
-      orderType: orderData.orderType,
-      size: orderData.size,
-      price: orderData.price || '0',
-      timeInForce: orderData.timeInForce || 'GTC',
-      reduceOnly: orderData.reduceOnly || false,
-      postOnly: orderData.postOnly || false,
-      expiration: orderData.expiration || Math.floor(Date.now() / 1000) + 86400, // Default 24h expiry
-      clientOrderId: orderData.clientOrderId || '',
-    };
-
-    try {
-      // Sign using starknet typed data signing
-      const typedDataObj = {
-        domain,
-        types,
-        primaryType: 'Order',
-        message,
-      };
-      // getMessageHash requires account address as second parameter
-      // For Extended, we use the public key derived from private key
-      const accountAddress = ec.starkCurve.getPublicKey(this.starkPrivateKey);
-      const accountAddressHex = `0x${Array.from(accountAddress).map(b => b.toString(16).padStart(2, '0')).join('')}`;
-      const typedDataHash = typedData.getMessageHash(typedDataObj, accountAddressHex);
-      const signature = ec.starkCurve.sign(typedDataHash, this.starkPrivateKey);
-      
-      // Convert signature to hex string format expected by Extended API
-      return `0x${signature.r.toString(16).padStart(64, '0')}${signature.s.toString(16).padStart(64, '0')}`;
-    } catch (error: any) {
-      this.logger.error(`Failed to sign order: ${error.message}`);
-      throw new Error(`Order signing failed: ${error.message}`);
-    }
+    const { r, s } = await this.signOrderWithComponents(orderData);
+    return `${r}${s.slice(2)}`; // Concatenate r and s (removing duplicate 0x)
   }
 
   /**
    * Sign a withdrawal request
+   * Per Extended API docs, withdrawal requires settlement object with signature
    * @param withdrawalData Withdrawal data to sign
-   * @returns Signature string
+   * @returns Signature with r and s components
    */
-  async signWithdrawal(withdrawalData: {
+  async signWithdrawalWithComponents(withdrawalData: {
     asset: string;
     amount: string;
-    destinationAddress: string;
-    chainId: number; // Arbitrum = 42161
-    expiration?: number;
-  }): Promise<string> {
+    recipient: string;
+    positionId: number;
+    collateralId: string;
+    expiration: number;
+    salt: number;
+  }): Promise<{ r: string; s: string }> {
     const domain = this.getDomain();
     
     const types = {
+      StarknetDomain: [
+        { name: 'name', type: 'shortstring' },
+        { name: 'version', type: 'shortstring' },
+        { name: 'chainId', type: 'shortstring' },
+        { name: 'revision', type: 'shortstring' },
+      ],
       Withdrawal: [
-        { name: 'asset', type: 'felt252' },
-        { name: 'amount', type: 'u256' },
-        { name: 'destinationAddress', type: 'felt252' },
-        { name: 'chainId', type: 'u256' },
-        { name: 'expiration', type: 'u64' },
+        { name: 'recipient', type: 'felt' },
+        { name: 'positionId', type: 'felt' },
+        { name: 'collateralId', type: 'felt' },
+        { name: 'amount', type: 'felt' },
+        { name: 'expiration', type: 'felt' },
+        { name: 'salt', type: 'felt' },
       ],
     };
 
     const message = {
-      asset: withdrawalData.asset,
+      recipient: withdrawalData.recipient,
+      positionId: withdrawalData.positionId.toString(),
+      collateralId: withdrawalData.collateralId,
       amount: withdrawalData.amount,
-      destinationAddress: withdrawalData.destinationAddress,
-      chainId: withdrawalData.chainId.toString(),
-      expiration: withdrawalData.expiration || Math.floor(Date.now() / 1000) + 14 * 24 * 3600, // Default 14 days
+      expiration: withdrawalData.expiration.toString(),
+      salt: withdrawalData.salt.toString(),
     };
 
     try {
@@ -143,13 +191,15 @@ export class ExtendedSigningService {
         primaryType: 'Withdrawal',
         message,
       };
-      // getMessageHash requires account address as second parameter
-      // For Extended, we use the public key derived from private key
-      const accountAddress = ec.starkCurve.getPublicKey(this.starkPrivateKey);
-      const accountAddressHex = `0x${Array.from(accountAddress).map(b => b.toString(16).padStart(2, '0')).join('')}`;
-      const typedDataHash = typedData.getMessageHash(typedDataObj, accountAddressHex);
-      const signature = ec.starkCurve.sign(typedDataHash, this.starkPrivateKey);
-      return `0x${signature.r.toString(16).padStart(64, '0')}${signature.s.toString(16).padStart(64, '0')}`;
+      
+      const publicKey = ec.starkCurve.getStarkKey(this.starkPrivateKey);
+      const messageHash = typedData.getMessageHash(typedDataObj, publicKey);
+      const signature = ec.starkCurve.sign(messageHash, this.starkPrivateKey);
+      
+      return {
+        r: `0x${signature.r.toString(16).padStart(64, '0')}`,
+        s: `0x${signature.s.toString(16).padStart(64, '0')}`,
+      };
     } catch (error: any) {
       this.logger.error(`Failed to sign withdrawal: ${error.message}`);
       throw new Error(`Withdrawal signing failed: ${error.message}`);
@@ -157,29 +207,74 @@ export class ExtendedSigningService {
   }
 
   /**
-   * Sign a transfer request
-   * @param transferData Transfer data to sign
-   * @returns Signature string
+   * Sign a withdrawal (legacy method)
+   * @deprecated Use signWithdrawalWithComponents instead
    */
-  async signTransfer(transferData: {
+  async signWithdrawal(withdrawalData: {
     asset: string;
     amount: string;
-    toVault: number;
+    destinationAddress: string;
+    chainId: number;
+    expiration?: number;
   }): Promise<string> {
+    const { r, s } = await this.signWithdrawalWithComponents({
+      asset: withdrawalData.asset,
+      amount: withdrawalData.amount,
+      recipient: withdrawalData.destinationAddress,
+      positionId: 0,
+      collateralId: '0x1',
+      expiration: withdrawalData.expiration || Math.floor(Date.now() / 1000) + 14 * 24 * 3600,
+      salt: Math.floor(Math.random() * 100000000),
+    });
+    return `${r}${s.slice(2)}`;
+  }
+
+  /**
+   * Sign a transfer request
+   * Per Extended API docs, transfer is between sub-accounts of same wallet
+   * @param transferData Transfer data to sign
+   * @returns Signature with r and s components
+   */
+  async signTransferWithComponents(transferData: {
+    amount: number;
+    assetId: string;
+    expirationTimestamp: number;
+    nonce: number;
+    receiverPositionId: number;
+    receiverPublicKey: string;
+    senderPositionId: number;
+    senderPublicKey: string;
+  }): Promise<{ r: string; s: string }> {
     const domain = this.getDomain();
     
     const types = {
+      StarknetDomain: [
+        { name: 'name', type: 'shortstring' },
+        { name: 'version', type: 'shortstring' },
+        { name: 'chainId', type: 'shortstring' },
+        { name: 'revision', type: 'shortstring' },
+      ],
       Transfer: [
-        { name: 'asset', type: 'felt252' },
-        { name: 'amount', type: 'u256' },
-        { name: 'toVault', type: 'u256' },
+        { name: 'amount', type: 'felt' },
+        { name: 'assetId', type: 'felt' },
+        { name: 'expirationTimestamp', type: 'felt' },
+        { name: 'nonce', type: 'felt' },
+        { name: 'receiverPositionId', type: 'felt' },
+        { name: 'receiverPublicKey', type: 'felt' },
+        { name: 'senderPositionId', type: 'felt' },
+        { name: 'senderPublicKey', type: 'felt' },
       ],
     };
 
     const message = {
-      asset: transferData.asset,
-      amount: transferData.amount,
-      toVault: transferData.toVault.toString(),
+      amount: transferData.amount.toString(),
+      assetId: transferData.assetId,
+      expirationTimestamp: transferData.expirationTimestamp.toString(),
+      nonce: transferData.nonce.toString(),
+      receiverPositionId: transferData.receiverPositionId.toString(),
+      receiverPublicKey: transferData.receiverPublicKey,
+      senderPositionId: transferData.senderPositionId.toString(),
+      senderPublicKey: transferData.senderPublicKey,
     };
 
     try {
@@ -189,13 +284,15 @@ export class ExtendedSigningService {
         primaryType: 'Transfer',
         message,
       };
-      // getMessageHash requires account address as second parameter
-      // For Extended, we use the public key derived from private key
-      const accountAddress = ec.starkCurve.getPublicKey(this.starkPrivateKey);
-      const accountAddressHex = `0x${Array.from(accountAddress).map(b => b.toString(16).padStart(2, '0')).join('')}`;
-      const typedDataHash = typedData.getMessageHash(typedDataObj, accountAddressHex);
-      const signature = ec.starkCurve.sign(typedDataHash, this.starkPrivateKey);
-      return `0x${signature.r.toString(16).padStart(64, '0')}${signature.s.toString(16).padStart(64, '0')}`;
+      
+      const publicKey = ec.starkCurve.getStarkKey(this.starkPrivateKey);
+      const messageHash = typedData.getMessageHash(typedDataObj, publicKey);
+      const signature = ec.starkCurve.sign(messageHash, this.starkPrivateKey);
+      
+      return {
+        r: `0x${signature.r.toString(16).padStart(64, '0')}`,
+        s: `0x${signature.s.toString(16).padStart(64, '0')}`,
+      };
     } catch (error: any) {
       this.logger.error(`Failed to sign transfer: ${error.message}`);
       throw new Error(`Transfer signing failed: ${error.message}`);
@@ -203,12 +300,33 @@ export class ExtendedSigningService {
   }
 
   /**
+   * Sign a transfer (legacy method)
+   * @deprecated Use signTransferWithComponents instead
+   */
+  async signTransfer(transferData: {
+    asset: string;
+    amount: string;
+    toVault: number;
+  }): Promise<string> {
+    const { r, s } = await this.signTransferWithComponents({
+      amount: parseInt(transferData.amount),
+      assetId: '0x1', // USD collateral asset
+      expirationTimestamp: Math.floor(Date.now() / 1000) + 86400,
+      nonce: Math.floor(Math.random() * 2147483646) + 1,
+      receiverPositionId: transferData.toVault,
+      receiverPublicKey: this.getPublicKey(),
+      senderPositionId: 0,
+      senderPublicKey: this.getPublicKey(),
+    });
+    return `${r}${s.slice(2)}`;
+  }
+
+  /**
    * Get the public key (Stark key) from the private key
+   * Returns the l2Key used in Extended API
    */
   getPublicKey(): string {
-    const publicKey = ec.starkCurve.getPublicKey(this.starkPrivateKey);
-    // Convert Uint8Array to hex string
-    return `0x${Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('')}`;
+    return ec.starkCurve.getStarkKey(this.starkPrivateKey);
   }
 }
 

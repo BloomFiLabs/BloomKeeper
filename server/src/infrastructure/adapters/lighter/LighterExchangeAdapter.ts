@@ -1013,6 +1013,121 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 
+  /**
+   * Get all open orders for this account
+   * Uses Lighter Explorer API: https://explorer.elliot.ai/api/accounts/{accountIndex}/open-orders
+   * 
+   * Returns orders with: orderId, symbol, side, price, size, timestamp
+   * Used for deduplication checks to prevent placing multiple orders for single-leg hedging
+   */
+  async getOpenOrders(): Promise<Array<{
+    orderId: string;
+    symbol: string;
+    side: string;
+    price: number;
+    size: number;
+    timestamp: Date;
+  }>> {
+    try {
+      await this.ensureInitialized();
+      
+      const accountIndex = this.config.accountIndex!;
+      const explorerUrl = `https://explorer.elliot.ai/api/accounts/${accountIndex}/open-orders`;
+      
+      this.logger.debug(`Fetching open orders from Lighter Explorer API for account ${accountIndex}...`);
+      
+      const response = await axios.get(explorerUrl, {
+        timeout: 10000,
+        headers: { accept: 'application/json' },
+      });
+
+      if (!response.data) {
+        this.logger.debug('Lighter Explorer API returned empty open orders data');
+        return [];
+      }
+
+      // Lighter API returns open orders as an array
+      // Structure: { "open_orders": [...] } or just [...]
+      const ordersData = response.data.open_orders || response.data || [];
+      if (!Array.isArray(ordersData)) {
+        this.logger.debug('Lighter Explorer API returned unexpected open orders format');
+        return [];
+      }
+
+      const orders: Array<{
+        orderId: string;
+        symbol: string;
+        side: string;
+        price: number;
+        size: number;
+        timestamp: Date;
+      }> = [];
+
+      for (const orderData of ordersData) {
+        try {
+          // Parse order data - expected fields:
+          // { id, market_index, side, price, size, created_at }
+          const orderId = String(orderData.id || orderData.order_id || orderData.orderId || '');
+          const marketIndex = orderData.market_index ?? orderData.marketIndex ?? null;
+          
+          if (!orderId || marketIndex === null) {
+            continue;
+          }
+
+          // Get symbol from market index
+          const symbol = await this.getSymbolFromMarketIndex(marketIndex);
+          if (!symbol) {
+            continue;
+          }
+
+          // Parse side
+          let side = 'LONG';
+          if (orderData.side !== undefined) {
+            // side can be 'long', 'short', 'buy', 'sell', 0, 1, etc.
+            const sideValue = String(orderData.side).toLowerCase();
+            if (sideValue === 'short' || sideValue === 'sell' || sideValue === '1') {
+              side = 'SHORT';
+            }
+          }
+
+          // Parse price and size
+          const price = parseFloat(String(orderData.price || orderData.limit_price || '0'));
+          const size = Math.abs(parseFloat(String(orderData.size || orderData.amount || orderData.quantity || '0')));
+          
+          // Parse timestamp
+          let timestamp = new Date();
+          if (orderData.created_at || orderData.createdAt || orderData.timestamp) {
+            const tsValue = orderData.created_at || orderData.createdAt || orderData.timestamp;
+            // Could be Unix timestamp (seconds or ms) or ISO string
+            if (typeof tsValue === 'number') {
+              timestamp = new Date(tsValue > 1e12 ? tsValue : tsValue * 1000);
+            } else {
+              timestamp = new Date(tsValue);
+            }
+          }
+
+          orders.push({
+            orderId,
+            symbol,
+            side,
+            price,
+            size,
+            timestamp,
+          });
+        } catch (parseError: any) {
+          this.logger.debug(`Failed to parse open order: ${parseError.message}`);
+        }
+      }
+
+      this.logger.debug(`Found ${orders.length} open order(s) on Lighter`);
+      return orders;
+    } catch (error: any) {
+      // Don't throw - return empty array so deduplication check can continue
+      this.logger.debug(`Failed to get open orders from Lighter: ${error.message}`);
+      return [];
+    }
+  }
+
   async getOrderStatus(orderId: string, symbol?: string): Promise<PerpOrderResponse> {
     try {
       await this.ensureInitialized();
