@@ -1157,10 +1157,12 @@ export class FundingArbitrageStrategy {
         exchangeBalances.values(),
       ).reduce((sum, balance) => sum + balance, 0);
 
-      // Get opportunities with maxPortfolioFor35APY and sort by expected return (best first)
-      // The ladder will allocate whatever capital is available, up to maxPortfolioFor35APY per position
-      // We only filter out failed/invalid opportunities, NOT based on affordability
-      const opportunitiesWithMaxPortfolio = allEvaluatedOpportunities
+      // Get all valid opportunities and sort by expected return (best first)
+      // The ladder will allocate whatever capital is available:
+      //   - If maxPortfolioFor35APY exists → use it as a cap
+      //   - If maxPortfolioFor35APY is null → allocate based purely on available capital
+      // We only filter out failed/invalid opportunities, NOT based on affordability or maxPortfolio availability
+      const ladderOpportunities = allEvaluatedOpportunities
         .filter((item) => {
           // Filter out opportunities that are marked as filtered (failed after 5 retries)
           const filterKey = this.getRetryKey(
@@ -1175,18 +1177,12 @@ export class FundingArbitrageStrategy {
             return false;
           }
           
-          // Must have valid maxPortfolioFor35APY and plan
-          if (
-            item.maxPortfolioFor35APY === null ||
-            item.maxPortfolioFor35APY === undefined ||
-            item.maxPortfolioFor35APY <= 0 ||
-            item.plan === null
-          ) {
+          // Must have a valid execution plan (maxPortfolioFor35APY can be null - we'll use available capital)
+          if (item.plan === null) {
             return false;
           }
 
           // Check if we have ANY balance on BOTH exchanges (minimum viable position)
-          // The ladder will allocate whatever capital is available, not the full maxPortfolioFor35APY
           const minPositionCollateral = this.strategyConfig.minPositionSizeUsd / this.leverage;
           const longBalance =
             exchangeBalances.get(item.opportunity.longExchange) ?? 0;
@@ -1200,50 +1196,30 @@ export class FundingArbitrageStrategy {
           );
         })
         .sort((a, b) => {
-          // First sort by expected return (highest first)
+          // Sort by expected return (highest APY first)
           const returnDiff =
             (b.opportunity.expectedReturn?.toAPY() || 0) -
             (a.opportunity.expectedReturn?.toAPY() || 0);
           if (Math.abs(returnDiff) > 0.001) return returnDiff;
-          // Then by maxPortfolio as tiebreaker
-          return (b.maxPortfolioFor35APY || 0) - (a.maxPortfolioFor35APY || 0);
+          // Then by maxPortfolio as tiebreaker (opportunities with known caps first)
+          const aMax = a.maxPortfolioFor35APY ?? Infinity;
+          const bMax = b.maxPortfolioFor35APY ?? Infinity;
+          return bMax - aMax;
         });
 
-      if (opportunitiesWithMaxPortfolio.length === 0) {
+      if (ladderOpportunities.length === 0) {
         this.logger.warn(
-          'No opportunities with maxPortfolioFor35APY available for portfolio execution',
+          '⚠️ No valid opportunities available for ladder execution (all filtered or insufficient balance)',
         );
-        // Fall back to single best opportunity
-        executionPlans.sort(
-          (a, b) => b.plan.expectedNetReturn - a.plan.expectedNetReturn,
-        );
-        const bestOpportunity = executionPlans[0];
-        // Store opportunity for retry tracking
-        if (bestOpportunity.plan && bestOpportunity.opportunity) {
-          const retryKey = this.getRetryKey(
-            bestOpportunity.opportunity.symbol,
-            bestOpportunity.opportunity.longExchange,
-            bestOpportunity.opportunity.shortExchange,
-          );
-          // Only store if not already tracked (don't overwrite existing retry count)
-          if (!this.singleLegRetries.has(retryKey)) {
-            this.singleLegRetries.set(retryKey, {
-              retryCount: 0,
-              longExchange: bestOpportunity.opportunity.longExchange,
-              shortExchange: bestOpportunity.opportunity.shortExchange,
-              opportunity: bestOpportunity.opportunity,
-              lastRetryTime: new Date(),
-            });
-          }
-        }
-        
-        return await this.executeSinglePosition(
-          bestOpportunity,
-          adapters,
-          result,
-          this.lossTracker,
-        );
+        result.errors.push('No valid opportunities available');
+        return result;
       }
+
+      this.logger.log(
+        `📊 Ladder: ${ladderOpportunities.length} opportunities available ` +
+        `(${ladderOpportunities.filter(o => o.maxPortfolioFor35APY !== null).length} with max portfolio caps, ` +
+        `${ladderOpportunities.filter(o => o.maxPortfolioFor35APY === null).length} using available capital)`,
+      );
 
       // Ladder allocation: Fill positions sequentially, completely filling each before moving to the next
       // Position 1: $0 to position1Max, Position 2: position1Max+1 to position2Max, etc.
@@ -1298,11 +1274,14 @@ export class FundingArbitrageStrategy {
       );
 
       // First pass: Top up existing positions that are below their max
-      for (let i = 0; i < opportunitiesWithMaxPortfolio.length; i++) {
-        const item = opportunitiesWithMaxPortfolio[i];
+      for (let i = 0; i < ladderOpportunities.length; i++) {
+        const item = ladderOpportunities[i];
         const symbol = item.opportunity.symbol;
         const existingPair = existingPositionsBySymbol.get(symbol);
-        const maxPortfolio = item.maxPortfolioFor35APY || 0;
+        
+        // If maxPortfolioFor35APY is null, use remaining capital as the cap (no artificial limit)
+        // This allows opportunities without calculated max to still be allocated capital
+        const maxPortfolio = item.maxPortfolioFor35APY ?? (remainingCapital * this.leverage);
         const maxCollateral = maxPortfolio / this.leverage;
 
         // CRITICAL: Only consider existing positions if they match the opportunity's exchange pair
@@ -1420,7 +1399,7 @@ export class FundingArbitrageStrategy {
         }
       }
 
-      const totalMaxPortfolio = opportunitiesWithMaxPortfolio.reduce(
+      const totalMaxPortfolio = ladderOpportunities.reduce(
         (sum, item) => sum + (item.maxPortfolioFor35APY || 0),
         0,
       );
@@ -1436,7 +1415,7 @@ export class FundingArbitrageStrategy {
           'No capital available to open any positions',
           undefined,
           undefined,
-          { availableOpportunities: opportunitiesWithMaxPortfolio.length },
+          { availableOpportunities: ladderOpportunities.length },
         );
         return result;
       }
