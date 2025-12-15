@@ -522,148 +522,76 @@ export class FundingRateAggregator {
             }
 
             const symbolOpportunities: ArbitrageOpportunity[] = [];
+            const mapping = this.getSymbolMapping(symbol);
 
-            // CORRECT LOGIC FOR FUNDING RATE ARBITRAGE (handles ALL cases):
+            // GENERATE ALL PROFITABLE EXCHANGE PAIRS
+            // Instead of just the single "best" pair, generate opportunities for ALL exchange combinations
+            // that have a positive spread. This allows the portfolio optimizer to choose based on
+            // available capital across exchanges, not just theoretical best returns.
+            //
+            // FUNDING RATE ARBITRAGE LOGIC:
             // - LONG position: negative funding rate = we RECEIVE funding (profit)
             // - SHORT position: positive funding rate = we RECEIVE funding (profit)
-            // 
-            // Cases we capture:
-            // 1. Both negative: LONG on lowest (most negative), SHORT on highest negative (least negative)
-            //    Example: -0.02% (LONG) vs -0.01% (SHORT) → spread = -0.01% - (-0.02%) = 0.01%
-            // 2. Both positive: LONG on lowest positive (least positive), SHORT on highest (most positive)
-            //    Example: 0.01% (LONG) vs 0.02% (SHORT) → spread = 0.02% - 0.01% = 0.01%
-            // 3. Mixed signs: LONG on lowest (negative), SHORT on highest (positive)
-            //    Example: -0.02% (LONG) vs 0.01% (SHORT) → spread = 0.01% - (-0.02%) = 0.03%
-            //
-            // Always: LONG on LOWEST rate, SHORT on HIGHEST rate
-            // Spread = shortRate - longRate (always positive when there's a difference)
+            // - We want: LONG on lower rate, SHORT on higher rate
+            // - Spread = shortRate - longRate (positive when profitable)
 
-            // Find best long opportunity (LOWEST rate overall - most negative = we receive funding)
-            const bestLong = comparison.rates.reduce((best, current) => 
-              current.currentRate < (best?.currentRate ?? Infinity) ? current : best
-            , null as ExchangeFundingRate | null);
-
-            // Find best short opportunity (HIGHEST rate overall - most positive = we receive funding)
-            const bestShort = comparison.rates.reduce((best, current) => 
-              current.currentRate > (best?.currentRate ?? -Infinity) ? current : best
-            , null as ExchangeFundingRate | null);
-
-            // If we have both long and short opportunities on different exchanges, create arbitrage
-            // This works for ALL cases: both negative, both positive, or mixed signs
-            if (bestLong && bestShort && bestLong.exchange !== bestShort.exchange) {
-              // Validate that both exchanges actually support this symbol for trading
-              const mapping = this.getSymbolMapping(symbol);
-              const longSymbolSupported = mapping && (
-                (bestLong.exchange === ExchangeType.ASTER && mapping.asterSymbol) ||
-                (bestLong.exchange === ExchangeType.LIGHTER && mapping.lighterMarketIndex !== undefined) ||
-                (bestLong.exchange === ExchangeType.HYPERLIQUID && mapping.hyperliquidSymbol)
-              );
-              const shortSymbolSupported = mapping && (
-                (bestShort.exchange === ExchangeType.ASTER && mapping.asterSymbol) ||
-                (bestShort.exchange === ExchangeType.LIGHTER && mapping.lighterMarketIndex !== undefined) ||
-                (bestShort.exchange === ExchangeType.HYPERLIQUID && mapping.hyperliquidSymbol)
-              );
-
-              if (!longSymbolSupported || !shortSymbolSupported) {
-                // Skip this opportunity - one or both exchanges don't support trading this symbol
-                // (even though they may have funding rate data)
-                this.logger.debug(
-                  `Skipping ${symbol} opportunity: ${bestLong.exchange} supported=${!!longSymbolSupported}, ${bestShort.exchange} supported=${!!shortSymbolSupported}`
-                );
-                return [];
+            // Check which exchanges support this symbol for trading
+            const supportedExchanges = comparison.rates.filter(rate => {
+              if (!mapping) return false;
+              switch (rate.exchange) {
+                case ExchangeType.ASTER:
+                  return !!mapping.asterSymbol;
+                case ExchangeType.LIGHTER:
+                  return mapping.lighterMarketIndex !== undefined;
+                case ExchangeType.HYPERLIQUID:
+                  return !!mapping.hyperliquidSymbol;
+                case ExchangeType.EXTENDED:
+                  return !!mapping.extendedSymbol;
+                default:
+                  return false;
               }
+            });
 
-              const longRate = Percentage.fromDecimal(bestLong.currentRate);
-              const shortRate = Percentage.fromDecimal(bestShort.currentRate);
-              // Spread = shortRate - longRate (positive when profitable)
-              // Examples:
-              //   Both negative: -0.01% - (-0.02%) = 0.01% ✓
-              //   Both positive: 0.02% - 0.01% = 0.01% ✓
-              //   Mixed: 0.01% - (-0.02%) = 0.03% ✓
-              const spread = shortRate.subtract(longRate);
-              
-              // Only create opportunity if spread is positive and meets minimum threshold
-              if (spread.toDecimal() >= minSpread) {
-                // Calculate expected annualized return
-                // Funding rates are typically hourly (e.g., 0.0013% per hour ≈ 10% annualized)
-                const periodsPerDay = 24; // Hourly funding periods
-                const periodsPerYear = periodsPerDay * 365;
-                const expectedReturn = Percentage.fromDecimal(spread.toDecimal() * periodsPerYear);
+            // Generate ALL profitable exchange pair combinations
+            // For n exchanges, this creates up to n*(n-1) opportunities (all pairs where long ≠ short)
+            for (const longExchangeRate of supportedExchanges) {
+              for (const shortExchangeRate of supportedExchanges) {
+                // Skip same exchange pairs
+                if (longExchangeRate.exchange === shortExchangeRate.exchange) continue;
 
-                symbolOpportunities.push({
-                  symbol,
-                  longExchange: bestLong.exchange, // Exchange with LOWEST rate (most negative)
-                  shortExchange: bestShort.exchange, // Exchange with HIGHEST rate (most positive)
-                  longRate,
-                  shortRate,
-                  spread: Percentage.fromDecimal(spread.toDecimal()), // Already positive when profitable
-                  expectedReturn,
-                  longMarkPrice: bestLong.markPrice > 0 ? bestLong.markPrice : undefined,
-                  shortMarkPrice: bestShort.markPrice > 0 ? bestShort.markPrice : undefined,
-                  longOpenInterest: bestLong.openInterest !== undefined && bestLong.openInterest > 0 ? bestLong.openInterest : undefined,
-                  shortOpenInterest: bestShort.openInterest !== undefined && bestShort.openInterest > 0 ? bestShort.openInterest : undefined,
-                  long24hVolume: bestLong.volume24h !== undefined && bestLong.volume24h > 0 ? bestLong.volume24h : undefined,
-                  short24hVolume: bestShort.volume24h !== undefined && bestShort.volume24h > 0 ? bestShort.volume24h : undefined,
-                  timestamp: new Date(),
-                });
-              }
-            }
+                // Calculate spread: shortRate - longRate
+                // Positive spread = profitable (we receive more on short than we pay on long)
+                const spreadDecimal = shortExchangeRate.currentRate - longExchangeRate.currentRate;
 
-            // Also check for simple spread arbitrage (long on highest, short on lowest)
-            if (comparison.highestRate && comparison.lowestRate && 
-                comparison.highestRate.exchange !== comparison.lowestRate.exchange) {
-              // Validate that both exchanges actually support this symbol for trading
-              const mapping = this.getSymbolMapping(symbol);
-              const highestSymbolSupported = mapping && (
-                (comparison.highestRate.exchange === ExchangeType.ASTER && mapping.asterSymbol) ||
-                (comparison.highestRate.exchange === ExchangeType.LIGHTER && mapping.lighterMarketIndex !== undefined) ||
-                (comparison.highestRate.exchange === ExchangeType.HYPERLIQUID && mapping.hyperliquidSymbol)
-              );
-              const lowestSymbolSupported = mapping && (
-                (comparison.lowestRate.exchange === ExchangeType.ASTER && mapping.asterSymbol) ||
-                (comparison.lowestRate.exchange === ExchangeType.LIGHTER && mapping.lighterMarketIndex !== undefined) ||
-                (comparison.lowestRate.exchange === ExchangeType.HYPERLIQUID && mapping.hyperliquidSymbol)
-              );
+                // Only create opportunity if spread meets minimum threshold
+                if (spreadDecimal >= minSpread) {
+                  const longRate = Percentage.fromDecimal(longExchangeRate.currentRate);
+                  const shortRate = Percentage.fromDecimal(shortExchangeRate.currentRate);
+                  const spread = Percentage.fromDecimal(spreadDecimal);
 
-              if (!highestSymbolSupported || !lowestSymbolSupported) {
-                // Skip this opportunity - one or both exchanges don't support trading this symbol
-                this.logger.debug(
-                  `Skipping ${symbol} spread opportunity: ${comparison.highestRate.exchange} supported=${!!highestSymbolSupported}, ${comparison.lowestRate.exchange} supported=${!!lowestSymbolSupported}`
-                );
-                return [];
-              }
+                  // Calculate expected annualized return
+                  // Funding rates are typically hourly (e.g., 0.0013% per hour ≈ 10% annualized)
+                  const periodsPerDay = 24; // Hourly funding periods
+                  const periodsPerYear = periodsPerDay * 365;
+                  const expectedReturn = Percentage.fromDecimal(spreadDecimal * periodsPerYear);
 
-              const longRate = Percentage.fromDecimal(comparison.highestRate.currentRate);
-              const shortRate = Percentage.fromDecimal(comparison.lowestRate.currentRate);
-              const spread = longRate.subtract(shortRate);
-              
-              if (spread.toDecimal() >= minSpread) {
-                // Funding rates are typically hourly
-                const periodsPerDay = 24; // Hourly funding periods
-                const periodsPerYear = periodsPerDay * 365;
-                const expectedReturn = Percentage.fromDecimal(spread.toDecimal() * periodsPerYear);
-
-                const highestRate = comparison.highestRate;
-                const lowestRate = comparison.lowestRate;
-                const highestMarkPrice = highestRate.markPrice > 0 ? highestRate.markPrice : undefined;
-                const lowestMarkPrice = lowestRate.markPrice > 0 ? lowestRate.markPrice : undefined;
-
-                symbolOpportunities.push({
-                  symbol,
-                  longExchange: highestRate.exchange,
-                  shortExchange: lowestRate.exchange,
-                  longRate,
-                  shortRate,
-                  spread: Percentage.fromDecimal(Math.abs(spread.toDecimal())),
-                  expectedReturn,
-                  longMarkPrice: highestMarkPrice,
-                  shortMarkPrice: lowestMarkPrice,
-                  longOpenInterest: highestRate.openInterest !== undefined && highestRate.openInterest > 0 ? highestRate.openInterest : undefined,
-                  shortOpenInterest: lowestRate.openInterest !== undefined && lowestRate.openInterest > 0 ? lowestRate.openInterest : undefined,
-                  long24hVolume: highestRate.volume24h !== undefined && highestRate.volume24h > 0 ? highestRate.volume24h : undefined,
-                  short24hVolume: lowestRate.volume24h !== undefined && lowestRate.volume24h > 0 ? lowestRate.volume24h : undefined,
-                  timestamp: new Date(),
-                });
+                  symbolOpportunities.push({
+                    symbol,
+                    longExchange: longExchangeRate.exchange,
+                    shortExchange: shortExchangeRate.exchange,
+                    longRate,
+                    shortRate,
+                    spread,
+                    expectedReturn,
+                    longMarkPrice: longExchangeRate.markPrice > 0 ? longExchangeRate.markPrice : undefined,
+                    shortMarkPrice: shortExchangeRate.markPrice > 0 ? shortExchangeRate.markPrice : undefined,
+                    longOpenInterest: longExchangeRate.openInterest !== undefined && longExchangeRate.openInterest > 0 ? longExchangeRate.openInterest : undefined,
+                    shortOpenInterest: shortExchangeRate.openInterest !== undefined && shortExchangeRate.openInterest > 0 ? shortExchangeRate.openInterest : undefined,
+                    long24hVolume: longExchangeRate.volume24h !== undefined && longExchangeRate.volume24h > 0 ? longExchangeRate.volume24h : undefined,
+                    short24hVolume: shortExchangeRate.volume24h !== undefined && shortExchangeRate.volume24h > 0 ? shortExchangeRate.volume24h : undefined,
+                    timestamp: new Date(),
+                  });
+                }
               }
             }
 
