@@ -26,6 +26,7 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
 
   constructor(
     private readonly costCalculator: CostCalculator,
+    @Inject('IHistoricalFundingRateService')
     private readonly historicalService: IHistoricalFundingRateService,
     private readonly config: StrategyConfig,
     @Optional()

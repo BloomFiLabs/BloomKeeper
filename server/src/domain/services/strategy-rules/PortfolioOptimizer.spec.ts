@@ -6,6 +6,7 @@ import {
   HistoricalFundingRateService,
   HistoricalMetrics,
 } from '../../../infrastructure/services/HistoricalFundingRateService';
+import { IHistoricalFundingRateService } from '../../ports/IHistoricalFundingRateService';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 
@@ -37,7 +38,7 @@ describe('PortfolioOptimizer', () => {
         PortfolioOptimizer,
         { provide: CostCalculator, useValue: mockCostCalculator },
         {
-          provide: HistoricalFundingRateService,
+          provide: 'IHistoricalFundingRateService',
           useValue: mockHistoricalService,
         },
         { provide: StrategyConfig, useValue: config },
