@@ -70,7 +70,11 @@ export class BalanceManager implements IBalanceManager {
           await this.profitTracker.getDeployableCapital(exchangeType);
         // Use the minimum of actual balance and deployable capital
         // This handles edge cases where balance might have changed
-        const result = Math.min(totalBalance, deployable);
+        // SAFETY: If deployable is 0 but we have balance, use total balance
+        // This handles cases where ProfitTracker hasn't synced deployedCapital yet
+        const result = deployable > 0 
+          ? Math.min(totalBalance, deployable)
+          : totalBalance; // Fallback to full balance if deployable is 0
         this.logger.debug(
           `Deployable capital for ${exchangeType}: $${result.toFixed(2)} ` +
             `(total: $${totalBalance.toFixed(2)}, profit-adjusted: $${deployable.toFixed(2)})`,
