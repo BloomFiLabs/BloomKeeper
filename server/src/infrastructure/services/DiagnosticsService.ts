@@ -819,10 +819,18 @@ export class DiagnosticsService {
       totalPositionMs += now - this.lastPositionCheckTime.getTime();
     }
     
-    // If no position time tracked, return 0
+    // If no position time tracked yet but we have single-leg time,
+    // single-leg time IS position time (can't be in single-leg without position)
+    // Use the greater of tracked position time or single-leg time as denominator
+    if (totalPositionMs < totalSingleLegMs) {
+      totalPositionMs = totalSingleLegMs;
+    }
+    
+    // If still no position time, return 0
     if (totalPositionMs === 0) return 0;
     
-    const percent = (totalSingleLegMs / totalPositionMs) * 100;
+    // Cap at 100% (can't spend more than 100% of position time in single-leg)
+    const percent = Math.min((totalSingleLegMs / totalPositionMs) * 100, 100);
     return Math.round(percent * 10) / 10; // Return as percentage with 1 decimal
   }
 
