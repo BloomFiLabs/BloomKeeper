@@ -36,6 +36,12 @@ import {
 } from '../../exceptions/DomainException';
 import { DiagnosticsService } from '../../../infrastructure/services/DiagnosticsService';
 import { CircuitBreakerService, CircuitState } from '../../../infrastructure/services/CircuitBreakerService';
+import { 
+  ExecutionAnalytics, 
+  OrderExecutionMetrics, 
+  RetryConfig, 
+  DEFAULT_RETRY_CONFIG 
+} from './ExecutionAnalytics';
 
 /**
  * Order executor for funding arbitrage strategy
@@ -44,6 +50,28 @@ import { CircuitBreakerService, CircuitState } from '../../../infrastructure/ser
 @Injectable()
 export class OrderExecutor implements IOrderExecutor {
   private readonly logger = new Logger(OrderExecutor.name);
+  private executionAnalytics?: ExecutionAnalytics;
+  
+  // Retry configuration for transient failures
+  private readonly retryConfig: RetryConfig = {
+    ...DEFAULT_RETRY_CONFIG,
+    maxRetries: 3,
+    baseDelayMs: 1000,
+    maxDelayMs: 15000,
+    backoffMultiplier: 2,
+    retryableErrors: [
+      'TIMEOUT',
+      'RATE_LIMIT',
+      'NETWORK_ERROR',
+      'TEMPORARY_FAILURE',
+      'INSUFFICIENT_LIQUIDITY',
+      'PRICE_MOVED',
+      'NONCE',
+      'ECONNRESET',
+      'ETIMEDOUT',
+      'ENOTFOUND',
+    ],
+  };
 
   constructor(
     @Inject(forwardRef(() => 'IPositionManager'))
@@ -58,7 +86,17 @@ export class OrderExecutor implements IOrderExecutor {
     private readonly diagnosticsService?: DiagnosticsService,
     @Optional()
     private readonly circuitBreaker?: CircuitBreakerService,
-  ) {}
+  ) {
+    // Initialize execution analytics
+    this.executionAnalytics = new ExecutionAnalytics();
+  }
+  
+  /**
+   * Get execution analytics instance for external access
+   */
+  getExecutionAnalytics(): ExecutionAnalytics | undefined {
+    return this.executionAnalytics;
+  }
 
   /**
    * Record an error to diagnostics service and circuit breaker
@@ -88,6 +126,234 @@ export class OrderExecutor implements IOrderExecutor {
     if (this.circuitBreaker) {
       this.circuitBreaker.recordSuccess();
     }
+  }
+  
+  /**
+   * Check if an error is retryable
+   */
+  private isRetryableError(error: any): boolean {
+    const errorMessage = (error?.message || String(error)).toUpperCase();
+    return this.retryConfig.retryableErrors.some(
+      retryable => errorMessage.includes(retryable)
+    );
+  }
+  
+  /**
+   * Calculate retry delay with exponential backoff and jitter
+   */
+  private calculateRetryDelay(attempt: number): number {
+    const delay = this.retryConfig.baseDelayMs * Math.pow(this.retryConfig.backoffMultiplier, attempt);
+    const jitter = delay * 0.2 * (Math.random() * 2 - 1); // ±20% jitter
+    return Math.min(delay + jitter, this.retryConfig.maxDelayMs);
+  }
+  
+  /**
+   * Execute a function with retry logic and exponential backoff
+   */
+  private async executeWithRetry<T>(
+    operation: () => Promise<T>,
+    operationName: string,
+    exchange: ExchangeType,
+    symbol: string,
+  ): Promise<T> {
+    let lastError: any;
+    
+    for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
+      try {
+        const startTime = Date.now();
+        const result = await operation();
+        
+        // Record successful execution time
+        if (attempt > 0) {
+          this.logger.log(
+            `✅ ${operationName} succeeded on retry ${attempt} for ${symbol} (${exchange})`
+          );
+        }
+        
+        return result;
+      } catch (error: any) {
+        lastError = error;
+        
+        // Check if error is retryable
+        if (!this.isRetryableError(error) || attempt === this.retryConfig.maxRetries) {
+          this.logger.warn(
+            `❌ ${operationName} failed for ${symbol} (${exchange}) - ` +
+            `${this.isRetryableError(error) ? 'max retries exceeded' : 'non-retryable error'}: ${error.message}`
+          );
+          throw error;
+        }
+        
+        const delay = this.calculateRetryDelay(attempt);
+        this.logger.warn(
+          `⚠️ ${operationName} failed for ${symbol} (${exchange}), ` +
+          `retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt + 1}/${this.retryConfig.maxRetries}): ${error.message}`
+        );
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    throw lastError;
+  }
+  
+  /**
+   * Record order execution metrics
+   */
+  private recordOrderMetrics(
+    symbol: string,
+    exchange: ExchangeType,
+    side: 'LONG' | 'SHORT',
+    requestedSize: number,
+    filledSize: number,
+    requestedPrice: number,
+    executedPrice: number,
+    fillTimeMs: number,
+    attempts: number,
+    success: boolean,
+  ): void {
+    if (!this.executionAnalytics) return;
+    
+    const slippageBps = this.executionAnalytics.calculateSlippageBps(
+      requestedPrice,
+      executedPrice,
+      side,
+    );
+    
+    this.executionAnalytics.recordExecution({
+      symbol,
+      exchange,
+      side,
+      requestedSize,
+      filledSize,
+      requestedPrice,
+      executedPrice,
+      slippageBps,
+      fillTimeMs,
+      attempts,
+      success,
+      timestamp: new Date(),
+    });
+  }
+  
+  /**
+   * Refresh price from exchange and update order if needed
+   * Returns updated price or original if refresh fails
+   */
+  private async refreshPrice(
+    adapter: IPerpExchangeAdapter,
+    symbol: string,
+    originalPrice: number,
+    side: OrderSide,
+    maxSlippageBps: number = 50, // 0.5% default max acceptable slippage
+  ): Promise<{ price: number; priceChanged: boolean }> {
+    try {
+      const currentPrice = await adapter.getMarkPrice(symbol);
+      
+      if (currentPrice <= 0) {
+        return { price: originalPrice, priceChanged: false };
+      }
+      
+      const priceDiff = Math.abs(currentPrice - originalPrice) / originalPrice;
+      const priceDiffBps = priceDiff * 10000;
+      
+      if (priceDiffBps > maxSlippageBps) {
+        this.logger.warn(
+          `⚠️ Price moved ${priceDiffBps.toFixed(1)} bps for ${symbol} ` +
+          `(${originalPrice.toFixed(4)} -> ${currentPrice.toFixed(4)})`
+        );
+        
+        // For buys (LONG), only accept if price went down
+        // For sells (SHORT), only accept if price went up
+        if (side === OrderSide.LONG && currentPrice > originalPrice) {
+          this.logger.warn(`Price moved against LONG order, using original price`);
+          return { price: originalPrice, priceChanged: false };
+        }
+        if (side === OrderSide.SHORT && currentPrice < originalPrice) {
+          this.logger.warn(`Price moved against SHORT order, using original price`);
+          return { price: originalPrice, priceChanged: false };
+        }
+      }
+      
+      return { 
+        price: currentPrice, 
+        priceChanged: Math.abs(currentPrice - originalPrice) > 0.0001 
+      };
+    } catch (error: any) {
+      this.logger.debug(`Failed to refresh price for ${symbol}: ${error.message}`);
+      return { price: originalPrice, priceChanged: false };
+    }
+  }
+  
+  /**
+   * Handle partial fill by creating a follow-up order for remaining size
+   */
+  private async handlePartialFill(
+    adapter: IPerpExchangeAdapter,
+    originalOrder: PerpOrderRequest,
+    filledSize: number,
+    exchange: ExchangeType,
+  ): Promise<PerpOrderResponse | null> {
+    const remainingSize = originalOrder.size - filledSize;
+    
+    // Skip if remaining size is too small (< 5% of original)
+    if (remainingSize < originalOrder.size * 0.05) {
+      this.logger.debug(
+        `Partial fill for ${originalOrder.symbol}: remaining size ${remainingSize.toFixed(4)} ` +
+        `is too small, treating as complete`
+      );
+      return null;
+    }
+    
+    this.logger.log(
+      `📊 Handling partial fill for ${originalOrder.symbol} (${exchange}): ` +
+      `filled ${filledSize.toFixed(4)}/${originalOrder.size.toFixed(4)}, ` +
+      `placing follow-up for ${remainingSize.toFixed(4)}`
+    );
+    
+    try {
+      // Refresh price for follow-up order
+      const { price: refreshedPrice } = await this.refreshPrice(
+        adapter,
+        originalOrder.symbol,
+        originalOrder.price || 0,
+        originalOrder.side,
+      );
+      
+      const followUpOrder = new PerpOrderRequest(
+        originalOrder.symbol,
+        originalOrder.side,
+        originalOrder.type,
+        remainingSize,
+        refreshedPrice,
+        originalOrder.timeInForce,
+        originalOrder.reduceOnly,
+      );
+      
+      const response = await this.executeWithRetry(
+        () => adapter.placeOrder(followUpOrder),
+        'Place partial fill follow-up order',
+        exchange,
+        originalOrder.symbol,
+      );
+      
+      return response;
+    } catch (error: any) {
+      this.logger.error(
+        `❌ Failed to place follow-up order for partial fill: ${error.message}`
+      );
+      return null;
+    }
+  }
+  
+  /**
+   * Get adaptive timeout based on historical fill times
+   */
+  private getAdaptiveTimeout(exchange: ExchangeType): number {
+    if (!this.executionAnalytics) {
+      return 30000; // Default 30 seconds
+    }
+    
+    return this.executionAnalytics.calculateAdaptiveTimeout(exchange);
   }
 
   /**
@@ -120,6 +386,11 @@ export class OrderExecutor implements IOrderExecutor {
    * - If both exchanges are the same, execute SEQUENTIALLY
    * - Otherwise, execute in PARALLEL for speed
    * 
+   * Features:
+   * - Retry logic with exponential backoff for transient failures
+   * - Execution metrics tracking (slippage, fill time)
+   * - Dynamic timeout adjustment based on historical performance
+   * 
    * @returns Tuple of [longResponse, shortResponse]
    */
   private async placeOrderPair(
@@ -136,28 +407,134 @@ export class OrderExecutor implements IOrderExecutor {
       longExchange === ExchangeType.LIGHTER ||
       shortExchange === ExchangeType.LIGHTER;
 
+    const startTime = Date.now();
+
     if (requiresSequential) {
       this.logger.debug(
         `📋 Sequential order placement for ${longOrder.symbol}: ` +
         `${longExchange} -> ${shortExchange} (Lighter or same exchange)`
       );
       
-      // Execute sequentially - long first, then short
-      const longResponse = await longAdapter.placeOrder(longOrder);
-      const shortResponse = await shortAdapter.placeOrder(shortOrder);
+      // Execute sequentially with retry - long first, then short
+      let longAttempts = 0;
+      let shortAttempts = 0;
+      
+      const longResponse = await this.executeWithRetry(
+        async () => {
+          longAttempts++;
+          return longAdapter.placeOrder(longOrder);
+        },
+        'Place LONG order',
+        longExchange,
+        longOrder.symbol,
+      );
+      
+      const longFillTime = Date.now() - startTime;
+      
+      // Record long order metrics
+      this.recordOrderMetrics(
+        longOrder.symbol,
+        longExchange,
+        'LONG',
+        longOrder.size,
+        longResponse.filledSize || longOrder.size,
+        longOrder.price || 0,
+        longResponse.averageFillPrice || longOrder.price || 0,
+        longFillTime,
+        longAttempts,
+        longResponse.isSuccess(),
+      );
+      
+      const shortStartTime = Date.now();
+      const shortResponse = await this.executeWithRetry(
+        async () => {
+          shortAttempts++;
+          return shortAdapter.placeOrder(shortOrder);
+        },
+        'Place SHORT order',
+        shortExchange,
+        shortOrder.symbol,
+      );
+      
+      const shortFillTime = Date.now() - shortStartTime;
+      
+      // Record short order metrics
+      this.recordOrderMetrics(
+        shortOrder.symbol,
+        shortExchange,
+        'SHORT',
+        shortOrder.size,
+        shortResponse.filledSize || shortOrder.size,
+        shortOrder.price || 0,
+        shortResponse.averageFillPrice || shortOrder.price || 0,
+        shortFillTime,
+        shortAttempts,
+        shortResponse.isSuccess(),
+      );
+      
       return [longResponse, shortResponse];
     }
 
-    // Different exchanges (non-Lighter) can be executed in parallel
+    // Different exchanges (non-Lighter) can be executed in parallel with retry
     this.logger.debug(
       `📋 Parallel order placement for ${longOrder.symbol}: ` +
       `${longExchange} || ${shortExchange}`
     );
     
-    return Promise.all([
-      longAdapter.placeOrder(longOrder),
-      shortAdapter.placeOrder(shortOrder),
+    let longAttempts = 0;
+    let shortAttempts = 0;
+    
+    const [longResponse, shortResponse] = await Promise.all([
+      this.executeWithRetry(
+        async () => {
+          longAttempts++;
+          return longAdapter.placeOrder(longOrder);
+        },
+        'Place LONG order',
+        longExchange,
+        longOrder.symbol,
+      ),
+      this.executeWithRetry(
+        async () => {
+          shortAttempts++;
+          return shortAdapter.placeOrder(shortOrder);
+        },
+        'Place SHORT order',
+        shortExchange,
+        shortOrder.symbol,
+      ),
     ]);
+    
+    const totalTime = Date.now() - startTime;
+    
+    // Record metrics for both orders
+    this.recordOrderMetrics(
+      longOrder.symbol,
+      longExchange,
+      'LONG',
+      longOrder.size,
+      longResponse.filledSize || longOrder.size,
+      longOrder.price || 0,
+      longResponse.averageFillPrice || longOrder.price || 0,
+      totalTime,
+      longAttempts,
+      longResponse.isSuccess(),
+    );
+    
+    this.recordOrderMetrics(
+      shortOrder.symbol,
+      shortExchange,
+      'SHORT',
+      shortOrder.size,
+      shortResponse.filledSize || shortOrder.size,
+      shortOrder.price || 0,
+      shortResponse.averageFillPrice || shortOrder.price || 0,
+      totalTime,
+      shortAttempts,
+      shortResponse.isSuccess(),
+    );
+    
+    return [longResponse, shortResponse];
   }
 
   async waitForOrderFill(

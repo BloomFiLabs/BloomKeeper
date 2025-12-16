@@ -189,6 +189,38 @@ export interface DiagnosticsResponse {
     pending: number;
     complete: number;
   };
+  executionAnalytics?: {
+    last1h: {
+      totalOrders: number;
+      successfulOrders: number;
+      failedOrders: number;
+      fillRate: number;
+      avgSlippageBps: number;
+      avgFillTimeMs: number;
+      p50FillTimeMs: number;
+      p95FillTimeMs: number;
+      avgAttempts: number;
+      partialFillRate: number;
+    };
+    last24h: {
+      totalOrders: number;
+      successfulOrders: number;
+      failedOrders: number;
+      fillRate: number;
+      avgSlippageBps: number;
+      avgFillTimeMs: number;
+      p50FillTimeMs: number;
+      p95FillTimeMs: number;
+      avgAttempts: number;
+      partialFillRate: number;
+    };
+    byExchange: Record<string, {
+      orders: number;
+      fillRate: number;
+      avgSlippageBps: number;
+      avgFillTimeMs: number;
+    }>;
+  };
 }
 
 /**
@@ -240,6 +272,7 @@ export class DiagnosticsService {
   private circuitBreaker?: CircuitBreakerService;
   private rateLimiter?: RateLimiterService;
   private positionStateRepo?: PositionStateRepository;
+  private executionAnalytics?: any; // ExecutionAnalytics type from OrderExecutor
 
   // Rewards data (set externally by RewardHarvester)
   private rewardsData: {
@@ -459,6 +492,13 @@ export class DiagnosticsService {
     this.positionStateRepo = repo;
   }
 
+  /**
+   * Set execution analytics reference for diagnostics
+   */
+  setExecutionAnalytics(analytics: any): void {
+    this.executionAnalytics = analytics;
+  }
+
   // ==================== Query Methods ====================
 
   /**
@@ -539,6 +579,7 @@ export class DiagnosticsService {
       circuitBreaker: this.getCircuitBreakerDiagnostics(),
       rateLimiter: this.getRateLimiterDiagnostics(),
       positionState: this.getPositionStateDiagnostics(),
+      executionAnalytics: this.getExecutionAnalyticsDiagnostics(),
     };
   }
 
@@ -604,6 +645,60 @@ export class DiagnosticsService {
       pending: counts.PENDING,
       complete: counts.COMPLETE,
     };
+  }
+
+  /**
+   * Get execution analytics diagnostics
+   */
+  private getExecutionAnalyticsDiagnostics(): DiagnosticsResponse['executionAnalytics'] {
+    if (!this.executionAnalytics) {
+      return undefined;
+    }
+
+    try {
+      const stats = this.executionAnalytics.getDiagnosticsStats();
+      
+      const formatStats = (s: any) => ({
+        totalOrders: s.totalOrders || 0,
+        successfulOrders: s.successfulOrders || 0,
+        failedOrders: s.failedOrders || 0,
+        fillRate: Math.round((s.fillRate || 0) * 10) / 10,
+        avgSlippageBps: Math.round((s.avgSlippageBps || 0) * 10) / 10,
+        avgFillTimeMs: Math.round(s.avgFillTimeMs || 0),
+        p50FillTimeMs: Math.round(s.p50FillTimeMs || 0),
+        p95FillTimeMs: Math.round(s.p95FillTimeMs || 0),
+        avgAttempts: Math.round((s.avgAttempts || 1) * 10) / 10,
+        partialFillRate: Math.round((s.partialFillRate || 0) * 10) / 10,
+      });
+
+      // Convert byExchange Map to Record
+      const byExchange: Record<string, {
+        orders: number;
+        fillRate: number;
+        avgSlippageBps: number;
+        avgFillTimeMs: number;
+      }> = {};
+
+      if (stats.last24h?.byExchange) {
+        for (const [exchange, data] of stats.last24h.byExchange) {
+          byExchange[exchange] = {
+            orders: data.orders || 0,
+            fillRate: Math.round((data.fillRate || 0) * 10) / 10,
+            avgSlippageBps: Math.round((data.avgSlippageBps || 0) * 10) / 10,
+            avgFillTimeMs: Math.round(data.avgFillTimeMs || 0),
+          };
+        }
+      }
+
+      return {
+        last1h: formatStats(stats.last1h || {}),
+        last24h: formatStats(stats.last24h || {}),
+        byExchange,
+      };
+    } catch (error: any) {
+      this.logger.warn(`Failed to get execution analytics: ${error.message}`);
+      return undefined;
+    }
   }
 
   // ==================== Private Helper Methods ====================
