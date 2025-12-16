@@ -129,6 +129,32 @@ export class OrderExecutor implements IOrderExecutor {
   }
   
   /**
+   * Record an order event to diagnostics
+   */
+  private recordOrderToDiagnostics(
+    orderId: string,
+    symbol: string,
+    exchange: ExchangeType,
+    side: 'LONG' | 'SHORT',
+    status: 'PLACED' | 'FILLED' | 'FAILED' | 'CANCELLED',
+    fillTimeMs?: number,
+    failReason?: string,
+  ): void {
+    if (this.diagnosticsService) {
+      this.diagnosticsService.recordOrder({
+        orderId,
+        symbol,
+        exchange,
+        side,
+        placedAt: new Date(),
+        status,
+        fillTimeMs,
+        failReason,
+      });
+    }
+  }
+  
+  /**
    * Check if an error is retryable
    */
   private isRetryableError(error: any): boolean {
@@ -445,6 +471,17 @@ export class OrderExecutor implements IOrderExecutor {
         longResponse.isSuccess(),
       );
       
+      // Record long order to diagnostics
+      this.recordOrderToDiagnostics(
+        longResponse.orderId || 'unknown',
+        longOrder.symbol,
+        longExchange,
+        'LONG',
+        longResponse.isSuccess() ? (longResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+        longFillTime,
+        longResponse.error,
+      );
+      
       const shortStartTime = Date.now();
       const shortResponse = await this.executeWithRetry(
         async () => {
@@ -470,6 +507,17 @@ export class OrderExecutor implements IOrderExecutor {
         shortFillTime,
         shortAttempts,
         shortResponse.isSuccess(),
+      );
+      
+      // Record short order to diagnostics
+      this.recordOrderToDiagnostics(
+        shortResponse.orderId || 'unknown',
+        shortOrder.symbol,
+        shortExchange,
+        'SHORT',
+        shortResponse.isSuccess() ? (shortResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+        shortFillTime,
+        shortResponse.error,
       );
       
       return [longResponse, shortResponse];
@@ -532,6 +580,27 @@ export class OrderExecutor implements IOrderExecutor {
       totalTime,
       shortAttempts,
       shortResponse.isSuccess(),
+    );
+    
+    // Record both orders to diagnostics (parallel execution)
+    this.recordOrderToDiagnostics(
+      longResponse.orderId || 'unknown',
+      longOrder.symbol,
+      longExchange,
+      'LONG',
+      longResponse.isSuccess() ? (longResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+      totalTime,
+      longResponse.error,
+    );
+    
+    this.recordOrderToDiagnostics(
+      shortResponse.orderId || 'unknown',
+      shortOrder.symbol,
+      shortExchange,
+      'SHORT',
+      shortResponse.isSuccess() ? (shortResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+      totalTime,
+      shortResponse.error,
     );
     
     return [longResponse, shortResponse];

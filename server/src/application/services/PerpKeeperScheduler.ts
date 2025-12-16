@@ -1652,6 +1652,27 @@ export class PerpKeeperScheduler implements OnModuleInit {
         return;
       }
 
+      // CRITICAL: Verify position still exists before attempting to close
+      // This prevents "No position exists" errors when position was already closed
+      const currentPositions = await adapter.getPositions();
+      const normalizeSymbol = (s: string) => s.replace('USDC', '').replace('USDT', '').replace('-PERP', '').replace('PERP', '').toUpperCase();
+      const normalizedSymbol = normalizeSymbol(position.symbol);
+      
+      const positionStillExists = currentPositions.some(p => {
+        const normalizedPosSymbol = normalizeSymbol(p.symbol);
+        return normalizedPosSymbol === normalizedSymbol && 
+               p.side === position.side && 
+               Math.abs(p.size) > 0.0001;
+      });
+      
+      if (!positionStillExists) {
+        this.logger.log(
+          `✅ Position ${position.symbol} (${position.side}) on ${position.exchangeType} ` +
+          `no longer exists - already closed or was stale data`
+        );
+        return;
+      }
+
       const closeSide = position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
       
       // Progressive price improvement: start with market, then try worse prices
