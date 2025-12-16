@@ -198,22 +198,34 @@ export class ProfitTracker implements OnModuleInit {
     }
   }
 
+  // List of active exchanges for parallel operations
+  private readonly ACTIVE_EXCHANGES = [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER];
+
   /**
-   * Refresh exchange balances
+   * Refresh exchange balances - fetches all exchanges in parallel
    */
   private async refreshExchangeBalances(): Promise<void> {
     if (!this.keeperService) {
       return;
     }
 
-    const exchanges = [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER];
-    
-    for (const exchangeType of exchanges) {
-      try {
-        const balance = await this.keeperService.getBalance(exchangeType);
-        this.exchangeBalances.set(exchangeType, balance);
-      } catch (error: any) {
-        this.logger.debug(`Failed to get balance for ${exchangeType}: ${error.message}`);
+    // Fetch all exchange balances in parallel
+    const results = await Promise.all(
+      this.ACTIVE_EXCHANGES.map(async (exchangeType) => {
+        try {
+          const balance = await this.keeperService!.getBalance(exchangeType);
+          return { exchangeType, balance, success: true };
+        } catch (error: any) {
+          this.logger.debug(`Failed to get balance for ${exchangeType}: ${error.message}`);
+          return { exchangeType, balance: 0, success: false };
+        }
+      })
+    );
+
+    // Update balances from successful fetches
+    for (const result of results) {
+      if (result.success) {
+        this.exchangeBalances.set(result.exchangeType, result.balance);
       }
     }
   }
@@ -482,11 +494,14 @@ export class ProfitTracker implements OnModuleInit {
     const totalDeployedCapital = this.getDeployedCapitalAmount();
     const totalAccruedProfit = await this.getTotalProfits();
     
-    const byExchange = new Map<ExchangeType, ExchangeProfitInfo>();
+    // Fetch all exchange profit info in parallel
+    const exchangeInfos = await Promise.all(
+      this.ACTIVE_EXCHANGES.map(exchangeType => this.getExchangeProfitInfo(exchangeType))
+    );
     
-    for (const exchangeType of [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER]) {
-      const info = await this.getExchangeProfitInfo(exchangeType);
-      byExchange.set(exchangeType, info);
+    const byExchange = new Map<ExchangeType, ExchangeProfitInfo>();
+    for (const info of exchangeInfos) {
+      byExchange.set(info.exchange, info);
     }
 
     return {

@@ -10,6 +10,7 @@ import {
   HistoricalMetrics,
   SpreadVolatilityMetrics,
 } from '../../domain/ports/IHistoricalFundingRateService';
+import { IFundingDataProvider } from '../../domain/ports/IFundingDataProvider';
 import axios from 'axios';
 
 // Re-export types for backward compatibility
@@ -36,13 +37,23 @@ export class HistoricalFundingRateService implements IHistoricalFundingRateServi
   
   // Refresh interval: every hour (aligned with funding rate payments)
   private refreshInterval: NodeJS.Timeout | null = null;
+  
+  // List of funding data providers for parallel fetching
+  private readonly fundingProviders: IFundingDataProvider[];
 
   constructor(
     private readonly hyperliquidProvider: HyperLiquidDataProvider,
     private readonly asterProvider: AsterFundingDataProvider,
     private readonly lighterProvider: LighterFundingDataProvider,
     private readonly aggregator: FundingRateAggregator,
-  ) {}
+  ) {
+    // Initialize providers array for parallel operations
+    this.fundingProviders = [
+      this.hyperliquidProvider,
+      this.asterProvider,
+      this.lighterProvider,
+    ];
+  }
 
   async onModuleInit() {
     // Backfill historical data from native APIs on startup
@@ -88,44 +99,35 @@ export class HistoricalFundingRateService implements IHistoricalFundingRateServi
         return;
       }
 
-      // Collect rates for each symbol/exchange pair
+      // Collect rates for each symbol - fetch all exchanges in parallel per symbol
       for (const symbol of symbols) {
         try {
-          // Hyperliquid
-          try {
-            const mapping = this.aggregator.getSymbolMapping(symbol);
-            const hyperliquidSymbol = mapping?.hyperliquidSymbol;
-            if (hyperliquidSymbol) {
-              const rate = await this.hyperliquidProvider.getCurrentFundingRate(hyperliquidSymbol);
-              this.addHistoricalDataPoint(symbol, ExchangeType.HYPERLIQUID, rate, timestamp);
-            }
-          } catch (err: any) {
-            this.logger.debug(`Failed to get Hyperliquid rate for ${symbol}: ${err.message}`);
-          }
+          const mapping = this.aggregator.getSymbolMapping(symbol);
+          if (!mapping) continue;
 
-          // Aster
-          try {
-            const mapping = this.aggregator.getSymbolMapping(symbol);
-            const asterSymbol = mapping?.asterSymbol;
-            if (asterSymbol) {
-              const rate = await this.asterProvider.getCurrentFundingRate(asterSymbol);
-              this.addHistoricalDataPoint(symbol, ExchangeType.ASTER, rate, timestamp);
+          // Fetch from all providers in parallel
+          const fetchPromises = this.fundingProviders.map(async (provider) => {
+            const exchangeType = provider.getExchangeType();
+            const exchangeSymbol = this.getExchangeSymbolFromMapping(mapping, exchangeType);
+            
+            if (exchangeSymbol === undefined) return;
+            
+            try {
+              const request = {
+                normalizedSymbol: symbol,
+                exchangeSymbol: String(exchangeSymbol),
+                marketIndex: typeof exchangeSymbol === 'number' ? exchangeSymbol : undefined,
+              };
+              const data = await provider.getFundingData(request);
+              if (data) {
+                this.addHistoricalDataPoint(symbol, exchangeType, data.currentRate, timestamp);
+              }
+            } catch (err: any) {
+              this.logger.debug(`Failed to get ${exchangeType} rate for ${symbol}: ${err.message}`);
             }
-          } catch (err: any) {
-            this.logger.debug(`Failed to get Aster rate for ${symbol}: ${err.message}`);
-          }
+          });
 
-          // Lighter
-          try {
-            const mapping = this.aggregator.getSymbolMapping(symbol);
-            const lighterMarketIndex = mapping?.lighterMarketIndex;
-            if (typeof lighterMarketIndex === 'number') {
-              const rate = await this.lighterProvider.getCurrentFundingRate(lighterMarketIndex);
-              this.addHistoricalDataPoint(symbol, ExchangeType.LIGHTER, rate, timestamp);
-            }
-          } catch (err: any) {
-            this.logger.debug(`Failed to get Lighter rate for ${symbol}: ${err.message}`);
-          }
+          await Promise.all(fetchPromises);
 
           // Small delay to avoid rate limits
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -163,6 +165,27 @@ export class HistoricalFundingRateService implements IHistoricalFundingRateServi
     });
 
     this.historicalData.set(key, dataPoints);
+  }
+
+  /**
+   * Get exchange symbol from mapping based on exchange type
+   */
+  private getExchangeSymbolFromMapping(
+    mapping: ReturnType<typeof this.aggregator.getSymbolMapping>,
+    exchangeType: ExchangeType,
+  ): string | number | undefined {
+    if (!mapping) return undefined;
+    
+    switch (exchangeType) {
+      case ExchangeType.HYPERLIQUID:
+        return mapping.hyperliquidSymbol;
+      case ExchangeType.ASTER:
+        return mapping.asterSymbol;
+      case ExchangeType.LIGHTER:
+        return mapping.lighterMarketIndex;
+      default:
+        return undefined;
+    }
   }
 
   /**

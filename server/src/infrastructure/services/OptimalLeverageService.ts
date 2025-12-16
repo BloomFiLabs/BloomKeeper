@@ -419,27 +419,32 @@ export class OptimalLeverageService implements IOptimalLeverageService {
   }
 
   /**
-   * Get leverage recommendation for all active symbols
+   * Get leverage recommendation for all active symbols - fetches all in parallel
    */
   async getAllRecommendations(): Promise<LeverageRecommendation[]> {
-    const recommendations: LeverageRecommendation[] = [];
-    
     // Get common trading symbols
     const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'PEPE', 'WIF', 'BONK'];
     const exchanges = [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER];
 
-    for (const symbol of symbols) {
-      for (const exchange of exchanges) {
+    // Build all symbol/exchange combinations
+    const combinations = symbols.flatMap(symbol => 
+      exchanges.map(exchange => ({ symbol, exchange }))
+    );
+
+    // Fetch all recommendations in parallel
+    const results = await Promise.all(
+      combinations.map(async ({ symbol, exchange }) => {
         try {
-          const rec = await this.calculateOptimalLeverage(symbol, exchange);
-          recommendations.push(rec);
+          return await this.calculateOptimalLeverage(symbol, exchange);
         } catch (error: any) {
           this.logger.debug(`Failed to get recommendation for ${symbol} on ${exchange}`);
+          return null;
         }
-      }
-    }
+      })
+    );
 
-    return recommendations;
+    // Filter out nulls (failed fetches)
+    return results.filter((rec): rec is LeverageRecommendation => rec !== null);
   }
 
   /**
