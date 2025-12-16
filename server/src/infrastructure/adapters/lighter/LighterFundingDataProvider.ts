@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { ApiClient } from '@reservoir0x/lighter-ts-sdk';
 import axios from 'axios';
 import { LighterWebSocketProvider } from './LighterWebSocketProvider';
+import { IFundingDataProvider, FundingRateData, FundingDataRequest } from '../../../domain/ports/IFundingDataProvider';
+import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
 
 interface LighterFundingRate {
   market_id: number;
@@ -22,7 +24,7 @@ interface LighterFundingRatesResponse {
  * Uses the funding-rates endpoint to fetch all rates at once and caches them
  */
 @Injectable()
-export class LighterFundingDataProvider implements OnModuleInit {
+export class LighterFundingDataProvider implements OnModuleInit, IFundingDataProvider {
   private readonly logger = new Logger(LighterFundingDataProvider.name);
   private readonly apiClient: ApiClient;
   private readonly baseUrl: string;
@@ -645,6 +647,64 @@ export class LighterFundingDataProvider implements OnModuleInit {
       this.logger.debug(`Failed to get 24h volume for Lighter market ${marketIndex}: ${error.message}`);
       return 0;
     }
+  }
+
+  // ============= IFundingDataProvider Implementation =============
+
+  getExchangeType(): ExchangeType {
+    return ExchangeType.LIGHTER;
+  }
+
+  /**
+   * Get all funding data for a symbol in a single optimized call
+   * Fetches current rate, predicted rate, mark price, OI, and volume together
+   */
+  async getFundingData(request: FundingDataRequest): Promise<FundingRateData | null> {
+    const marketIndex = request.marketIndex;
+    
+    if (marketIndex === undefined) {
+      this.logger.debug(`No market index for ${request.normalizedSymbol} on Lighter`);
+      return null;
+    }
+    
+    try {
+      // Fetch funding rate and OI/price in parallel
+      const [currentRate, oiAndPrice, volume] = await Promise.all([
+        this.getCurrentFundingRate(marketIndex),
+        this.getOpenInterestAndMarkPrice(marketIndex).catch(() => null),
+        this.get24hVolume(marketIndex).catch(() => undefined),
+      ]);
+
+      // If OI/price fetch failed, return null
+      if (!oiAndPrice) {
+        this.logger.debug(`Skipping Lighter for ${request.normalizedSymbol} - OI/price unavailable`);
+        return null;
+      }
+
+      return {
+        exchange: ExchangeType.LIGHTER,
+        symbol: request.normalizedSymbol,
+        currentRate,
+        predictedRate: currentRate, // Lighter doesn't provide predicted rate
+        markPrice: oiAndPrice.markPrice,
+        openInterest: oiAndPrice.openInterest,
+        volume24h: volume,
+        timestamp: new Date(),
+      };
+    } catch (error: any) {
+      this.logger.debug(`Failed to get Lighter funding data for market ${marketIndex}: ${error.message}`);
+      return null;
+    }
+  }
+
+  supportsSymbol(normalizedSymbol: string): boolean {
+    return true; // We'll rely on the symbol mapping to determine support
+  }
+
+  getExchangeSymbol(normalizedSymbol: string): number | undefined {
+    // This would need to be populated from getAvailableMarkets()
+    // For now, return undefined and let the aggregator handle the mapping
+    return undefined;
   }
 }
 

@@ -1,6 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { IFundingDataProvider } from '../../../domain/strategies/FundingRateStrategy';
+import { IFundingDataProvider as ILegacyFundingDataProvider } from '../../../domain/strategies/FundingRateStrategy';
+import { IFundingDataProvider, FundingRateData, FundingDataRequest } from '../../../domain/ports/IFundingDataProvider';
+import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
 import axios from 'axios';
 import { HyperLiquidWebSocketProvider } from './HyperLiquidWebSocketProvider';
 
@@ -37,7 +39,7 @@ interface HyperLiquidMetaAndAssetCtxs {
  * API Docs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api
  */
 @Injectable()
-export class HyperLiquidDataProvider implements IFundingDataProvider, OnModuleInit {
+export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFundingDataProvider, OnModuleInit {
   private readonly logger = new Logger(HyperLiquidDataProvider.name);
   private readonly API_URL = 'https://api.hyperliquid.xyz/info';
   
@@ -320,6 +322,60 @@ export class HyperLiquidDataProvider implements IFundingDataProvider, OnModuleIn
     }
 
     return index;
+  }
+
+  // ============= IFundingDataProvider Implementation =============
+
+  getExchangeType(): ExchangeType {
+    return ExchangeType.HYPERLIQUID;
+  }
+
+  /**
+   * Get all funding data for a symbol in a single optimized call
+   * Uses WebSocket cache when available for best performance
+   */
+  async getFundingData(request: FundingDataRequest): Promise<FundingRateData | null> {
+    const symbol = request.exchangeSymbol;
+    
+    try {
+      // Fetch all data in parallel for efficiency
+      const [currentRate, predictedRate, markPrice, openInterest, volume] = await Promise.all([
+        this.getCurrentFundingRate(symbol),
+        this.getPredictedFundingRate(symbol),
+        this.getMarkPrice(symbol),
+        this.getOpenInterest(symbol).catch(() => undefined),
+        this.get24hVolume(symbol).catch(() => undefined),
+      ]);
+
+      // If OI is required and unavailable, return null
+      if (openInterest === undefined) {
+        this.logger.debug(`Skipping Hyperliquid for ${symbol} - OI unavailable`);
+        return null;
+      }
+
+      return {
+        exchange: ExchangeType.HYPERLIQUID,
+        symbol: request.normalizedSymbol,
+        currentRate,
+        predictedRate,
+        markPrice,
+        openInterest,
+        volume24h: volume,
+        timestamp: new Date(),
+      };
+    } catch (error: any) {
+      this.logger.debug(`Failed to get Hyperliquid funding data for ${symbol}: ${error.message}`);
+      return null;
+    }
+  }
+
+  supportsSymbol(normalizedSymbol: string): boolean {
+    return true; // We'll rely on the symbol mapping to determine support
+  }
+
+  getExchangeSymbol(normalizedSymbol: string): string | undefined {
+    // Hyperliquid uses the normalized symbol directly (e.g., "ETH")
+    return normalizedSymbol;
   }
 }
 

@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
+import { IFundingDataProvider, FundingRateData, FundingDataRequest } from '../../../domain/ports/IFundingDataProvider';
+import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
 
 /**
  * AsterFundingDataProvider - Fetches funding rate data from Aster DEX
@@ -9,7 +11,7 @@ import axios, { AxiosInstance } from 'axios';
  * that may need adjustment based on actual API endpoints
  */
 @Injectable()
-export class AsterFundingDataProvider {
+export class AsterFundingDataProvider implements IFundingDataProvider {
   private readonly logger = new Logger(AsterFundingDataProvider.name);
   private readonly client: AxiosInstance;
   private readonly baseUrl: string;
@@ -177,6 +179,59 @@ export class AsterFundingDataProvider {
       // Return empty array instead of throwing to allow system to continue
       return [];
     }
+  }
+
+  // ============= IFundingDataProvider Implementation =============
+
+  getExchangeType(): ExchangeType {
+    return ExchangeType.ASTER;
+  }
+
+  /**
+   * Get all funding data for a symbol in a single optimized call
+   * Fetches current rate, predicted rate, mark price, and OI together
+   */
+  async getFundingData(request: FundingDataRequest): Promise<FundingRateData | null> {
+    const symbol = request.exchangeSymbol;
+    
+    try {
+      // Fetch all data in parallel for efficiency
+      const [currentRate, markPrice, openInterest] = await Promise.all([
+        this.getCurrentFundingRate(symbol),
+        this.getMarkPrice(symbol),
+        this.getOpenInterest(symbol).catch(() => undefined), // OI failure shouldn't block
+      ]);
+
+      // If OI is required and unavailable, return null
+      if (openInterest === undefined) {
+        this.logger.debug(`Skipping Aster for ${symbol} - OI unavailable`);
+        return null;
+      }
+
+      return {
+        exchange: ExchangeType.ASTER,
+        symbol: request.normalizedSymbol,
+        currentRate,
+        predictedRate: currentRate, // Aster doesn't provide predicted rate
+        markPrice,
+        openInterest,
+        volume24h: undefined, // Aster volume not yet implemented
+        timestamp: new Date(),
+      };
+    } catch (error: any) {
+      this.logger.debug(`Failed to get Aster funding data for ${symbol}: ${error.message}`);
+      return null;
+    }
+  }
+
+  supportsSymbol(normalizedSymbol: string): boolean {
+    // Aster uses USDT pairs
+    return true; // We'll rely on the symbol mapping to determine support
+  }
+
+  getExchangeSymbol(normalizedSymbol: string): string | undefined {
+    // Convert normalized symbol to Aster format (e.g., "ETH" -> "ETHUSDT")
+    return `${normalizedSymbol}USDT`;
   }
 }
 

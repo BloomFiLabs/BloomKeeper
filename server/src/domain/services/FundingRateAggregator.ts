@@ -340,214 +340,108 @@ export class FundingRateAggregator {
 
   /**
    * Get funding rates for a symbol across all exchanges
+   * Uses PARALLEL calls to all exchanges for maximum efficiency
    * @param symbol Normalized symbol (e.g., 'ETH', 'BTC')
    */
   async getFundingRates(symbol: string): Promise<ExchangeFundingRate[]> {
-    const rates: ExchangeFundingRate[] = [];
+    const mapping = this.getSymbolMapping(symbol);
+    
+    // Build parallel fetch promises for all exchanges
+    const fetchPromises: Promise<ExchangeFundingRate | null>[] = [];
 
-    // Get Aster funding rate
-    // Use exchange-specific symbol format from mapping
+    // Aster - uses getFundingData from IFundingDataProvider interface
+    if (mapping?.asterSymbol) {
+      fetchPromises.push(
+        this.asterProvider.getFundingData({
+          normalizedSymbol: symbol,
+          exchangeSymbol: mapping.asterSymbol,
+        }).catch((error: any) => {
+          this.logger.debug(`Failed to get Aster funding data for ${symbol}: ${error.message}`);
+          return null;
+        })
+      );
+    }
+
+    // Lighter - uses getFundingData from IFundingDataProvider interface
+    if (mapping?.lighterMarketIndex !== undefined) {
+      fetchPromises.push(
+        this.lighterProvider.getFundingData({
+          normalizedSymbol: symbol,
+          exchangeSymbol: mapping.lighterSymbol || symbol,
+          marketIndex: mapping.lighterMarketIndex,
+        }).catch((error: any) => {
+          this.logger.debug(`Failed to get Lighter funding data for ${symbol}: ${error.message}`);
+          return null;
+        })
+      );
+    }
+
+    // Hyperliquid - uses getFundingData from IFundingDataProvider interface
+    if (mapping?.hyperliquidSymbol) {
+      fetchPromises.push(
+        this.hyperliquidProvider.getFundingData({
+          normalizedSymbol: symbol,
+          exchangeSymbol: mapping.hyperliquidSymbol,
+        }).catch((error: any) => {
+          this.logger.debug(`Failed to get Hyperliquid funding data for ${symbol}: ${error.message}`);
+          return null;
+        })
+      );
+    }
+
+    // Extended - call individual methods (doesn't implement new interface yet)
+    if (this.extendedProvider && mapping?.extendedSymbol) {
+      fetchPromises.push(
+        this.fetchExtendedFundingData(symbol, mapping.extendedSymbol).catch((error: any) => {
+          this.logger.debug(`Failed to get Extended funding data for ${symbol}: ${error.message}`);
+          return null;
+        })
+      );
+    }
+
+    // Execute all fetches in parallel
+    const results = await Promise.all(fetchPromises);
+
+    // Filter out null results and return
+    return results.filter((rate): rate is ExchangeFundingRate => rate !== null);
+  }
+
+  /**
+   * Fetch Extended exchange funding data (legacy method until Extended implements IFundingDataProvider)
+   */
+  private async fetchExtendedFundingData(
+    normalizedSymbol: string,
+    extendedSymbol: string,
+  ): Promise<ExchangeFundingRate | null> {
+    if (!this.extendedProvider) return null;
+
     try {
-      const mapping = this.getSymbolMapping(symbol);
-      const asterSymbol = mapping?.asterSymbol;
-      
-      if (!asterSymbol) {
-        // No mapping - skip silently
-      } else {
-        const asterRate = await this.asterProvider.getCurrentFundingRate(asterSymbol);
-        const asterPredicted = await this.asterProvider.getPredictedFundingRate(asterSymbol);
-        const asterMarkPrice = await this.asterProvider.getMarkPrice(asterSymbol);
-        
-        // OI is critical - if it fails, log error and skip
-        try {
-        const asterOI = await this.asterProvider.getOpenInterest(asterSymbol);
+      const [currentRate, predictedRate, markPrice, openInterest] = await Promise.all([
+        this.extendedProvider.getCurrentFundingRate(extendedSymbol),
+        this.extendedProvider.getPredictedFundingRate(extendedSymbol),
+        this.extendedProvider.getMarkPrice(extendedSymbol),
+        this.extendedProvider.getOpenInterest(extendedSymbol).catch(() => undefined),
+      ]);
 
-        rates.push({
-          exchange: ExchangeType.ASTER,
-          symbol, // Use normalized symbol
-          currentRate: asterRate,
-          predictedRate: asterPredicted,
-          markPrice: asterMarkPrice,
-          openInterest: asterOI,
-          volume24h: undefined, // Aster volume not yet implemented
-          timestamp: new Date(),
-        });
-        } catch (oiError: any) {
-          const errorMsg = oiError.message || String(oiError);
-          this.logger.error(`Failed to get Aster OI for ${symbol} (${asterSymbol}): ${errorMsg}`);
-          this.logger.error(`  ⚠️  Skipping Aster for ${symbol} - OI is required but unavailable`);
-          // Don't add rate entry if OI is unavailable - it will show as N/A
-        }
+      if (openInterest === undefined) {
+        this.logger.debug(`Skipping Extended for ${normalizedSymbol} - OI unavailable`);
+        return null;
       }
+
+      return {
+        exchange: ExchangeType.EXTENDED,
+        symbol: normalizedSymbol,
+        currentRate,
+        predictedRate,
+        markPrice,
+        openInterest,
+        volume24h: undefined,
+        timestamp: new Date(),
+      };
     } catch (error: any) {
-      // Only log actual errors (not missing mappings or OI errors which are handled above)
-      if (error.message && !error.message.includes('not found') && !error.message.includes('No funding rates') && !error.message.includes('OI')) {
-        this.logger.error(`Failed to get Aster funding rate for ${symbol}: ${error.message}`);
-      }
+      this.logger.debug(`Failed to get Extended funding data for ${normalizedSymbol}: ${error.message}`);
+      return null;
     }
-
-    // Get Lighter funding rate
-    // Use exchange-specific market index from mapping
-    try {
-      const mapping = this.getSymbolMapping(symbol);
-      const marketIndex = mapping?.lighterMarketIndex;
-      
-      if (marketIndex === undefined) {
-        // No mapping - skip silently
-      } else {
-          const lighterRate = await this.lighterProvider.getCurrentFundingRate(marketIndex);
-          
-          // Try to get additional data
-          // OI is critical - if it fails, we should log the error and skip this exchange
-          try {
-            const lighterPredicted = await this.lighterProvider.getPredictedFundingRate(marketIndex);
-            
-            // Get OI and mark price together (more efficient - single API call)
-            const { openInterest: lighterOI, markPrice: lighterMarkPrice } = 
-              await this.lighterProvider.getOpenInterestAndMarkPrice(marketIndex);
-
-            // Try to get 24h volume
-            let lighterVolume: number | undefined;
-            try {
-              lighterVolume = await this.lighterProvider.get24hVolume(marketIndex);
-            } catch (volumeError) {
-              lighterVolume = undefined; // Volume is optional, don't fail on error
-            }
-
-            rates.push({
-              exchange: ExchangeType.LIGHTER,
-              symbol,
-              currentRate: lighterRate,
-              predictedRate: lighterPredicted,
-              markPrice: lighterMarkPrice,
-              openInterest: lighterOI,
-              volume24h: lighterVolume,
-              timestamp: new Date(),
-            });
-        } catch (dataError: any) {
-          // Log the error with full context
-          const errorMsg = dataError.message || String(dataError);
-          this.logger.debug(`Failed to get Lighter data for ${symbol} (market ${marketIndex}): ${errorMsg}`);
-          
-          // If it's an OI error, we can't proceed - OI is required for liquidity checks
-          if (errorMsg.includes('OI') || errorMsg.includes('open interest') || errorMsg.includes('openInterest')) {
-            this.logger.debug(`  ⚠️  Skipping Lighter for ${symbol} - OI is required but unavailable`);
-            // Don't add rate entry if OI is unavailable - it will show as N/A
-          } else {
-            // For other errors (mark price, predicted rate), we can still add with defaults
-          // Only add if funding rate is non-zero (indicates active market)
-          if (lighterRate !== 0) {
-              this.logger.debug(`  ⚠️  Adding Lighter rate for ${symbol} with default values (mark price/OI unavailable)`);
-            rates.push({
-              exchange: ExchangeType.LIGHTER,
-              symbol,
-              currentRate: lighterRate,
-              predictedRate: lighterRate, // Use current as predicted if we can't get predicted
-              markPrice: 0, // Will be skipped in execution if needed
-                openInterest: undefined, // Explicitly undefined so it shows as N/A
-              volume24h: undefined, // Volume unavailable in fallback mode
-              timestamp: new Date(),
-            });
-            }
-          }
-        }
-      }
-    } catch (error: any) {
-      // Only log actual errors (not missing mappings)
-      if (error.message && !error.message.includes('not found') && !error.message.includes('No funding rates')) {
-        this.logger.error(`Failed to get Lighter funding rate for ${symbol}: ${error.message}`);
-      }
-    }
-
-    // Get Hyperliquid funding rate
-    // Use exchange-specific symbol format from mapping
-    try {
-      const mapping = this.getSymbolMapping(symbol);
-      const hlSymbol = mapping?.hyperliquidSymbol;
-      
-      if (!hlSymbol) {
-        // No mapping - skip silently
-      } else {
-        const hlRate = await this.hyperliquidProvider.getCurrentFundingRate(hlSymbol);
-        const hlPredicted = await this.hyperliquidProvider.getPredictedFundingRate(hlSymbol);
-        const hlMarkPrice = await this.hyperliquidProvider.getMarkPrice(hlSymbol);
-        
-        // OI is critical - if it fails, log error and skip
-        try {
-        const hlOI = await this.hyperliquidProvider.getOpenInterest(hlSymbol);
-
-        // Try to get 24h volume
-        let hlVolume: number | undefined;
-        try {
-          hlVolume = await this.hyperliquidProvider.get24hVolume(hlSymbol);
-        } catch (volumeError) {
-          hlVolume = undefined; // Volume is optional, don't fail on error
-        }
-
-        rates.push({
-          exchange: ExchangeType.HYPERLIQUID,
-          symbol,
-          currentRate: hlRate,
-          predictedRate: hlPredicted,
-          markPrice: hlMarkPrice,
-          openInterest: hlOI,
-          volume24h: hlVolume,
-          timestamp: new Date(),
-        });
-        } catch (oiError: any) {
-          const errorMsg = oiError.message || String(oiError);
-          this.logger.error(`Failed to get Hyperliquid OI for ${symbol} (${hlSymbol}): ${errorMsg}`);
-          this.logger.error(`  ⚠️  Skipping Hyperliquid for ${symbol} - OI is required but unavailable`);
-          // Don't add rate entry if OI is unavailable - it will show as N/A
-        }
-      }
-    } catch (error: any) {
-      // Only log actual errors (not missing mappings or OI errors which are handled above)
-      if (error.message && !error.message.includes('not found') && !error.message.includes('No funding rates') && !error.message.includes('OI')) {
-        this.logger.error(`Failed to get Hyperliquid funding rate for ${symbol}: ${error.message}`);
-      }
-    }
-
-    // Get Extended funding rate
-    if (this.extendedProvider) {
-      try {
-        const mapping = this.getSymbolMapping(symbol);
-        const extendedSymbol = mapping?.extendedSymbol || symbol; // Fallback to normalized symbol
-        
-        // Try to get funding rate (Extended provider will handle symbol lookup internally)
-        const extendedRate = await this.extendedProvider.getCurrentFundingRate(extendedSymbol);
-        const extendedPredicted = await this.extendedProvider.getPredictedFundingRate(extendedSymbol);
-        const extendedMarkPrice = await this.extendedProvider.getMarkPrice(extendedSymbol);
-        
-        // OI is critical - if it fails, log error and skip
-        try {
-          const extendedOI = await this.extendedProvider.getOpenInterest(extendedSymbol);
-
-          rates.push({
-            exchange: ExchangeType.EXTENDED,
-            symbol,
-            currentRate: extendedRate,
-            predictedRate: extendedPredicted,
-            markPrice: extendedMarkPrice,
-            openInterest: extendedOI,
-            volume24h: undefined, // Extended volume not yet implemented
-            timestamp: new Date(),
-          });
-        } catch (oiError: any) {
-          const errorMsg = oiError.message || String(oiError);
-          this.logger.error(`Failed to get Extended OI for ${symbol}: ${errorMsg}`);
-          this.logger.error(`  ⚠️  Skipping Extended for ${symbol} - OI is required but unavailable`);
-          // Don't add rate entry if OI is unavailable
-        }
-      } catch (error: any) {
-        // Only log actual errors (not missing mappings or OI errors which are handled above)
-        if (error.message && !error.message.includes('not found') && !error.message.includes('No funding rates') && !error.message.includes('OI')) {
-          this.logger.error(`Failed to get Extended funding rate for ${symbol}: ${error.message}`);
-        }
-      }
-    }
-
-    return rates;
   }
 
   /**
