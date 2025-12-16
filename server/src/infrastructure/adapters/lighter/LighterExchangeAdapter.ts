@@ -38,7 +38,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   // Lighter uses sequential nonces - concurrent orders cause "invalid nonce" errors
   private orderMutex: Promise<void> = Promise.resolve();
   private orderMutexRelease: (() => void) | null = null;
-  
+
   // Nonce reset lock - blocks new orders during nonce resync
   private nonceResetInProgress = false;
   private nonceResetQueue: Array<() => void> = [];
@@ -217,19 +217,19 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         try {
           // Try to close gracefully if method exists
           if (typeof (this.signerClient as any).close === 'function') {
-            await (this.signerClient as any).close();
+        await (this.signerClient as any).close();
           }
           // Try to destroy if method exists
           if (typeof (this.signerClient as any).destroy === 'function') {
             await (this.signerClient as any).destroy();
           }
-        } catch (e) {
+      } catch (e) {
           // Ignore close/destroy errors - we're recreating anyway
-        }
       }
-      
+    }
+    
       // Step 2: Clear ALL client state to ensure fresh start
-      this.signerClient = null;
+    this.signerClient = null;
       this.orderApi = null;
       
       // Step 3: Wait for server state to settle
@@ -237,10 +237,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       const settleDelay = Math.min(1000 + (this.consecutiveNonceErrors * 500), 5000);
       this.logger.debug(`Waiting ${settleDelay}ms for server state to settle before re-initialization...`);
       await new Promise(resolve => setTimeout(resolve, settleDelay));
-      
+    
       // Step 4: Re-initialize with fresh client - this fetches fresh nonce from server
-      await this.ensureInitialized();
-      
+    await this.ensureInitialized();
+    
       const resetDuration = Date.now() - resetStartTime;
       this.logger.log(
         `✅ Lighter SignerClient recreated in ${resetDuration}ms - nonce re-synced from server`
@@ -927,26 +927,26 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             );
             // Don't continue - let it fall through to the final error handling
           } else {
-            this.logger.warn(
+          this.logger.warn(
               `⚠️ Lighter nonce error #${this.consecutiveNonceErrors} for ${request.symbol}: ${errorMsg}. ` +
               `Last successful order: ${timeSinceLastSuccess}. ` +
-              `Re-syncing nonce and retrying (attempt ${attempt + 1}/${maxRetries})...`
-            );
+            `Re-syncing nonce and retrying (attempt ${attempt + 1}/${maxRetries})...`
+          );
             this.recordError('LIGHTER_NONCE_ERROR', errorMsg, request.symbol, { 
               attempt: attempt + 1,
               consecutiveNonceErrors: this.consecutiveNonceErrors,
               lastSuccessfulOrder: timeSinceLastSuccess,
             });
-            
+          
             // Fully recreate the SignerClient to get a fresh nonce from the server
-            await this.resetSignerClient();
-            
+          await this.resetSignerClient();
+          
             // Progressive backoff for nonce errors with exponential increase
             // 1s, 2s, 4s, 8s... capped at 10s
             const nonceBackoff = Math.min(1000 * Math.pow(2, this.consecutiveNonceErrors - 1), 10000);
             this.logger.debug(`Waiting ${nonceBackoff}ms before retry after nonce error`);
             await new Promise(resolve => setTimeout(resolve, nonceBackoff));
-            continue;
+          continue;
           }
         }
         
@@ -1283,7 +1283,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         const orders = response.data.orders || [];
         if (orders.length === 0) {
           this.logger.warn(`No open orders found for ${symbol} - order may have already filled/cancelled`);
-          return true;
+      return true;
         }
         
         // Cancel all orders for this market (since we can't match by tx hash)

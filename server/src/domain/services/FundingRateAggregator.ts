@@ -84,7 +84,7 @@ export class FundingRateAggregator {
   private symbolMappings: Map<string, ExchangeSymbolMapping> = new Map(); // normalizedSymbol -> mapping
   private useCachedSymbols: boolean = true; // Use cached symbols by default for faster startup
   
-  // Funding data providers - used for parallel fetching
+  // List of all funding data providers for parallel fetching
   private readonly fundingProviders: IFundingDataProvider[];
 
   constructor(
@@ -95,12 +95,17 @@ export class FundingRateAggregator {
     @Optional() private readonly lighterWsProvider?: any, // LighterWebSocketProvider (optional to avoid circular dependency)
     @Optional() private readonly extendedProvider?: ExtendedFundingDataProvider,
   ) {
-    // Register all funding providers for parallel fetching
+    // Initialize funding providers list (all implement IFundingDataProvider)
     this.fundingProviders = [
       this.asterProvider,
       this.lighterProvider,
       this.hyperliquidProvider,
     ];
+    
+    // Add extended provider if available
+    if (this.extendedProvider) {
+      // Extended provider doesn't implement IFundingDataProvider yet, handle separately
+    }
     
     // Try to load cached symbols on construction
     this.loadCachedSymbols();
@@ -350,7 +355,7 @@ export class FundingRateAggregator {
   }
 
   /**
-   * Build funding data request for a provider based on symbol mapping
+   * Build a FundingDataRequest for a provider based on symbol mapping
    * Returns null if the provider doesn't support this symbol
    */
   private buildFundingRequest(
@@ -360,9 +365,11 @@ export class FundingRateAggregator {
   ): FundingDataRequest | null {
     if (!mapping) return null;
 
-    switch (provider.getExchangeType()) {
+    const exchangeType = provider.getExchangeType();
+    
+    switch (exchangeType) {
       case ExchangeType.ASTER:
-        return mapping.asterSymbol
+        return mapping.asterSymbol 
           ? { normalizedSymbol: symbol, exchangeSymbol: mapping.asterSymbol }
           : null;
       case ExchangeType.LIGHTER:
@@ -390,12 +397,12 @@ export class FundingRateAggregator {
   async getFundingRates(symbol: string): Promise<ExchangeFundingRate[]> {
     const mapping = this.getSymbolMapping(symbol);
 
-    // Build parallel fetch promises for all registered providers
+    // Build parallel fetch promises for all providers that support this symbol
     const fetchPromises = this.fundingProviders
-      .map((provider) => {
+      .map(provider => {
         const request = this.buildFundingRequest(provider, symbol, mapping);
         if (!request) return null;
-
+        
         return provider.getFundingData(request).catch((error: any) => {
           this.logger.debug(`Failed to get ${provider.getExchangeType()} funding data for ${symbol}: ${error.message}`);
           return null;
