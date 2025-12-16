@@ -648,11 +648,35 @@ export class PerpKeeperPerformanceLogger implements IPerpKeeperPerformanceLogger
 
     if (runtimeDays === 0) return 0;
 
-    // Calculate daily return
+    // IMPORTANT: Don't extrapolate from very short periods - results are unreliable
+    // Require at least 1 hour (1/24 day) of runtime for APY calculation
+    // For shorter periods, show the raw return rate without annualization
+    const MIN_DAYS_FOR_APY = 1 / 24; // 1 hour
+    
+    if (runtimeDays < MIN_DAYS_FOR_APY) {
+      // For very short periods, just show the current return rate (not annualized)
+      // This prevents misleading 100,000%+ APY numbers
+      const rawReturn = (totalFunding / capitalDeployed) * 100;
+      this.logger.debug(
+        `Runtime too short for APY (${(runtimeDays * 24 * 60).toFixed(1)}min) - showing raw return: ${rawReturn.toFixed(2)}%`
+      );
+      return rawReturn;
+    }
+
+    // Calculate daily return and annualize
     const dailyReturn = totalFunding / capitalDeployed / runtimeDays;
     
-    // Annualize
-    const annualizedAPY = dailyReturn * 365 * 100; // Convert to percentage
+    // Cap APY at reasonable maximum to prevent misleading numbers
+    // Even the best funding arb strategies rarely exceed 500% APY sustainably
+    const MAX_REASONABLE_APY = 1000; // 1000% APY cap
+    const annualizedAPY = Math.min(dailyReturn * 365 * 100, MAX_REASONABLE_APY);
+    
+    if (dailyReturn * 365 * 100 > MAX_REASONABLE_APY) {
+      this.logger.warn(
+        `Calculated APY (${(dailyReturn * 365 * 100).toFixed(0)}%) exceeds cap, showing ${MAX_REASONABLE_APY}%. ` +
+        `This may indicate insufficient runtime (${(runtimeDays * 24).toFixed(1)}h) for accurate extrapolation.`
+      );
+    }
 
     return annualizedAPY;
   }

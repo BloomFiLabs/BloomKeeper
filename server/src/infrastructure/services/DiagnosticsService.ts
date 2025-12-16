@@ -134,7 +134,16 @@ export interface DiagnosticsResponse {
   };
   singleLegs: {
     active: ActiveSingleLeg[];
-    stats: { last1h: number; last24h: number; avgResolutionMin: number };
+    stats: { 
+      last1h: number; 
+      last24h: number; 
+      avgResolutionMin: number;
+      // Single-leg rate: percentage of executions that resulted in single-leg
+      singleLegRate1h: number; // e.g., 0.15 = 15% of executions had single-leg
+      singleLegRate24h: number;
+      // Time spent in single-leg state as percentage of total position time
+      singleLegTimePercent24h: number;
+    };
   };
   errors: {
     total: { last1h: number; last24h: number };
@@ -482,6 +491,11 @@ export class DiagnosticsService {
           last1h: stats1h.singleLegs.started,
           last24h: stats24h.singleLegs.started,
           avgResolutionMin: this.calculateAvgResolutionTime(),
+          // Single-leg rate: percentage of executions that resulted in single-leg
+          singleLegRate1h: this.calculateSingleLegRate(stats1h),
+          singleLegRate24h: this.calculateSingleLegRate(stats24h),
+          // Time spent in single-leg state as percentage of total position time
+          singleLegTimePercent24h: this.calculateSingleLegTimePercent(),
         },
       },
       errors: {
@@ -742,6 +756,50 @@ export class DiagnosticsService {
     
     if (allTimes.length === 0) return 0;
     return Math.round((allTimes.reduce((a, b) => a + b, 0) / allTimes.length) * 10) / 10;
+  }
+
+  /**
+   * Calculate single-leg rate: percentage of executions that resulted in single-leg
+   * A single-leg occurs when one side of a delta-neutral position fails to fill
+   */
+  private calculateSingleLegRate(stats: { orders: { placed: number }; singleLegs: { started: number } }): number {
+    // Each execution attempt places 2 orders (long + short)
+    // So number of executions = placed / 2
+    const executions = Math.floor(stats.orders.placed / 2);
+    if (executions === 0) return 0;
+    
+    // Single-leg rate = single-legs / executions
+    const rate = stats.singleLegs.started / executions;
+    return Math.round(rate * 1000) / 10; // Return as percentage with 1 decimal, e.g., 15.5%
+  }
+
+  /**
+   * Calculate percentage of time spent in single-leg state
+   * This measures how much of our position time is exposed to directional risk
+   */
+  private calculateSingleLegTimePercent(): number {
+    // Sum up all resolution times (time spent in single-leg state)
+    let totalSingleLegMinutes = 0;
+    for (const bucket of this.hourlyBuckets.values()) {
+      totalSingleLegMinutes += bucket.singleLegs.resolutionTimesMin.reduce((a, b) => a + b, 0);
+    }
+    
+    // Also count time for currently active single-legs
+    const now = Date.now();
+    for (const sl of this.activeSingleLegs.values()) {
+      totalSingleLegMinutes += (now - sl.startedAt.getTime()) / 60000;
+    }
+    
+    // Calculate total position time (24h = 1440 minutes, but we only count when we have positions)
+    // For simplicity, use uptime as the denominator
+    const uptimeMinutes = (now - this.startTime.getTime()) / 60000;
+    if (uptimeMinutes === 0) return 0;
+    
+    // Cap at 24h worth of data
+    const maxMinutes = Math.min(uptimeMinutes, 24 * 60);
+    
+    const percent = (totalSingleLegMinutes / maxMinutes) * 100;
+    return Math.round(percent * 10) / 10; // Return as percentage with 1 decimal
   }
 
   private getErrorsByType(stats: any): Record<string, { count: number; last: string }> {

@@ -43,6 +43,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
   private nonceResetInProgress = false;
   private nonceResetQueue: Array<() => void> = [];
   private readonly NONCE_RESET_TIMEOUT_MS = 5000; // 5 second timeout for waiting on current order
+  
+  // Track consecutive nonce errors for debugging
+  private consecutiveNonceErrors = 0;
+  private lastSuccessfulOrderTime: Date | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -164,14 +168,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
     this.logger.warn('🔄 Resetting Lighter SignerClient to re-sync nonce...');
     
     try {
-      // Wait for current order to complete (with timeout)
-      // This prevents resetting while an order is in-flight
-      const currentOrderPromise = this.orderMutex;
-      const timeoutPromise = new Promise<void>(resolve => 
-        setTimeout(resolve, this.NONCE_RESET_TIMEOUT_MS)
-      );
-      
-      await Promise.race([currentOrderPromise, timeoutPromise]);
+      // NOTE: This method is called from within placeOrderInternal which already holds the mutex.
+      // We do NOT wait for the mutex here - we already have exclusive access.
+      // The nonceResetInProgress flag will block any NEW orders from acquiring the mutex
+      // until we're done resetting.
       
       // Close existing client if it has a close method
       if (this.signerClient && typeof (this.signerClient as any).close === 'function') {
@@ -185,10 +185,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
       // Clear the client to force re-initialization
       this.signerClient = null;
       
-      // Re-initialize
+      // Re-initialize - this fetches fresh nonce from server
       await this.ensureInitialized();
       
-      this.logger.log('✅ Lighter SignerClient reset complete');
+      this.logger.log('✅ Lighter SignerClient reset complete - nonce re-synced from server');
     } finally {
       // Release all waiting operations
       this.nonceResetInProgress = false;
@@ -508,6 +508,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
               this.logger.warn(`Transaction wait failed: ${waitError.message}`);
             }
             
+            // Track successful order - reset consecutive nonce error counter
+            this.consecutiveNonceErrors = 0;
+            this.lastSuccessfulOrderTime = new Date();
+            
             return new PerpOrderResponse(
               hash,
               OrderStatus.SUBMITTED,
@@ -704,6 +708,11 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
 
         // Order is resting on the book (or may have been canceled - will be checked in waitForOrderFill)
         // Mark as SUBMITTED - caller should verify via waitForOrderFill
+        
+        // Track successful order - reset consecutive nonce error counter
+        this.consecutiveNonceErrors = 0;
+        this.lastSuccessfulOrderTime = new Date();
+        
         return new PerpOrderResponse(
           orderId,
           OrderStatus.SUBMITTED,
@@ -751,17 +760,29 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter {
         
         // Nonce errors - reset client and retry
         if (isNonceError && attempt < maxRetries - 1) {
+          this.consecutiveNonceErrors++;
+          const timeSinceLastSuccess = this.lastSuccessfulOrderTime 
+            ? `${Math.round((Date.now() - this.lastSuccessfulOrderTime.getTime()) / 1000)}s ago`
+            : 'never';
+          
           this.logger.warn(
-            `⚠️ Lighter nonce error for ${request.symbol}: ${errorMsg}. ` +
+            `⚠️ Lighter nonce error #${this.consecutiveNonceErrors} for ${request.symbol}: ${errorMsg}. ` +
+            `Last successful order: ${timeSinceLastSuccess}. ` +
             `Re-syncing nonce and retrying (attempt ${attempt + 1}/${maxRetries})...`
           );
-          this.recordError('LIGHTER_NONCE_ERROR', errorMsg, request.symbol, { attempt: attempt + 1 });
+          this.recordError('LIGHTER_NONCE_ERROR', errorMsg, request.symbol, { 
+            attempt: attempt + 1,
+            consecutiveNonceErrors: this.consecutiveNonceErrors,
+            lastSuccessfulOrder: timeSinceLastSuccess,
+          });
           
           // Reset the SignerClient to get a fresh nonce from the server
           await this.resetSignerClient();
           
-          // Wait a bit before retrying
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          // Progressive backoff for nonce errors: 1s, 2s, 3s...
+          const nonceBackoff = Math.min(1000 * (this.consecutiveNonceErrors), 5000);
+          this.logger.debug(`Waiting ${nonceBackoff}ms before retry after nonce error`);
+          await new Promise(resolve => setTimeout(resolve, nonceBackoff));
           continue;
         }
         
