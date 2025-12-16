@@ -6,6 +6,7 @@ import { LighterFundingDataProvider } from '../../infrastructure/adapters/lighte
 import { HyperLiquidDataProvider } from '../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider';
 import { ExtendedFundingDataProvider } from '../../infrastructure/adapters/extended/ExtendedFundingDataProvider';
 import { HyperLiquidWebSocketProvider } from '../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider';
+import { IFundingDataProvider, FundingDataRequest } from '../ports/IFundingDataProvider';
 import * as cliProgress from 'cli-progress';
 
 /**
@@ -82,6 +83,9 @@ export class FundingRateAggregator {
   private readonly logger = new Logger(FundingRateAggregator.name);
   private symbolMappings: Map<string, ExchangeSymbolMapping> = new Map(); // normalizedSymbol -> mapping
   private useCachedSymbols: boolean = true; // Use cached symbols by default for faster startup
+  
+  // Funding data providers - used for parallel fetching
+  private readonly fundingProviders: IFundingDataProvider[];
 
   constructor(
     private readonly asterProvider: AsterFundingDataProvider,
@@ -91,6 +95,13 @@ export class FundingRateAggregator {
     @Optional() private readonly lighterWsProvider?: any, // LighterWebSocketProvider (optional to avoid circular dependency)
     @Optional() private readonly extendedProvider?: ExtendedFundingDataProvider,
   ) {
+    // Register all funding providers for parallel fetching
+    this.fundingProviders = [
+      this.asterProvider,
+      this.lighterProvider,
+      this.hyperliquidProvider,
+    ];
+    
     // Try to load cached symbols on construction
     this.loadCachedSymbols();
   }
@@ -339,57 +350,60 @@ export class FundingRateAggregator {
   }
 
   /**
+   * Build funding data request for a provider based on symbol mapping
+   * Returns null if the provider doesn't support this symbol
+   */
+  private buildFundingRequest(
+    provider: IFundingDataProvider,
+    symbol: string,
+    mapping: ExchangeSymbolMapping | undefined,
+  ): FundingDataRequest | null {
+    if (!mapping) return null;
+
+    switch (provider.getExchangeType()) {
+      case ExchangeType.ASTER:
+        return mapping.asterSymbol
+          ? { normalizedSymbol: symbol, exchangeSymbol: mapping.asterSymbol }
+          : null;
+      case ExchangeType.LIGHTER:
+        return mapping.lighterMarketIndex !== undefined
+          ? { normalizedSymbol: symbol, exchangeSymbol: mapping.lighterSymbol || symbol, marketIndex: mapping.lighterMarketIndex }
+          : null;
+      case ExchangeType.HYPERLIQUID:
+        return mapping.hyperliquidSymbol
+          ? { normalizedSymbol: symbol, exchangeSymbol: mapping.hyperliquidSymbol }
+          : null;
+      case ExchangeType.EXTENDED:
+        return mapping.extendedSymbol
+          ? { normalizedSymbol: symbol, exchangeSymbol: mapping.extendedSymbol }
+          : null;
+      default:
+        return null;
+    }
+  }
+
+  /**
    * Get funding rates for a symbol across all exchanges
    * Uses PARALLEL calls to all exchanges for maximum efficiency
    * @param symbol Normalized symbol (e.g., 'ETH', 'BTC')
    */
   async getFundingRates(symbol: string): Promise<ExchangeFundingRate[]> {
     const mapping = this.getSymbolMapping(symbol);
-    
-    // Build parallel fetch promises for all exchanges
-    const fetchPromises: Promise<ExchangeFundingRate | null>[] = [];
 
-    // Aster - uses getFundingData from IFundingDataProvider interface
-    if (mapping?.asterSymbol) {
-      fetchPromises.push(
-        this.asterProvider.getFundingData({
-          normalizedSymbol: symbol,
-          exchangeSymbol: mapping.asterSymbol,
-        }).catch((error: any) => {
-          this.logger.debug(`Failed to get Aster funding data for ${symbol}: ${error.message}`);
+    // Build parallel fetch promises for all registered providers
+    const fetchPromises = this.fundingProviders
+      .map((provider) => {
+        const request = this.buildFundingRequest(provider, symbol, mapping);
+        if (!request) return null;
+
+        return provider.getFundingData(request).catch((error: any) => {
+          this.logger.debug(`Failed to get ${provider.getExchangeType()} funding data for ${symbol}: ${error.message}`);
           return null;
-        })
-      );
-    }
+        });
+      })
+      .filter((p): p is Promise<ExchangeFundingRate | null> => p !== null);
 
-    // Lighter - uses getFundingData from IFundingDataProvider interface
-    if (mapping?.lighterMarketIndex !== undefined) {
-      fetchPromises.push(
-        this.lighterProvider.getFundingData({
-          normalizedSymbol: symbol,
-          exchangeSymbol: mapping.lighterSymbol || symbol,
-          marketIndex: mapping.lighterMarketIndex,
-        }).catch((error: any) => {
-          this.logger.debug(`Failed to get Lighter funding data for ${symbol}: ${error.message}`);
-          return null;
-        })
-      );
-    }
-
-    // Hyperliquid - uses getFundingData from IFundingDataProvider interface
-    if (mapping?.hyperliquidSymbol) {
-      fetchPromises.push(
-        this.hyperliquidProvider.getFundingData({
-          normalizedSymbol: symbol,
-          exchangeSymbol: mapping.hyperliquidSymbol,
-        }).catch((error: any) => {
-          this.logger.debug(`Failed to get Hyperliquid funding data for ${symbol}: ${error.message}`);
-          return null;
-        })
-      );
-    }
-
-    // Extended - call individual methods (doesn't implement new interface yet)
+    // Add Extended provider separately (doesn't implement IFundingDataProvider yet)
     if (this.extendedProvider && mapping?.extendedSymbol) {
       fetchPromises.push(
         this.fetchExtendedFundingData(symbol, mapping.extendedSymbol).catch((error: any) => {
@@ -399,10 +413,8 @@ export class FundingRateAggregator {
       );
     }
 
-    // Execute all fetches in parallel
+    // Execute all fetches in parallel and filter out nulls
     const results = await Promise.all(fetchPromises);
-
-    // Filter out null results and return
     return results.filter((rate): rate is ExchangeFundingRate => rate !== null);
   }
 
