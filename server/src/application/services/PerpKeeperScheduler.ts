@@ -7,6 +7,7 @@ import { PerpKeeperService } from './PerpKeeperService';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import { PerpOrderRequest, OrderSide, OrderType, TimeInForce, OrderStatus } from '../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../domain/entities/PerpPosition';
+import { ArbitrageOpportunity } from '../../domain/services/FundingRateAggregator';
 import { Contract, JsonRpcProvider, Wallet, formatUnits } from 'ethers';
 import * as cliProgress from 'cli-progress';
 import type { IOptimalLeverageService, LeverageAlert } from '../../domain/ports/IOptimalLeverageService';
@@ -535,184 +536,23 @@ export class PerpKeeperScheduler implements OnModuleInit {
       // Filter out blacklisted symbols before finding opportunities (defensive check)
       const filteredSymbols = symbols.filter(s => !this.isBlacklisted(s));
 
-      // Find opportunities across ALL discovered assets
-      // Enable perp-spot if configured
-      const includePerpSpot = this.configService.get<string>('PERP_SPOT_ENABLED') !== 'false';
-      const opportunities = await this.orchestrator.findArbitrageOpportunities(
-        filteredSymbols,
-        this.minSpread,
-        false, // Hide progress bar
-        includePerpSpot,
-      );
+      // Find and filter opportunities
+      const filteredOpportunities = await this.findAndFilterOpportunities(filteredSymbols);
 
-      // Filter out any opportunities for blacklisted symbols (defensive check)
-      const filteredOpportunities = opportunities.filter(
-        opp => !this.isBlacklisted(opp.symbol)
-      );
+      // Handle existing positions (single-leg detection, closing, etc.)
+      await this.handleExistingPositions();
 
-      // Removed opportunities count log - execution logs will show results
+      // Rebalance exchange balances based on opportunities
+      await this.rebalanceIfNeeded(filteredOpportunities);
 
-      // STEP 1: Close all existing positions to free up margin for rebalancing
-      try {
-        const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
-        // Filter out positions with very small sizes (likely rounding errors or stale data)
-        const allPositions = positionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
-        if (allPositions.length > 0) {
-          // CRITICAL: Detect single-leg positions first (positions without matching pair on another exchange)
-          const singleLegPositions = this.detectSingleLegPositions(allPositions);
-          if (singleLegPositions.length > 0) {
-            this.logger.warn(
-              `⚠️ Detected ${singleLegPositions.length} single-leg position(s). Attempting to open missing side...`,
-            );
-            
-            // Try to open missing side for each single-leg position
-            for (const position of singleLegPositions) {
-              const retrySuccess = await this.tryOpenMissingSide(position);
-              
-              if (!retrySuccess) {
-                // Retries exhausted - close the position
-                this.logger.error(
-                  `🚨 Closing single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType} after retries failed`,
-                );
-                await this.closeSingleLegPosition(position);
-              }
-            }
-            
-            // Wait for positions to settle after closing
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-            // Refresh positions after retry attempts and verify they're closed
-            const updatedPositionsResult = await this.orchestrator.getAllPositionsWithMetrics();
-            // Filter out very small positions (stale data)
-            const updatedPositions = updatedPositionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
-            const stillSingleLeg = this.detectSingleLegPositions(updatedPositions);
-            
-            if (stillSingleLeg.length > 0) {
-              // Close remaining single-leg positions
-              this.logger.warn(
-                `⚠️ Still detecting ${stillSingleLeg.length} single-leg position(s) after closing. Closing them...`,
-              );
-              for (const position of stillSingleLeg) {
-                await this.closeSingleLegPosition(position);
-              }
-              
-              // Wait again and verify
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              const finalPositionsResult = await this.orchestrator.getAllPositionsWithMetrics();
-              const finalPositions = finalPositionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
-              const finalSingleLeg = this.detectSingleLegPositions(finalPositions);
-              
-              if (finalSingleLeg.length === 0) {
-                this.logger.log(
-                  `✅ All single-leg positions closed. Triggering new opportunity search and idle funds management...`,
-                );
-                // Trigger new opportunity search after closing single-leg positions
-                await this.triggerNewOpportunitySearch();
-              } else {
-                this.logger.warn(
-                  `⚠️ Still detecting ${finalSingleLeg.length} single-leg position(s) after second close attempt. ` +
-                  `This may be stale data - will retry next cycle.`,
-                );
-              }
-            } else {
-              // All positions closed successfully
-              this.logger.log(
-                `✅ All single-leg positions closed. Triggering new opportunity search and idle funds management...`,
-              );
-              // Trigger new opportunity search after closing single-leg positions
-              await this.triggerNewOpportunitySearch();
-            }
-            
-            // Remove single-leg positions from allPositions to avoid double-closing
-            const singleLegSet = new Set(singleLegPositions.map(p => `${p.symbol}-${p.exchangeType}-${p.side}`));
-            const remainingPositions = allPositions.filter(
-              p => !singleLegSet.has(`${p.symbol}-${p.exchangeType}-${p.side}`)
-            );
-            allPositions.length = 0;
-            allPositions.push(...remainingPositions);
-          }
-          
-          // Close remaining positions (non-single-leg)
-          if (allPositions.length > 0) {
-            this.logger.log(`🔄 Closing ${allPositions.length} existing position(s)...`);
-            for (const position of allPositions) {
-              await this.closePositionWithRetry(position);
-            }
-          }
-          
-          // Wait for positions to settle and margin to be freed
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-      } catch (error: any) {
-        this.logger.warn(`Failed to close existing positions: ${error.message}`);
-        // Continue anyway - rebalancing might still work
-      }
-
-      // STEP 2: Rebalance exchange balances based on opportunities
-      try {
-        const rebalanceResult = await this.keeperService.rebalanceExchangeBalances(filteredOpportunities);
-        if (rebalanceResult.transfersExecuted > 0) {
-          this.logger.log(
-            `✅ Rebalanced ${rebalanceResult.transfersExecuted} transfers, $${rebalanceResult.totalTransferred.toFixed(2)} total`
-          );
-          await new Promise(resolve => setTimeout(resolve, 3000));
-        }
-      } catch (error: any) {
-        this.logger.warn(`Failed to rebalance exchange balances: ${error.message}`);
-        // Don't fail the entire execution if rebalancing fails
-      }
-
+      // Skip execution if no opportunities
       if (filteredOpportunities.length === 0) {
         this.logger.log('No opportunities found (after blacklist filter), skipping execution');
         return;
       }
 
-      // Execute strategy across filtered assets
-      const symbolsToExecute = filteredSymbols.filter(s => !this.isBlacklisted(s));
-      const result = await this.orchestrator.executeArbitrageStrategy(
-        symbolsToExecute,
-        this.minSpread,
-        this.maxPositionSizeUsd,
-      );
-
-      // Track arbitrage opportunities
-      this.performanceLogger.recordArbitrageOpportunity(true, result.opportunitiesExecuted > 0);
-      if (result.opportunitiesExecuted > 0) {
-        this.performanceLogger.recordArbitrageOpportunity(false, true);
-      }
-
-      // Sync funding payments and update position metrics
-      await this.syncFundingPayments();
-      await this.updatePerformanceMetrics();
-
-      const duration = Date.now() - startTime;
-
-      this.logger.log(
-        `Execution completed in ${duration}ms: ` +
-        `${result.opportunitiesExecuted}/${result.opportunitiesEvaluated} opportunities executed, ` +
-        `Expected return: $${result.totalExpectedReturn.toFixed(2)}, ` +
-        `Orders placed: ${result.ordersPlaced}`,
-      );
-
-      // Log portfolio tracking at end of execution cycle
-      try {
-        let totalCapital = 0;
-        for (const exchangeType of ['ASTER', 'LIGHTER', 'HYPERLIQUID'] as any[]) {
-          try {
-            const balance = await this.keeperService.getBalance(exchangeType);
-            totalCapital += balance;
-          } catch (error) {
-            // Skip if we can't get balance
-          }
-        }
-        this.performanceLogger.logCompactSummary(totalCapital);
-      } catch (error: any) {
-        // Silently fail portfolio logging
-      }
-
-      if (result.errors.length > 0) {
-        this.logger.warn(`Execution had ${result.errors.length} errors:`, result.errors);
-      }
+      // Execute strategy and track results
+      const result = await this.executeStrategyAndTrack(filteredSymbols, startTime);
     } catch (error: any) {
       this.logger.error(`Hourly execution failed: ${error.message}`, error.stack);
     } finally {
@@ -722,6 +562,221 @@ export class PerpKeeperScheduler implements OnModuleInit {
         this.executionLockService.releaseGlobalLock(threadId);
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EXECUTION HELPER METHODS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Find arbitrage opportunities and filter out blacklisted symbols
+   * Includes both perp-perp and perp-spot opportunities (enabled by default)
+   */
+  private async findAndFilterOpportunities(symbols: string[]): Promise<ArbitrageOpportunity[]> {
+    // Enable perp-spot by default (set PERP_SPOT_ENABLED=false to disable)
+    const includePerpSpot = this.configService.get<string>('PERP_SPOT_ENABLED') !== 'false';
+    
+    const opportunities = await this.orchestrator.findArbitrageOpportunities(
+      symbols,
+      this.minSpread,
+      false, // Hide progress bar
+      includePerpSpot,
+    );
+
+    // Filter out any opportunities for blacklisted symbols
+    return opportunities.filter(opp => !this.isBlacklisted(opp.symbol));
+  }
+
+  /**
+   * Handle existing positions: detect single-leg, attempt recovery, close if needed
+   */
+  private async handleExistingPositions(): Promise<void> {
+    try {
+      const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+      // Filter out positions with very small sizes (likely rounding errors or stale data)
+      let allPositions = positionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
+      
+      if (allPositions.length === 0) return;
+
+      // Handle single-leg positions first
+      allPositions = await this.handleSingleLegPositions(allPositions);
+      
+      // Close remaining positions (non-single-leg)
+      if (allPositions.length > 0) {
+        this.logger.log(`🔄 Closing ${allPositions.length} existing position(s)...`);
+        for (const position of allPositions) {
+          await this.closePositionWithRetry(position);
+        }
+        // Wait for positions to settle and margin to be freed
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    } catch (error: any) {
+      this.logger.warn(`Failed to close existing positions: ${error.message}`);
+      // Continue anyway - rebalancing might still work
+    }
+  }
+
+  /**
+   * Handle single-leg positions: attempt to open missing side, close if recovery fails
+   * Returns remaining positions that are NOT single-leg
+   */
+  private async handleSingleLegPositions(allPositions: PerpPosition[]): Promise<PerpPosition[]> {
+    const singleLegPositions = this.detectSingleLegPositions(allPositions);
+    
+    if (singleLegPositions.length === 0) {
+      return allPositions;
+    }
+
+    this.logger.warn(
+      `⚠️ Detected ${singleLegPositions.length} single-leg position(s). Attempting to open missing side...`,
+    );
+    
+    // Try to open missing side for each single-leg position
+    for (const position of singleLegPositions) {
+      const retrySuccess = await this.tryOpenMissingSide(position);
+      
+      if (!retrySuccess) {
+        this.logger.error(
+          `🚨 Closing single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType} after retries failed`,
+        );
+        await this.closeSingleLegPosition(position);
+      }
+    }
+    
+    // Wait for positions to settle
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Verify single-leg positions are resolved
+    await this.verifySingleLegResolution();
+    
+    // Remove single-leg positions from allPositions to avoid double-closing
+    const singleLegSet = new Set(singleLegPositions.map(p => `${p.symbol}-${p.exchangeType}-${p.side}`));
+    return allPositions.filter(p => !singleLegSet.has(`${p.symbol}-${p.exchangeType}-${p.side}`));
+  }
+
+  /**
+   * Verify that single-leg positions have been resolved, with retry if needed
+   */
+  private async verifySingleLegResolution(): Promise<void> {
+    const updatedPositionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+    const updatedPositions = updatedPositionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
+    const stillSingleLeg = this.detectSingleLegPositions(updatedPositions);
+    
+    if (stillSingleLeg.length === 0) {
+      this.logger.log(`✅ All single-leg positions resolved. Triggering new opportunity search...`);
+      await this.triggerNewOpportunitySearch();
+      return;
+    }
+
+    // Second attempt to close remaining single-leg positions
+    this.logger.warn(
+      `⚠️ Still detecting ${stillSingleLeg.length} single-leg position(s). Closing them...`,
+    );
+    
+    for (const position of stillSingleLeg) {
+      await this.closeSingleLegPosition(position);
+    }
+    
+    // Wait and verify again
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const finalPositionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+    const finalPositions = finalPositionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
+    const finalSingleLeg = this.detectSingleLegPositions(finalPositions);
+    
+    if (finalSingleLeg.length === 0) {
+      this.logger.log(`✅ All single-leg positions closed. Triggering new opportunity search...`);
+      await this.triggerNewOpportunitySearch();
+    } else {
+      this.logger.warn(
+        `⚠️ Still detecting ${finalSingleLeg.length} single-leg position(s) after second close attempt. ` +
+        `This may be stale data - will retry next cycle.`,
+      );
+    }
+  }
+
+  /**
+   * Rebalance exchange balances if needed based on opportunities
+   */
+  private async rebalanceIfNeeded(opportunities: ArbitrageOpportunity[]): Promise<void> {
+    try {
+      const rebalanceResult = await this.keeperService.rebalanceExchangeBalances(opportunities);
+      if (rebalanceResult.transfersExecuted > 0) {
+        this.logger.log(
+          `✅ Rebalanced ${rebalanceResult.transfersExecuted} transfers, $${rebalanceResult.totalTransferred.toFixed(2)} total`
+        );
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    } catch (error: any) {
+      this.logger.warn(`Failed to rebalance exchange balances: ${error.message}`);
+      // Don't fail the entire execution if rebalancing fails
+    }
+  }
+
+  /**
+   * Execute strategy and track results
+   */
+  private async executeStrategyAndTrack(symbols: string[], startTime: number): Promise<void> {
+    const symbolsToExecute = symbols.filter(s => !this.isBlacklisted(s));
+    
+    const result = await this.orchestrator.executeArbitrageStrategy(
+      symbolsToExecute,
+      this.minSpread,
+      this.maxPositionSizeUsd,
+    );
+
+    // Track arbitrage opportunities
+    this.performanceLogger.recordArbitrageOpportunity(true, result.opportunitiesExecuted > 0);
+    if (result.opportunitiesExecuted > 0) {
+      this.performanceLogger.recordArbitrageOpportunity(false, true);
+    }
+
+    // Sync funding payments and update position metrics
+    await this.syncFundingPayments();
+    await this.updatePerformanceMetrics();
+
+    const duration = Date.now() - startTime;
+
+    this.logger.log(
+      `Execution completed in ${duration}ms: ` +
+      `${result.opportunitiesExecuted}/${result.opportunitiesEvaluated} opportunities executed, ` +
+      `Expected return: $${result.totalExpectedReturn.toFixed(2)}, ` +
+      `Orders placed: ${result.ordersPlaced}`,
+    );
+
+    // Log portfolio summary
+    await this.logPortfolioSummary();
+
+    if (result.errors.length > 0) {
+      this.logger.warn(`Execution had ${result.errors.length} errors:`, result.errors);
+    }
+  }
+
+  /**
+   * Log portfolio summary at end of execution cycle
+   */
+  private async logPortfolioSummary(): Promise<void> {
+    try {
+      const totalCapital = await this.getTotalCapitalAcrossExchanges();
+      this.performanceLogger.logCompactSummary(totalCapital);
+    } catch (error: any) {
+      // Silently fail portfolio logging
+    }
+  }
+
+  /**
+   * Get total capital across all exchanges
+   */
+  private async getTotalCapitalAcrossExchanges(): Promise<number> {
+    let totalCapital = 0;
+    for (const exchangeType of [ExchangeType.ASTER, ExchangeType.LIGHTER, ExchangeType.HYPERLIQUID]) {
+      try {
+        const balance = await this.keeperService.getBalance(exchangeType);
+        totalCapital += balance;
+      } catch (error) {
+        // Skip if we can't get balance
+      }
+    }
+    return totalCapital;
   }
 
   /**
