@@ -1334,10 +1334,25 @@ export class FundingArbitrageStrategy {
             item.maxPortfolioFor35APY !== undefined
               ? ` | Max: $${(item.maxPortfolioFor35APY / 1000).toFixed(1)}k`
               : '';
+          
+          // Format break-even time
+          let breakEvenStr = '';
+          if (item.breakEvenHours !== null && isFinite(item.breakEvenHours)) {
+            if (item.breakEvenHours < 1) {
+              breakEvenStr = ` | BE: ${Math.round(item.breakEvenHours * 60)}min`;
+            } else if (item.breakEvenHours < 24) {
+              breakEvenStr = ` | BE: ${item.breakEvenHours.toFixed(1)}h`;
+            } else {
+              breakEvenStr = ` | BE: ${(item.breakEvenHours / 24).toFixed(1)}d`;
+            }
+          } else if (!isProfitable) {
+            breakEvenStr = ' | BE: N/A (unprofitable)';
+          }
+          
           this.logger.log(
             `${prefix} ${item.opportunity.symbol}: ` +
               `APY: ${(item.opportunity.expectedReturn?.toPercent() || 0).toFixed(2)}% | ` +
-              `Net: $${item.netReturn !== -Infinity ? item.netReturn.toFixed(4) : 'N/A'}/period${maxPortfolioInfo}`,
+              `Net: $${item.netReturn !== -Infinity ? item.netReturn.toFixed(4) : 'N/A'}/period${breakEvenStr}${maxPortfolioInfo}`,
           );
         });
       }
@@ -1392,8 +1407,20 @@ export class FundingArbitrageStrategy {
                 ? ` (Data Quality Risk: ${(dataQualityRiskFactor * 100).toFixed(0)}% - ${longData.length}/${shortData.length}pts)`
                 : ` (Data Quality: Good - ${longData.length}/${shortData.length}pts)`;
 
+            // Format break-even time for allocation
+            let breakEvenInfo = '';
+            if (opportunity?.breakEvenHours !== null && opportunity?.breakEvenHours !== undefined && isFinite(opportunity.breakEvenHours)) {
+              if (opportunity.breakEvenHours < 1) {
+                breakEvenInfo = ` | BE: ${Math.round(opportunity.breakEvenHours * 60)}min`;
+              } else if (opportunity.breakEvenHours < 24) {
+                breakEvenInfo = ` | BE: ${opportunity.breakEvenHours.toFixed(1)}h`;
+              } else {
+                breakEvenInfo = ` | BE: ${(opportunity.breakEvenHours / 24).toFixed(1)}d`;
+              }
+            }
+
             this.logger.log(
-              `     ${symbol}: $${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${riskInfo}`,
+              `     ${symbol}: $${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${breakEvenInfo}${riskInfo}`,
             );
           }
         });
