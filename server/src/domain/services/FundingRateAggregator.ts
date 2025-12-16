@@ -35,12 +35,19 @@ export interface FundingRateComparison {
 }
 
 /**
+ * Strategy type for arbitrage
+ */
+export type ArbitrageStrategyType = 'perp-perp' | 'perp-spot';
+
+/**
  * Arbitrage opportunity
  */
 export interface ArbitrageOpportunity {
   symbol: string;
+  strategyType: ArbitrageStrategyType; // Type of arbitrage strategy
   longExchange: ExchangeType; // Exchange to go long on (receives funding)
   shortExchange: ExchangeType; // Exchange to go short on (receives funding)
+  spotExchange?: ExchangeType; // Exchange for spot leg (perp-spot strategy only)
   longRate: Percentage;
   shortRate: Percentage;
   spread: Percentage; // Absolute difference
@@ -578,6 +585,7 @@ export class FundingRateAggregator {
 
                   symbolOpportunities.push({
                     symbol,
+                    strategyType: 'perp-perp',
                     longExchange: longExchangeRate.exchange,
                     shortExchange: shortExchangeRate.exchange,
                     longRate,
