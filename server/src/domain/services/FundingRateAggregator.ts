@@ -39,12 +39,10 @@ export interface FundingRateComparison {
  */
 export interface ArbitrageOpportunity {
   symbol: string;
-  strategyType: 'perp-perp' | 'perp-spot'; // Strategy type
   longExchange: ExchangeType; // Exchange to go long on (receives funding)
-  shortExchange?: ExchangeType; // Exchange to go short on (optional for perp-spot)
-  spotExchange?: ExchangeType; // Exchange for spot position (same as longExchange for perp-spot)
+  shortExchange: ExchangeType; // Exchange to go short on (receives funding)
   longRate: Percentage;
-  shortRate?: Percentage; // Optional for perp-spot (spot rate is 0%)
+  shortRate: Percentage;
   spread: Percentage; // Absolute difference
   expectedReturn: Percentage; // Annualized return estimate
   longMarkPrice?: number; // Mark price for long exchange (from funding rate data)
@@ -205,7 +203,7 @@ export class FundingRateAggregator {
 
       this.logger.log(
         `Discovered ${commonAssets.length} common assets available on 2+ exchanges: ${commonAssets.join(', ')}`
-      );
+      )
 
       return commonAssets.sort();
     } catch (error: any) {
@@ -491,7 +489,6 @@ export class FundingRateAggregator {
     symbols: string[],
     minSpread: number = 0.0001, // Minimum spread to consider (0.01%)
     showProgress: boolean = true,
-    includePerpSpot: boolean = false, // Enable perp-spot opportunity discovery
   ): Promise<ArbitrageOpportunity[]> {
     const opportunities: ArbitrageOpportunity[] = [];
 
@@ -508,9 +505,10 @@ export class FundingRateAggregator {
     }
 
     // Process symbols in parallel batches to avoid rate limits
-    // Process 5 symbols at a time with a small delay between batches
-    const BATCH_SIZE = 5;
-    const BATCH_DELAY_MS = 1000; // 1 second between batches
+    // Process 3 symbols at a time with a delay between batches
+    // Reduced from 5 to 3 due to Lighter API rate limiting (429 errors)
+    const BATCH_SIZE = 3;
+    const BATCH_DELAY_MS = 1500; // 1.5 seconds between batches
 
     for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
       const batch = symbols.slice(i, i + BATCH_SIZE);
@@ -580,7 +578,6 @@ export class FundingRateAggregator {
 
                   symbolOpportunities.push({
                     symbol,
-                    strategyType: 'perp-perp',
                     longExchange: longExchangeRate.exchange,
                     shortExchange: shortExchangeRate.exchange,
                     longRate,
@@ -636,144 +633,9 @@ export class FundingRateAggregator {
       progressBar.stop();
     }
 
-    // Add perp-spot opportunities if enabled
-    if (includePerpSpot) {
-      try {
-        const perpSpotOpportunities = await this.findPerpSpotOpportunities(symbols, minSpread, showProgress);
-        opportunities.push(...perpSpotOpportunities);
-      } catch (error: any) {
-        this.logger.error(`Failed to find perp-spot opportunities: ${error.message}`);
-        // Continue with perp-perp opportunities only
-      }
-    }
-
     // Sort by expected return (highest first)
     return opportunities.sort((a, b) => 
       b.expectedReturn.toAPY() - a.expectedReturn.toAPY()
     );
-  }
-
-  /**
-   * Find perp-spot delta-neutral arbitrage opportunities
-   * For each exchange that supports both perp and spot:
-   * - If funding is positive: Long spot + Short perp (receive funding)
-   * - If funding is negative: Short spot + Long perp (receive funding)
-   */
-  async findPerpSpotOpportunities(
-    symbols: string[],
-    minSpread: number = 0.0001,
-    showProgress: boolean = true,
-  ): Promise<ArbitrageOpportunity[]> {
-    const opportunities: ArbitrageOpportunity[] = [];
-
-    // Create progress bar if requested
-    let progressBar: cliProgress.SingleBar | null = null;
-    if (showProgress) {
-      progressBar = new cliProgress.SingleBar({
-        format: '🔍 Searching perp-spot opportunities |{bar}| {percentage}% | {value}/{total} symbols | {opportunities} opportunities found',
-        barCompleteChar: '\u2588',
-        barIncompleteChar: '\u2591',
-        hideCursor: true,
-      });
-      progressBar.start(symbols.length, 0, { opportunities: 0 });
-    }
-
-    // Process symbols in batches
-    const BATCH_SIZE = 5;
-    const BATCH_DELAY_MS = 1000;
-
-    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-      const batch = symbols.slice(i, i + BATCH_SIZE);
-      
-      const batchResults = await Promise.allSettled(
-        batch.map(async (symbol) => {
-          try {
-            const comparison = await this.compareFundingRates(symbol);
-            const symbolOpportunities: ArbitrageOpportunity[] = [];
-
-            // For each exchange, check if it supports both perp and spot
-            // Exchanges that support spot: Hyperliquid, Aster (verify others)
-            const exchangesWithSpot = [
-              ExchangeType.HYPERLIQUID,
-              ExchangeType.ASTER,
-              // Lighter and Extended may not support spot - verify
-            ];
-
-            for (const rate of comparison.rates) {
-              // Check if this exchange supports spot trading
-              if (!exchangesWithSpot.includes(rate.exchange)) {
-                continue; // Skip exchanges without spot support
-              }
-
-              const perpRate = rate.currentRate;
-              const spotRate = 0; // Spot doesn't pay funding
-
-              // Calculate spread = |perpRate - spotRate| = |perpRate|
-              const spreadDecimal = Math.abs(perpRate);
-
-              // Only create opportunity if spread meets minimum threshold
-              if (spreadDecimal >= minSpread) {
-                const perpRatePercent = Percentage.fromDecimal(perpRate);
-                const spotRatePercent = Percentage.fromDecimal(spotRate);
-                const spread = Percentage.fromDecimal(spreadDecimal);
-
-                // Calculate expected annualized return
-                const periodsPerDay = 24; // Hourly funding periods
-                const periodsPerYear = periodsPerDay * 365;
-                const expectedReturn = Percentage.fromDecimal(spreadDecimal * periodsPerYear);
-
-                symbolOpportunities.push({
-                  symbol,
-                  strategyType: 'perp-spot',
-                  longExchange: rate.exchange, // Perp exchange
-                  spotExchange: rate.exchange, // Same exchange for spot
-                  longRate: perpRatePercent,
-                  shortRate: spotRatePercent, // Spot rate is 0%
-                  spread,
-                  expectedReturn,
-                  longMarkPrice: rate.markPrice > 0 ? rate.markPrice : undefined,
-                  longOpenInterest: rate.openInterest !== undefined && rate.openInterest > 0 ? rate.openInterest : undefined,
-                  long24hVolume: rate.volume24h !== undefined && rate.volume24h > 0 ? rate.volume24h : undefined,
-                  timestamp: new Date(),
-                });
-              }
-            }
-
-            return symbolOpportunities;
-          } catch (error: any) {
-            if (error.message && !error.message.includes('No funding rates')) {
-              this.logger.error(`Failed to find perp-spot opportunities for ${symbol}: ${error.message}`);
-            }
-            return [];
-          }
-        })
-      );
-
-      // Collect results from batch
-      for (const result of batchResults) {
-        if (result.status === 'fulfilled') {
-          opportunities.push(...result.value);
-        }
-      }
-
-      // Update progress bar
-      if (progressBar) {
-        const processed = Math.min(i + BATCH_SIZE, symbols.length);
-        progressBar.update(processed, { opportunities: opportunities.length });
-      }
-
-      // Add delay between batches
-      if (i + BATCH_SIZE < symbols.length) {
-        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
-      }
-    }
-
-    // Complete progress bar
-    if (progressBar) {
-      progressBar.update(symbols.length, { opportunities: opportunities.length });
-      progressBar.stop();
-    }
-
-    return opportunities;
   }
 }

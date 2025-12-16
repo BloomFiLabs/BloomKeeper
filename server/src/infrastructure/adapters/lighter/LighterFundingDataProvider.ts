@@ -240,96 +240,124 @@ export class LighterFundingDataProvider implements OnModuleInit {
    * @returns Object with openInterest (USD) and markPrice
    */
   async getOpenInterestAndMarkPrice(marketIndex: number): Promise<{ openInterest: number; markPrice: number }> {
-    try {
-      const orderBookUrl = `${this.baseUrl}/api/v1/orderBookDetails`;
-      const response = await axios.get(orderBookUrl, {
-            timeout: 10000,
-        params: { market_id: marketIndex },
-      });
-      
-      // Validate response structure
-      if (response.data?.code !== 200) {
-        const errorMsg = `Invalid response code: ${response.data?.code}. Response: ${JSON.stringify(response.data)}`;
-        this.logger.error(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const orderBookUrl = `${this.baseUrl}/api/v1/orderBookDetails`;
+        const response = await axios.get(orderBookUrl, {
+              timeout: 10000,
+          params: { market_id: marketIndex },
+        });
+        
+        // Validate response structure
+        if (response.data?.code !== 200) {
+          const errorMsg = `Invalid response code: ${response.data?.code}. Response: ${JSON.stringify(response.data)}`;
+          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        if (!response.data?.order_book_details || response.data.order_book_details.length === 0) {
+          const errorMsg = `No order_book_details in response. Response: ${JSON.stringify(response.data)}`;
+          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        const orderBookDetail = response.data.order_book_details[0];
+        
+        // Validate market_id matches
+        if (orderBookDetail.market_id !== marketIndex) {
+          const errorMsg = `Market ID mismatch: expected ${marketIndex}, got ${orderBookDetail.market_id}`;
+          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        // Extract and parse values
+        const openInterestRaw = orderBookDetail.open_interest;
+        const markPriceRaw = orderBookDetail.last_trade_price;
+        
+        // Validate raw values exist
+        if (openInterestRaw === undefined || openInterestRaw === null) {
+          const errorMsg = `open_interest field missing or null. Response: ${JSON.stringify(orderBookDetail)}`;
+          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        if (markPriceRaw === undefined || markPriceRaw === null) {
+          const errorMsg = `last_trade_price field missing or null. Response: ${JSON.stringify(orderBookDetail)}`;
+          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        // Parse values
+        const openInterest = typeof openInterestRaw === 'string' ? parseFloat(openInterestRaw) : (openInterestRaw || 0);
+        const markPrice = typeof markPriceRaw === 'string' ? parseFloat(markPriceRaw) : (markPriceRaw || 0);
+        
+        // Validate parsed values
+        if (isNaN(openInterest)) {
+          const errorMsg = `Failed to parse open_interest: "${openInterestRaw}" is not a valid number`;
+          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        if (isNaN(markPrice) || markPrice <= 0) {
+          const errorMsg = `Invalid mark price: "${markPriceRaw}" parsed to ${markPrice} (must be > 0)`;
+          this.logger.debug(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        // open_interest is in base token units, multiply by mark price for USD value
+        const oiUsd = openInterest * markPrice;
+                
+        if (isNaN(oiUsd) || oiUsd < 0) {
+          const errorMsg = `Invalid calculated OI USD: ${oiUsd} (OI=${openInterest}, Price=${markPrice})`;
+          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        }
+        
+        return { openInterest: oiUsd, markPrice };
+        
+      } catch (error: any) {
+        // Check if it's a rate limit error (429)
+        const statusCode = error.response?.status;
+        const errorMsg = error.response 
+          ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
+          : error.message || 'Unknown error';
+        
+        const isRateLimit = statusCode === 429 || 
+          errorMsg.includes('Too Many Requests') || 
+          errorMsg.includes('429') ||
+          errorMsg.includes('rate limit');
+        
+        if (isRateLimit && attempt < maxRetries - 1) {
+          // Exponential backoff: 1s, 2s, 4s
+          const backoffMs = Math.pow(2, attempt) * 1000;
+          this.logger.debug(
+            `OI/price fetch rate limited for market ${marketIndex} (attempt ${attempt + 1}/${maxRetries}). ` +
+            `Retrying in ${backoffMs}ms...`
+          );
+          await new Promise(resolve => setTimeout(resolve, backoffMs));
+          continue;
+        }
+        
+        // If it's already our error, re-throw it
+        if (error.message && error.message.includes('Lighter API error')) {
+          throw error;
+        }
+        
+        // Only log ERROR level for non-rate-limit errors on final attempt
+        if (!isRateLimit || attempt === maxRetries - 1) {
+          this.logger.error(`  ❌ ERROR: Failed to get Lighter OI and mark price for market ${marketIndex}: ${errorMsg}`);
+          this.logger.error(`  📄 Full error: ${error.stack || error}`);
+        }
+        
+        lastError = new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
+        throw lastError;
       }
-      
-      if (!response.data?.order_book_details || response.data.order_book_details.length === 0) {
-        const errorMsg = `No order_book_details in response. Response: ${JSON.stringify(response.data)}`;
-        this.logger.error(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
-      }
-      
-      const orderBookDetail = response.data.order_book_details[0];
-      
-      // Validate market_id matches
-      if (orderBookDetail.market_id !== marketIndex) {
-        const errorMsg = `Market ID mismatch: expected ${marketIndex}, got ${orderBookDetail.market_id}`;
-        this.logger.error(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
-      }
-      
-      // Extract and parse values
-      const openInterestRaw = orderBookDetail.open_interest;
-      const markPriceRaw = orderBookDetail.last_trade_price;
-      
-      // Validate raw values exist
-      if (openInterestRaw === undefined || openInterestRaw === null) {
-        const errorMsg = `open_interest field missing or null. Response: ${JSON.stringify(orderBookDetail)}`;
-        this.logger.error(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
-      }
-      
-      if (markPriceRaw === undefined || markPriceRaw === null) {
-        const errorMsg = `last_trade_price field missing or null. Response: ${JSON.stringify(orderBookDetail)}`;
-        this.logger.error(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
-      }
-      
-      // Parse values
-      const openInterest = typeof openInterestRaw === 'string' ? parseFloat(openInterestRaw) : (openInterestRaw || 0);
-      const markPrice = typeof markPriceRaw === 'string' ? parseFloat(markPriceRaw) : (markPriceRaw || 0);
-      
-      // Validate parsed values
-      if (isNaN(openInterest)) {
-        const errorMsg = `Failed to parse open_interest: "${openInterestRaw}" is not a valid number`;
-        this.logger.error(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
-      }
-      
-      if (isNaN(markPrice) || markPrice <= 0) {
-        const errorMsg = `Invalid mark price: "${markPriceRaw}" parsed to ${markPrice} (must be > 0)`;
-        this.logger.debug(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
-      }
-      
-      // open_interest is in base token units, multiply by mark price for USD value
-              const oiUsd = openInterest * markPrice;
-              
-      if (isNaN(oiUsd) || oiUsd < 0) {
-        const errorMsg = `Invalid calculated OI USD: ${oiUsd} (OI=${openInterest}, Price=${markPrice})`;
-        this.logger.error(`  ❌ ERROR: ${errorMsg}`);
-        throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
-      }
-      
-      return { openInterest: oiUsd, markPrice };
-      
-    } catch (error: any) {
-      // If it's already our error, re-throw it
-      if (error.message && error.message.includes('Lighter API error')) {
-        throw error;
-      }
-      
-      // Otherwise, wrap it with context
-      const errorMsg = error.response 
-        ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
-        : error.message || 'Unknown error';
-      
-      this.logger.error(`  ❌ ERROR: Failed to get Lighter OI and mark price for market ${marketIndex}: ${errorMsg}`);
-      this.logger.error(`  📄 Full error: ${error.stack || error}`);
-      
-      throw new Error(`Lighter API error for market ${marketIndex}: ${errorMsg}`);
     }
+    
+    throw lastError || new Error(`Lighter API error for market ${marketIndex}: Max retries exceeded`);
   }
 
   /**

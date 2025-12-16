@@ -11,12 +11,22 @@ jest.mock('../../application/services/PerpKeeperService', () => ({
   })),
 }));
 
+// Mock the RealFundingPaymentsService
+jest.mock('./RealFundingPaymentsService', () => ({
+  RealFundingPaymentsService: jest.fn().mockImplementation(() => ({
+    getCombinedSummary: jest.fn(),
+    getTotalTradingCosts: jest.fn(),
+  })),
+}));
+
 import { PerpKeeperService } from '../../application/services/PerpKeeperService';
+import { RealFundingPaymentsService } from './RealFundingPaymentsService';
 
 describe('ProfitTracker', () => {
   let profitTracker: ProfitTracker;
   let mockConfigService: jest.Mocked<ConfigService>;
   let mockKeeperService: jest.Mocked<PerpKeeperService>;
+  let mockRealFundingService: jest.Mocked<RealFundingPaymentsService>;
 
   beforeEach(async () => {
     mockConfigService = {
@@ -24,6 +34,8 @@ describe('ProfitTracker', () => {
         const config: Record<string, any> = {
           KEEPER_STRATEGY_ADDRESS: '0x1234567890123456789012345678901234567890',
           ARBITRUM_RPC_URL: 'https://arb1.arbitrum.io/rpc',
+          // Use 'contract' mode for testing original behavior
+          PROFIT_CALCULATION_MODE: 'contract',
         };
         return config[key] ?? defaultValue;
       }),
@@ -33,12 +45,17 @@ describe('ProfitTracker', () => {
       getBalance: jest.fn(),
       getExchangeAdapter: jest.fn(),
     } as any;
+    
+    mockRealFundingService = {
+      getCombinedSummary: jest.fn(),
+      getTotalTradingCosts: jest.fn().mockReturnValue(0),
+    } as any;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         {
           provide: ProfitTracker,
-          useFactory: () => new ProfitTracker(mockConfigService, mockKeeperService),
+          useFactory: () => new ProfitTracker(mockConfigService, mockKeeperService, mockRealFundingService),
         },
       ],
     }).compile();
@@ -236,6 +253,127 @@ describe('ProfitTracker', () => {
   describe('getLastSyncTimestamp', () => {
     it('should return null before any sync', () => {
       expect(profitTracker.getLastSyncTimestamp()).toBeNull();
+    });
+  });
+
+  describe('Profit Calculation Modes', () => {
+    describe('realized mode', () => {
+      let realizedModeTracker: ProfitTracker;
+      let realizedMockFundingService: jest.Mocked<RealFundingPaymentsService>;
+
+      beforeEach(async () => {
+        const realizedMockConfigService = {
+          get: jest.fn((key: string, defaultValue?: any) => {
+            const config: Record<string, any> = {
+              KEEPER_STRATEGY_ADDRESS: '',
+              ARBITRUM_RPC_URL: 'https://arb1.arbitrum.io/rpc',
+              PROFIT_CALCULATION_MODE: 'realized',
+            };
+            return config[key] ?? defaultValue;
+          }),
+        } as any;
+
+        realizedMockFundingService = {
+          getCombinedSummary: jest.fn().mockResolvedValue({
+            totalReceived: 10,
+            totalPaid: 2,
+            netFunding: 8, // Net profit from funding
+            exchanges: new Map([
+              [ExchangeType.HYPERLIQUID, { netFunding: 5 }],
+              [ExchangeType.LIGHTER, { netFunding: 2 }],
+              [ExchangeType.ASTER, { netFunding: 1 }],
+            ]),
+          }),
+          getTotalTradingCosts: jest.fn().mockReturnValue(1), // $1 in trading costs
+        } as any;
+
+        const module = await Test.createTestingModule({
+          providers: [
+            {
+              provide: ProfitTracker,
+              useFactory: () => new ProfitTracker(
+                realizedMockConfigService,
+                mockKeeperService,
+                realizedMockFundingService,
+              ),
+            },
+          ],
+        }).compile();
+
+        realizedModeTracker = module.get<ProfitTracker>(ProfitTracker);
+      });
+
+      it('should use realized mode when configured', () => {
+        expect(realizedModeTracker.getProfitCalculationMode()).toBe('realized');
+      });
+
+      it('should calculate profits from actual funding payments minus costs', async () => {
+        const profits = await realizedModeTracker.getTotalProfits();
+        // Net funding ($8) - trading costs ($1) = $7
+        expect(profits).toBe(7);
+      });
+
+      it('should get per-exchange realized profits', async () => {
+        const hlProfits = await realizedModeTracker.getAccruedProfits(ExchangeType.HYPERLIQUID);
+        expect(hlProfits).toBe(5);
+
+        const lighterProfits = await realizedModeTracker.getAccruedProfits(ExchangeType.LIGHTER);
+        expect(lighterProfits).toBe(2);
+      });
+
+      it('should calculate deployable capital as balance minus realized profits', async () => {
+        mockKeeperService.getBalance.mockResolvedValue(100);
+        
+        const deployable = await realizedModeTracker.getDeployableCapital(ExchangeType.HYPERLIQUID);
+        // Balance ($100) - realized profits ($5) = $95
+        expect(deployable).toBe(95);
+      });
+    });
+
+    describe('balance mode', () => {
+      let balanceModeTracker: ProfitTracker;
+
+      beforeEach(async () => {
+        const balanceMockConfigService = {
+          get: jest.fn((key: string, defaultValue?: any) => {
+            const config: Record<string, any> = {
+              KEEPER_STRATEGY_ADDRESS: '',
+              ARBITRUM_RPC_URL: 'https://arb1.arbitrum.io/rpc',
+              PROFIT_CALCULATION_MODE: 'balance',
+            };
+            return config[key] ?? defaultValue;
+          }),
+        } as any;
+
+        const module = await Test.createTestingModule({
+          providers: [
+            {
+              provide: ProfitTracker,
+              useFactory: () => new ProfitTracker(balanceMockConfigService, mockKeeperService),
+            },
+          ],
+        }).compile();
+
+        balanceModeTracker = module.get<ProfitTracker>(ProfitTracker);
+      });
+
+      it('should use balance mode when configured', () => {
+        expect(balanceModeTracker.getProfitCalculationMode()).toBe('balance');
+      });
+
+      it('should return 0 profits in balance mode', async () => {
+        mockKeeperService.getBalance.mockResolvedValue(100);
+        
+        const profits = await balanceModeTracker.getTotalProfits();
+        expect(profits).toBe(0);
+      });
+
+      it('should return full balance as deployable in balance mode', async () => {
+        mockKeeperService.getBalance.mockResolvedValue(100);
+        
+        const deployable = await balanceModeTracker.getDeployableCapital(ExchangeType.HYPERLIQUID);
+        expect(deployable).toBe(100);
+      });
     });
   });
 });
