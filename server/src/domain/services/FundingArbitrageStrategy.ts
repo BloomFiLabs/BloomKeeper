@@ -759,6 +759,12 @@ export class FundingArbitrageStrategy {
         }
       });
 
+      // IMPORTANT: Also include ALL exchanges that have adapters
+      // This ensures we fetch balances for all available exchanges, not just those in opportunities
+      for (const exchange of adapters.keys()) {
+        uniqueExchanges.add(exchange);
+      }
+
       // Check wallet USDC balance and deposit to exchanges if available
       const depositResult = await this.checkAndDepositWalletFunds(
         adapters,
@@ -790,6 +796,7 @@ export class FundingArbitrageStrategy {
       }
 
       const exchangeBalances = new Map<ExchangeType, number>();
+      this.logger.log(`💰 Fetching balances for ${uniqueExchanges.size} exchange(s)...`);
       for (const exchange of uniqueExchanges) {
         const adapter = adapters.get(exchange);
         if (adapter) {
@@ -814,13 +821,12 @@ export class FundingArbitrageStrategy {
             );
             exchangeBalances.set(exchange, availableBalance);
 
-            if (marginUsed > 0) {
-              this.logger.debug(
-                `${exchange}: Deployable balance: $${deployableBalance.toFixed(2)}, ` +
-                  `Margin used: $${marginUsed.toFixed(2)}, ` +
-                  `Available: $${availableBalance.toFixed(2)}`,
-              );
-            }
+            // Log all balances (not just when margin is used) for debugging
+            this.logger.log(
+              `${exchange}: Deployable: $${deployableBalance.toFixed(2)}, ` +
+                `Margin used: $${marginUsed.toFixed(2)}, ` +
+                `Available: $${availableBalance.toFixed(2)}`,
+            );
 
             // Small delay between balance calls to avoid rate limits
             await new Promise((resolve) => setTimeout(resolve, 50));
@@ -831,6 +837,119 @@ export class FundingArbitrageStrategy {
             // Set to 0 so opportunities using this exchange will be skipped
             exchangeBalances.set(exchange, 0);
           }
+        } else {
+          // Exchange has no adapter - set balance to 0
+          this.logger.debug(
+            `No adapter available for ${exchange}, setting balance to 0`,
+          );
+          exchangeBalances.set(exchange, 0);
+        }
+      }
+
+      // PROACTIVE REBALANCING: Redistribute capital across exchanges before evaluating opportunities
+      // This ensures all exchanges have sufficient balance to execute opportunities
+      if (this.balanceRebalancer && filteredOpportunities.length > 0) {
+        try {
+          this.logger.log('⚖️ Proactively rebalancing capital across exchanges...');
+          
+          // Calculate total capital and target per exchange
+          const totalCapital = Array.from(exchangeBalances.values()).reduce(
+            (sum, balance) => sum + balance,
+            0,
+          );
+          const uniqueExchangesForRebalance = new Set<ExchangeType>();
+          filteredOpportunities.forEach((opp) => {
+            uniqueExchangesForRebalance.add(opp.longExchange);
+            if (opp.shortExchange) {
+              uniqueExchangesForRebalance.add(opp.shortExchange);
+            }
+          });
+
+          // Only rebalance if we have multiple exchanges and sufficient capital
+          if (
+            uniqueExchangesForRebalance.size > 1 &&
+            totalCapital > 0
+          ) {
+            // Calculate target balance per exchange (equal distribution)
+            const targetBalancePerExchange =
+              totalCapital / uniqueExchangesForRebalance.size;
+            const minRequiredBalance = this.strategyConfig.minPositionSizeUsd / this.leverage;
+
+            // Check if rebalancing is needed
+            let needsRebalancing = false;
+            for (const exchange of uniqueExchangesForRebalance) {
+              const currentBalance = exchangeBalances.get(exchange) || 0;
+              // Need rebalancing if any exchange has less than minimum required
+              if (currentBalance < minRequiredBalance && totalCapital > minRequiredBalance * uniqueExchangesForRebalance.size) {
+                needsRebalancing = true;
+                break;
+              }
+            }
+
+            if (needsRebalancing) {
+              this.logger.log(
+                `📊 Rebalancing: Total capital $${totalCapital.toFixed(2)}, ` +
+                  `Target per exchange: $${targetBalancePerExchange.toFixed(2)}, ` +
+                  `Min required: $${minRequiredBalance.toFixed(2)}`,
+              );
+
+              // Execute rebalancing
+              const rebalanceResult = await this.balanceRebalancer.rebalance(
+                adapters,
+                filteredOpportunities,
+              );
+
+              if (rebalanceResult.success && rebalanceResult.totalTransferred > 0) {
+                this.logger.log(
+                  `✅ Rebalanced $${rebalanceResult.totalTransferred.toFixed(2)} across ${rebalanceResult.transfersExecuted} transfer(s)`,
+                );
+
+                // Refresh balances after rebalancing
+                for (const exchange of uniqueExchangesForRebalance) {
+                  const adapter = adapters.get(exchange);
+                  if (adapter) {
+                    try {
+                      if (
+                        'clearBalanceCache' in adapter &&
+                        typeof (adapter as any).clearBalanceCache === 'function'
+                      ) {
+                        (adapter as any).clearBalanceCache();
+                      }
+
+                      const deployableBalance =
+                        await this.balanceManager.getDeployableCapital(adapter, exchange);
+                      const marginUsed = marginUsedPerExchange.get(exchange) ?? 0;
+                      const availableBalance = Math.max(
+                        0,
+                        deployableBalance - marginUsed,
+                      );
+                      exchangeBalances.set(exchange, availableBalance);
+
+                      // Small delay between balance calls
+                      await new Promise((resolve) => setTimeout(resolve, 100));
+                    } catch (error: any) {
+                      this.logger.warn(
+                        `Failed to refresh balance for ${exchange} after rebalancing: ${error.message}`,
+                      );
+                    }
+                  }
+                }
+              } else if (rebalanceResult.success) {
+                this.logger.debug('No rebalancing needed - balances already optimal');
+              } else {
+                this.logger.warn(
+                  `Rebalancing completed with issues: ${rebalanceResult.errors.length} error(s)`,
+                );
+              }
+            } else {
+              this.logger.debug('No rebalancing needed - all exchanges have sufficient balance');
+            }
+          }
+        } catch (error: any) {
+          this.logger.warn(
+            `Proactive rebalancing failed: ${error.message}. Continuing with current balances...`,
+          );
+          // Continue execution even if rebalancing fails
         }
       }
 
