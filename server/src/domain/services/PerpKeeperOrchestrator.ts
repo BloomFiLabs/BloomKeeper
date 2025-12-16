@@ -390,20 +390,20 @@ export class PerpKeeperOrchestrator {
    * @param symbols List of symbols to search for opportunities
    * @param minSpread Minimum spread threshold
    * @param showProgress Whether to show progress bar
-   * @param _includePerpSpot Reserved for future perp-spot strategy (not yet implemented)
+   * @param includePerpSpot Whether to include perp-spot opportunities
    */
   async findArbitrageOpportunities(
     symbols: string[],
     minSpread?: number,
     showProgress: boolean = true,
-    _includePerpSpot: boolean = false, // eslint-disable-line @typescript-eslint/no-unused-vars
+    includePerpSpot: boolean = false,
   ): Promise<ArbitrageOpportunity[]> {
-    // Note: includePerpSpot is reserved for future perp-spot strategy implementation
-    // Currently only perp-perp opportunities are supported
-    return await this.aggregator.findArbitrageOpportunities(
+    // Use findAllOpportunities which handles both perp-perp and perp-spot
+    return await this.aggregator.findAllOpportunities(
       symbols,
       minSpread,
       showProgress,
+      includePerpSpot,
     );
   }
 

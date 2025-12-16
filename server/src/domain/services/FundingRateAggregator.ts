@@ -47,7 +47,7 @@ export interface ArbitrageOpportunity {
   symbol: string;
   strategyType: ArbitrageStrategyType; // Type of arbitrage strategy
   longExchange: ExchangeType; // Exchange to go long on (receives funding)
-  shortExchange: ExchangeType; // Exchange to go short on (receives funding)
+  shortExchange?: ExchangeType; // Exchange to go short on (perp-perp only, undefined for perp-spot)
   spotExchange?: ExchangeType; // Exchange for spot leg (perp-spot strategy only)
   longRate: Percentage;
   shortRate: Percentage;
@@ -646,6 +646,190 @@ export class FundingRateAggregator {
 
     // Sort by expected return (highest first)
     return opportunities.sort((a, b) => 
+      b.expectedReturn.toAPY() - a.expectedReturn.toAPY()
+    );
+  }
+
+  /**
+   * Find perp-spot arbitrage opportunities
+   * 
+   * Perp-Spot Strategy (delta-neutral):
+   * - If funding rate is POSITIVE (longs pay shorts): SHORT perp + LONG spot
+   *   → Receive funding from perp while holding equivalent spot
+   * - If funding rate is NEGATIVE (shorts pay longs): LONG perp + SHORT spot
+   *   → Receive funding from perp while shorting equivalent spot (requires borrowing)
+   * 
+   * The "spread" is the absolute funding rate since spot has no funding cost.
+   * Note: Shorting spot requires borrowing the asset, which has its own costs.
+   * 
+   * @param symbols List of symbols to check
+   * @param minSpread Minimum funding rate to consider (absolute value)
+   * @param showProgress Whether to show progress bar
+   * @param spotBorrowCost Estimated cost of borrowing spot for shorting (default 0.01% per hour)
+   */
+  async findPerpSpotOpportunities(
+    symbols: string[],
+    minSpread: number = 0.0001,
+    showProgress: boolean = true,
+    spotBorrowCost: number = 0.0001, // Default 0.01% per hour borrow cost
+  ): Promise<ArbitrageOpportunity[]> {
+    const opportunities: ArbitrageOpportunity[] = [];
+
+    // Create progress bar if requested
+    let progressBar: cliProgress.SingleBar | null = null;
+    if (showProgress) {
+      progressBar = new cliProgress.SingleBar({
+        format: '🔍 Searching perp-spot |{bar}| {percentage}% | {value}/{total} symbols | {opportunities} opportunities found',
+        barCompleteChar: '\u2588',
+        barIncompleteChar: '\u2591',
+        hideCursor: true,
+      });
+      progressBar.start(symbols.length, 0, { opportunities: 0 });
+    }
+
+    // Process symbols in parallel batches
+    const BATCH_SIZE = 3;
+    const BATCH_DELAY_MS = 1500;
+
+    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+      const batch = symbols.slice(i, i + BATCH_SIZE);
+      
+      const batchResults = await Promise.allSettled(
+        batch.map(async (symbol) => {
+          try {
+            const fundingRates = await this.getFundingRates(symbol);
+            const symbolOpportunities: ArbitrageOpportunity[] = [];
+
+            // For each exchange with funding data, check if perp-spot is viable
+            for (const rate of fundingRates) {
+              const absRate = Math.abs(rate.currentRate);
+              
+              // For positive funding (longs pay shorts): SHORT perp + LONG spot
+              // Net spread = funding rate received (no borrow cost for going long spot)
+              if (rate.currentRate > 0 && absRate >= minSpread) {
+                const spread = Percentage.fromDecimal(absRate);
+                const periodsPerYear = 24 * 365;
+                const expectedReturn = Percentage.fromDecimal(absRate * periodsPerYear);
+
+                symbolOpportunities.push({
+                  symbol,
+                  strategyType: 'perp-spot',
+                  longExchange: rate.exchange, // Spot is on same exchange
+                  shortExchange: undefined, // No short perp exchange (we short on longExchange)
+                  spotExchange: rate.exchange,
+                  longRate: Percentage.fromDecimal(0), // Spot has no funding
+                  shortRate: Percentage.fromDecimal(rate.currentRate), // Perp funding rate
+                  spread,
+                  expectedReturn,
+                  longMarkPrice: rate.markPrice > 0 ? rate.markPrice : undefined,
+                  shortMarkPrice: rate.markPrice > 0 ? rate.markPrice : undefined,
+                  longOpenInterest: rate.openInterest,
+                  shortOpenInterest: rate.openInterest,
+                  long24hVolume: rate.volume24h,
+                  short24hVolume: rate.volume24h,
+                  timestamp: new Date(),
+                });
+              }
+              
+              // For negative funding (shorts pay longs): LONG perp + SHORT spot
+              // Net spread = |funding rate| - borrow cost
+              if (rate.currentRate < 0) {
+                const netSpread = absRate - spotBorrowCost;
+                if (netSpread >= minSpread) {
+                  const spread = Percentage.fromDecimal(netSpread);
+                  const periodsPerYear = 24 * 365;
+                  const expectedReturn = Percentage.fromDecimal(netSpread * periodsPerYear);
+
+                  symbolOpportunities.push({
+                    symbol,
+                    strategyType: 'perp-spot',
+                    longExchange: rate.exchange, // Long perp on this exchange
+                    shortExchange: undefined,
+                    spotExchange: rate.exchange, // Short spot on same exchange
+                    longRate: Percentage.fromDecimal(rate.currentRate), // Negative = we receive
+                    shortRate: Percentage.fromDecimal(spotBorrowCost), // Borrow cost for shorting spot
+                    spread,
+                    expectedReturn,
+                    longMarkPrice: rate.markPrice > 0 ? rate.markPrice : undefined,
+                    shortMarkPrice: rate.markPrice > 0 ? rate.markPrice : undefined,
+                    longOpenInterest: rate.openInterest,
+                    shortOpenInterest: rate.openInterest,
+                    long24hVolume: rate.volume24h,
+                    short24hVolume: rate.volume24h,
+                    timestamp: new Date(),
+                  });
+                }
+              }
+            }
+
+            return symbolOpportunities;
+          } catch (error: any) {
+            if (error.message && !error.message.includes('No funding rates')) {
+              this.logger.error(`Failed to find perp-spot opportunities for ${symbol}: ${error.message}`);
+            }
+            return [];
+          }
+        })
+      );
+
+      // Collect results from batch
+      for (const result of batchResults) {
+        if (result.status === 'fulfilled') {
+          opportunities.push(...result.value);
+        }
+      }
+
+      // Update progress bar
+      if (progressBar) {
+        const processed = Math.min(i + BATCH_SIZE, symbols.length);
+        progressBar.update(processed, { opportunities: opportunities.length });
+      }
+
+      // Add delay between batches
+      if (i + BATCH_SIZE < symbols.length) {
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+      }
+    }
+
+    // Complete progress bar
+    if (progressBar) {
+      progressBar.update(symbols.length, { opportunities: opportunities.length });
+      progressBar.stop();
+    }
+
+    // Sort by expected return (highest first)
+    return opportunities.sort((a, b) => 
+      b.expectedReturn.toAPY() - a.expectedReturn.toAPY()
+    );
+  }
+
+  /**
+   * Find all arbitrage opportunities (both perp-perp and perp-spot)
+   * 
+   * @param symbols List of symbols to check
+   * @param minSpread Minimum spread threshold
+   * @param showProgress Whether to show progress bar
+   * @param includePerpSpot Whether to include perp-spot opportunities
+   */
+  async findAllOpportunities(
+    symbols: string[],
+    minSpread: number = 0.0001,
+    showProgress: boolean = true,
+    includePerpSpot: boolean = false,
+  ): Promise<ArbitrageOpportunity[]> {
+    // Get perp-perp opportunities
+    const perpPerpOpps = await this.findArbitrageOpportunities(symbols, minSpread, showProgress);
+    
+    if (!includePerpSpot) {
+      return perpPerpOpps;
+    }
+
+    // Get perp-spot opportunities (don't show progress again)
+    const perpSpotOpps = await this.findPerpSpotOpportunities(symbols, minSpread, false);
+    
+    // Combine and sort by expected return
+    const allOpportunities = [...perpPerpOpps, ...perpSpotOpps];
+    return allOpportunities.sort((a, b) => 
       b.expectedReturn.toAPY() - a.expectedReturn.toAPY()
     );
   }

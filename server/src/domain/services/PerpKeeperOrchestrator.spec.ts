@@ -16,6 +16,7 @@ describe('PerpKeeperOrchestrator', () => {
     mockAggregator = {
       compareFundingRates: jest.fn(),
       findArbitrageOpportunities: jest.fn(),
+      findAllOpportunities: jest.fn(),
     } as any;
 
     mockStrategy = {
@@ -100,7 +101,7 @@ describe('PerpKeeperOrchestrator', () => {
 
   describe('findArbitrageOpportunities', () => {
     it('should find arbitrage opportunities', async () => {
-      mockAggregator.findArbitrageOpportunities.mockResolvedValue([
+      mockAggregator.findAllOpportunities.mockResolvedValue([
         {
           symbol: 'ETHUSDT',
           longExchange: ExchangeType.LIGHTER,
