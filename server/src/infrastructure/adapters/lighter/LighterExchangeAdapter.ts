@@ -3268,12 +3268,14 @@ export class LighterExchangeAdapter
       const poolInfo = await this.getFastWithdrawInfo(authToken);
       const toAccountIndex = poolInfo.to_account_index;
 
-      // Check withdraw limit
+      // Log pool info but DON'T fail based on it - the pool check is often stale/inaccurate
+      // The actual API call may succeed even when pool shows low availability
       if (poolInfo.withdraw_limit !== undefined) {
         const limitUsdc = poolInfo.withdraw_limit / 1e6;
         if (amount > limitUsdc) {
-          throw new Error(
-            `Withdrawal amount ($${amount.toFixed(2)}) exceeds pool limit ($${limitUsdc.toFixed(2)})`,
+          this.logger.warn(
+            `⚠️ Pool shows $${limitUsdc.toFixed(2)} available but requesting $${amount.toFixed(2)}. ` +
+              `Attempting anyway - pool limit check may be stale.`,
           );
         }
       }

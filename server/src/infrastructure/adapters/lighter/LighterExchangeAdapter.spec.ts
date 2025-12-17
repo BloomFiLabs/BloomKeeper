@@ -428,7 +428,7 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
       }
     });
 
-    it('should warn but not reject when order size exceeds position size', async () => {
+    it('should reject and record error when order size exceeds position size', async () => {
       // Mock getPositions to return a position smaller than order
       jest.spyOn(adapter, 'getPositions').mockResolvedValue([
         {
@@ -455,14 +455,12 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
         reduceOnly: true,
       };
 
-      try {
-        await adapter.placeOrder(oversizedOrder);
-      } catch (error: any) {
-        // Should NOT be rejected for size mismatch
-        expect(error.message).not.toContain('exceeds position size');
-      }
+      // Should be rejected with error about size mismatch to force caller to retry with correct size
+      await expect(adapter.placeOrder(oversizedOrder)).rejects.toThrow(
+        'exceeds position size',
+      );
 
-      // Should have recorded a warning (not an error that stops execution)
+      // Should have recorded the error for diagnostics
       expect(mockDiagnosticsService.recordError).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'LIGHTER_REDUCE_ONLY_SIZE_EXCEEDS',

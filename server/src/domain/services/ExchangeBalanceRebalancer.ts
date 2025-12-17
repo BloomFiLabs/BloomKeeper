@@ -496,9 +496,10 @@ export class ExchangeBalanceRebalancer {
       );
     }
 
-    // Step 1: Check pool availability for Lighter (fast withdraw has limited pool)
+    // Step 1: Check pool availability for Lighter (informational only - don't fail)
+    // Note: Pool availability check is NOT reliable - the actual API call may still succeed
+    // even when the pool shows insufficient funds. Let the API decide.
     if (fromExchange === ExchangeType.LIGHTER) {
-      // Check if the adapter has the getFastWithdrawPoolAvailability method
       if (
         typeof (fromAdapter as any).getFastWithdrawPoolAvailability ===
         'function'
@@ -507,27 +508,24 @@ export class ExchangeBalanceRebalancer {
           const poolAvailable = await (
             fromAdapter as any
           ).getFastWithdrawPoolAvailability();
-          if (poolAvailable !== null && poolAvailable < amount) {
-            throw new Error(
-              `Lighter fast withdraw pool has insufficient funds. ` +
-                `Requested: $${amount.toFixed(2)}, Available: $${poolAvailable.toFixed(2)}. ` +
-                `The fast withdraw pool is shared across all users and may refill later. ` +
-                `Skipping this transfer.`,
-            );
-          }
           if (poolAvailable !== null) {
-            this.logger.log(
-              `   ℹ️ Lighter fast withdraw pool has $${poolAvailable.toFixed(2)} available`,
-            );
+            if (poolAvailable < amount) {
+              // Log warning but DON'T throw - pool check is not always accurate
+              // The actual API call often succeeds even when pool shows low availability
+              this.logger.warn(
+                `   ⚠️ Lighter fast withdraw pool shows $${poolAvailable.toFixed(2)} available ` +
+                  `(requested: $${amount.toFixed(2)}). Attempting transfer anyway - pool check may be stale.`,
+              );
+            } else {
+              this.logger.log(
+                `   ℹ️ Lighter fast withdraw pool has $${poolAvailable.toFixed(2)} available`,
+              );
+            }
           }
         } catch (poolCheckError: any) {
-          // If it's an insufficient funds error, rethrow it
-          if (poolCheckError.message.includes('insufficient funds')) {
-            throw poolCheckError;
-          }
-          // Otherwise just log the warning and continue
+          // Just log the warning and continue - don't let pool check failure block transfer
           this.logger.warn(
-            `   ⚠️ Could not check Lighter pool availability: ${poolCheckError.message}`,
+            `   ⚠️ Could not check Lighter pool availability: ${poolCheckError.message}. Proceeding with transfer.`,
           );
         }
       }

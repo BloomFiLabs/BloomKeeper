@@ -49,6 +49,7 @@ describe('OrderExecutor', () => {
       getOrderStatus: jest.fn(),
       getBalance: jest.fn().mockResolvedValue(10000),
       getPositions: jest.fn().mockResolvedValue([]),
+      cancelOrder: jest.fn().mockResolvedValue(undefined),
     } as any;
 
     const lighterAdapter = {
@@ -56,6 +57,7 @@ describe('OrderExecutor', () => {
       getOrderStatus: jest.fn(),
       getBalance: jest.fn().mockResolvedValue(10000),
       getPositions: jest.fn().mockResolvedValue([]),
+      cancelOrder: jest.fn().mockResolvedValue(undefined),
     } as any;
 
     mockAdapters.set(ExchangeType.ASTER, asterAdapter);
@@ -215,7 +217,7 @@ describe('OrderExecutor', () => {
       expect(result.error).toContain('Failed to check order status');
     }, 10000);
 
-    it('should return submitted order if max retries reached without fill', async () => {
+    it('should cancel and return cancelled order if max retries reached without fill', async () => {
       const adapter = mockAdapters.get(ExchangeType.ASTER)!;
       adapter.getOrderStatus.mockResolvedValue(
         new PerpOrderResponse(
@@ -225,6 +227,8 @@ describe('OrderExecutor', () => {
           OrderSide.LONG,
         ),
       );
+      // Mock cancelOrder to succeed (called after max retries to prevent orphaned orders)
+      adapter.cancelOrder.mockResolvedValue(undefined);
 
       const result = await executor.waitForOrderFill(
         adapter,
@@ -237,8 +241,10 @@ describe('OrderExecutor', () => {
         false,
       );
 
-      expect(result.status).toBe(OrderStatus.SUBMITTED);
-      expect(result.error).toContain('did not fill within');
+      // Order is cancelled to prevent orphaned orders on order book
+      expect(result.status).toBe(OrderStatus.CANCELLED);
+      expect(result.error).toContain('did not fill');
+      expect(adapter.cancelOrder).toHaveBeenCalledWith('order-123', 'ETHUSDT');
     }, 10000);
   });
 

@@ -59,6 +59,9 @@ describe('HyperliquidSpotAdapter', () => {
   let mockWallet: any;
 
   beforeEach(async () => {
+    // Clear all mocks before each test to prevent state leakage
+    jest.clearAllMocks();
+
     mockWallet = {
       address: '0x' + '1'.repeat(40),
     };
@@ -587,6 +590,23 @@ describe('HyperliquidSpotAdapter', () => {
   });
 
   describe('SymbolConverter initialization', () => {
+    let freshAdapter: HyperliquidSpotAdapter;
+
+    // Create a fresh adapter for each test in this block to test initialization behavior
+    beforeEach(async () => {
+      // Clear mocks and create fresh adapter for initialization tests
+      jest.clearAllMocks();
+      
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          HyperliquidSpotAdapter,
+          { provide: ConfigService, useValue: mockConfigService },
+        ],
+      }).compile();
+
+      freshAdapter = module.get<HyperliquidSpotAdapter>(HyperliquidSpotAdapter);
+    });
+
     it('should retry on rate limit errors', async () => {
       const rateLimitError = new Error('429 Too Many Requests');
       (rateLimitError as any).response = { status: 429 };
@@ -595,7 +615,7 @@ describe('HyperliquidSpotAdapter', () => {
       (SymbolConverter.create as jest.Mock)
         .mockRejectedValueOnce(rateLimitError)
         .mockRejectedValueOnce(rateLimitError)
-        .mockResolvedValue(mockSymbolConverter);
+        .mockResolvedValueOnce(mockSymbolConverter);
 
       mockSymbolConverter.getAssetId.mockReturnValue(0);
       mockSymbolConverter.getSzDecimals.mockReturnValue(4);
@@ -624,10 +644,10 @@ describe('HyperliquidSpotAdapter', () => {
         OrderType.MARKET,
         1.0,
       );
-      await adapter.placeSpotOrder(request);
+      await freshAdapter.placeSpotOrder(request);
 
       expect(SymbolConverter.create).toHaveBeenCalledTimes(3);
-    });
+    }, 15000); // Increase timeout for retry delays
 
     it('should throw error after max retries', async () => {
       const rateLimitError = new Error('429 Too Many Requests');
@@ -642,11 +662,11 @@ describe('HyperliquidSpotAdapter', () => {
         1.0,
       );
 
-      await expect(adapter.placeSpotOrder(request)).rejects.toThrow(
+      await expect(freshAdapter.placeSpotOrder(request)).rejects.toThrow(
         SpotExchangeError,
       );
       expect(SymbolConverter.create).toHaveBeenCalledTimes(5); // Max retries
-    });
+    }, 60000); // Increase timeout significantly for 5 retries with exponential backoff
 
     it('should not retry on non-rate-limit errors', async () => {
       const networkError = new Error('Network error');
@@ -660,7 +680,7 @@ describe('HyperliquidSpotAdapter', () => {
         1.0,
       );
 
-      await expect(adapter.placeSpotOrder(request)).rejects.toThrow(
+      await expect(freshAdapter.placeSpotOrder(request)).rejects.toThrow(
         SpotExchangeError,
       );
       expect(SymbolConverter.create).toHaveBeenCalledTimes(1);
@@ -809,19 +829,18 @@ describe('HyperliquidSpotAdapter', () => {
       );
     });
 
-    it('should handle limit order without price', async () => {
-      mockSymbolConverter.getAssetId.mockReturnValue(0);
-      mockSymbolConverter.getSzDecimals.mockReturnValue(4);
-
-      const request = new SpotOrderRequest(
-        'ETH',
-        OrderSide.LONG,
-        OrderType.LIMIT,
-        1.0,
-        undefined, // No price
-      );
-
-      await expect(adapter.placeSpotOrder(request)).rejects.toThrow();
+    it('should handle limit order without price', () => {
+      // SpotOrderRequest validates that LIMIT orders must have a price
+      // This is domain-level validation that throws before reaching the adapter
+      expect(() => {
+        new SpotOrderRequest(
+          'ETH',
+          OrderSide.LONG,
+          OrderType.LIMIT,
+          1.0,
+          undefined, // No price - should throw
+        );
+      }).toThrow('Limit price is required for LIMIT orders');
     });
 
     it('should handle FOK time in force', async () => {

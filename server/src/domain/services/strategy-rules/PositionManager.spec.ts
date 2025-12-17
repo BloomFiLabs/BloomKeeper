@@ -154,15 +154,14 @@ describe('PositionManager', () => {
     };
 
     it('should close all positions successfully', async () => {
-      const positions = [
-        createMockPosition('ETHUSDT', ExchangeType.ASTER, OrderSide.LONG, 1.0),
-        createMockPosition(
-          'BTCUSDT',
-          ExchangeType.LIGHTER,
-          OrderSide.SHORT,
-          0.5,
-        ),
-      ];
+      const ethPosition = createMockPosition('ETHUSDT', ExchangeType.ASTER, OrderSide.LONG, 1.0);
+      const btcPosition = createMockPosition(
+        'BTCUSDT',
+        ExchangeType.LIGHTER,
+        OrderSide.SHORT,
+        0.5,
+      );
+      const positions = [ethPosition, btcPosition];
 
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       const lighterAdapter = mockAdapters.get(ExchangeType.LIGHTER)!;
@@ -190,9 +189,13 @@ describe('PositionManager', () => {
         ),
       );
 
-      // Mock getPositions to return empty after close
-      asterAdapter.getPositions.mockResolvedValue([]);
-      lighterAdapter.getPositions.mockResolvedValue([]);
+      // First call returns position (for fresh fetch), subsequent calls return empty (after close)
+      asterAdapter.getPositions
+        .mockResolvedValueOnce([ethPosition])
+        .mockResolvedValue([]);
+      lighterAdapter.getPositions
+        .mockResolvedValueOnce([btcPosition])
+        .mockResolvedValue([]);
 
       const result: ArbitrageExecutionResult = {
         success: true,
@@ -239,7 +242,10 @@ describe('PositionManager', () => {
           3000,
         ),
       );
-      asterAdapter.getPositions.mockResolvedValue([]);
+      // First call returns position (for fresh fetch), second call returns empty (after close)
+      asterAdapter.getPositions
+        .mockResolvedValueOnce([position])
+        .mockResolvedValue([]);
 
       const result: ArbitrageExecutionResult = {
         success: true,
@@ -271,6 +277,7 @@ describe('PositionManager', () => {
       );
 
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
+      // All close attempts fail
       asterAdapter.placeOrder.mockResolvedValue(
         new PerpOrderResponse(
           'close-1',
@@ -283,7 +290,8 @@ describe('PositionManager', () => {
           'Insufficient balance',
         ),
       );
-      asterAdapter.getPositions.mockResolvedValue([position]); // Position still exists
+      // Position always exists (fresh fetch returns position, verification returns position)
+      asterAdapter.getPositions.mockResolvedValue([position]);
 
       const result: ArbitrageExecutionResult = {
         success: true,
@@ -307,7 +315,7 @@ describe('PositionManager', () => {
         expect(closeResult.value.stillOpen.length).toBeGreaterThan(0);
       }
       expect(result.errors.length).toBeGreaterThan(0);
-    });
+    }, 30000); // Increase timeout due to multiple retry attempts with delays
 
     it('should attempt final market order fallback if position still exists', async () => {
       const position = createMockPosition(

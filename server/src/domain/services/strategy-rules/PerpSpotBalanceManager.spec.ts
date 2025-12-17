@@ -105,14 +105,17 @@ describe('PerpSpotBalanceManager', () => {
     });
 
     it('should not rebalance if transfer amount is too small', () => {
+      // Use small balances so that the optimal transfer amount is < $10
       const result = manager.shouldRebalance(
-        100, // perpBalance
-        100, // spotBalance
-        100, // targetPositionSize (small)
+        10, // perpBalance
+        10, // spotBalance
+        30, // targetPositionSize (small)
         2, // leverage
       );
 
-      // Transfer amount would be less than $10 minimum
+      // Total capital = 20
+      // Optimal spot = 20 * 2 / 3 = 13.33
+      // Spot deficit = 13.33 - 10 = 3.33 < $10 minimum
       expect(result.shouldRebalance).toBe(false);
     });
   });
@@ -131,7 +134,7 @@ describe('PerpSpotBalanceManager', () => {
         3, // leverage
       );
 
-      expect(result.isSuccess()).toBe(true);
+      expect(result.isSuccess).toBe(true);
       expect(result.value).toBe(true);
       expect(mockSpotAdapter.transferInternal).toHaveBeenCalled();
     });
@@ -148,7 +151,7 @@ describe('PerpSpotBalanceManager', () => {
         3,
       );
 
-      expect(result.isSuccess()).toBe(true);
+      expect(result.isSuccess).toBe(true);
       expect(result.value).toBe(false);
       expect(mockSpotAdapter.transferInternal).not.toHaveBeenCalled();
     });
@@ -169,7 +172,7 @@ describe('PerpSpotBalanceManager', () => {
       );
 
       // Should return success=false but not throw
-      expect(result.isSuccess()).toBe(true);
+      expect(result.isSuccess).toBe(true);
       expect(result.value).toBe(false);
     });
   });
