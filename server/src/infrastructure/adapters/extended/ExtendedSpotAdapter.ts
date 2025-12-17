@@ -146,8 +146,8 @@ export class ExtendedSpotAdapter implements ISpotExchangeAdapter {
       // Using similar structure to perp orders
       const orderDataForSigning = {
         symbol,
-        side: request.side === OrderSide.LONG ? 'buy' : 'sell',
-        orderType: request.type === OrderType.MARKET ? 'market' : 'limit',
+        side: (request.side === OrderSide.LONG ? 'buy' : 'sell') as 'buy' | 'sell',
+        orderType: (request.type === OrderType.MARKET ? 'market' : 'limit') as 'limit' | 'market',
         size: request.size.toString(),
         price: request.price?.toString(),
         timeInForce: request.timeInForce || TimeInForce.GTC,

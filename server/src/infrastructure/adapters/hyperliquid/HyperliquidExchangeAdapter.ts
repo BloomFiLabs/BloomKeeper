@@ -901,11 +901,11 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
   ): Promise<{ bestBid: number; bestAsk: number }> {
     await this.ensureSymbolConverter();
 
+    // Hyperliquid l2Book API expects coin without -PERP suffix (e.g., "YZY" not "YZY-PERP")
     const baseCoin = symbol
       .replace('USDT', '')
       .replace('USDC', '')
       .replace('-PERP', '');
-    const coin = this.formatCoin(symbol);
 
     // Check cache first (very short TTL for order execution)
     const cached = this.orderBookCache.get(symbol);
@@ -915,11 +915,11 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
     try {
       // Use REST API l2Book endpoint directly to get order book snapshot
-      // Hyperliquid API: POST /info with { type: "l2Book", coin: "ETH" }
+      // Hyperliquid API: POST /info with { type: "l2Book", coin: "YZY" } (no -PERP suffix!)
       const baseUrl = this.config.baseUrl || 'https://api.hyperliquid.xyz';
       const response = await axios.post(
         `${baseUrl}/info`,
-        { type: 'l2Book', coin },
+        { type: 'l2Book', coin: baseCoin },
         { timeout: 5000 },
       );
 
@@ -928,42 +928,42 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       if (l2Book && l2Book.levels) {
         const levels = l2Book.levels;
 
-        // Hyperliquid l2Book format: { levels: [[px, sz], ...] }
-        // First half are bids (sorted descending), second half are asks (sorted ascending)
-        // Or format: { levels: { bids: [[px, sz], ...], asks: [[px, sz], ...] } }
+        // Hyperliquid l2Book format: { coin, time, levels: [bids[], asks[]] }
+        // where bids and asks are arrays of { px, sz, n } objects
         let bestBid = 0;
         let bestAsk = 0;
 
-        if (Array.isArray(levels)) {
-          // Find midpoint - bids are first (descending), asks are second (ascending)
-          const midpoint = Math.floor(levels.length / 2);
-          if (midpoint > 0) {
-            // Best bid is the first (highest) bid
-            const topBid = levels[0];
-            bestBid = parseFloat(
-              Array.isArray(topBid) ? topBid[0] : topBid.px || topBid,
-            );
+        if (Array.isArray(levels) && levels.length === 2) {
+          // Format: levels = [bidsArray, asksArray]
+          // Each entry is an object like { px: "0.35236", sz: "8616.0", n: 3 }
+          const bids = levels[0] || [];
+          const asks = levels[1] || [];
 
-            // Best ask is the first ask (lowest) after midpoint
-            const topAsk = levels[midpoint];
-            bestAsk = parseFloat(
-              Array.isArray(topAsk) ? topAsk[0] : topAsk.px || topAsk,
-            );
+          if (bids.length > 0) {
+            const topBid = bids[0];
+            bestBid = parseFloat(topBid.px || (Array.isArray(topBid) ? topBid[0] : '0'));
+            this.logger.debug(`Order book ${baseCoin}: topBid=${JSON.stringify(topBid)}, parsed=${bestBid}`);
+          }
+
+          if (asks.length > 0) {
+            const topAsk = asks[0];
+            bestAsk = parseFloat(topAsk.px || (Array.isArray(topAsk) ? topAsk[0] : '0'));
+            this.logger.debug(`Order book ${baseCoin}: topAsk=${JSON.stringify(topAsk)}, parsed=${bestAsk}`);
           }
         } else if (levels.bids && levels.asks) {
-          // Format: { bids: [[px, sz], ...], asks: [[px, sz], ...] }
+          // Alternative format: { bids: [...], asks: [...] }
           if (levels.bids.length > 0) {
             const topBid = levels.bids[0];
-            bestBid = parseFloat(
-              Array.isArray(topBid) ? topBid[0] : topBid.px || topBid,
-            );
+            bestBid = parseFloat(topBid.px || (Array.isArray(topBid) ? topBid[0] : '0'));
           }
           if (levels.asks.length > 0) {
             const topAsk = levels.asks[0];
-            bestAsk = parseFloat(
-              Array.isArray(topAsk) ? topAsk[0] : topAsk.px || topAsk,
-            );
+            bestAsk = parseFloat(topAsk.px || (Array.isArray(topAsk) ? topAsk[0] : '0'));
           }
+        } else {
+          this.logger.warn(
+            `Unexpected l2Book format for ${baseCoin}: levels has ${Array.isArray(levels) ? levels.length : 'non-array'} entries`,
+          );
         }
 
         if (bestBid > 0 && bestAsk > 0) {
@@ -984,18 +984,13 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         `Could not parse order book data for ${symbol}: ${JSON.stringify(l2Book).substring(0, 200)}`,
       );
     } catch (error: any) {
-      this.logger.debug(
-        `Failed to get order book for ${symbol}: ${error.message}. Falling back to mark price.`,
+      this.logger.error(
+        `CRITICAL: Failed to get order book for ${symbol}: ${error.message}. Cannot execute market orders safely without order book data.`,
       );
-
-      // Fallback to mark price if order book fails
-      const markPrice = await this.getMarkPrice(symbol);
-      // Use mark price as both bid and ask (with small spread estimate)
-      const spread = markPrice * 0.001; // 0.1% spread estimate
-      return {
-        bestBid: markPrice - spread,
-        bestAsk: markPrice + spread,
-      };
+      // Re-throw the error - don't fall back to mark price as slippage could wipe out gains
+      throw new Error(
+        `Order book unavailable for ${symbol}: ${error.message}. Manual intervention required.`,
+      );
     }
   }
 

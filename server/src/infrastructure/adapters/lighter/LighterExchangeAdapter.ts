@@ -1295,7 +1295,21 @@ export class LighterExchangeAdapter
 
       // Convert object to array of position data
       // Type assertion: positions are objects with known structure
-      const positionsData = Object.values(positionsObj);
+      const positionsData = Object.values(positionsObj) as Array<{
+        market_index?: number;
+        marketIndex?: number;
+        index?: number;
+        size?: string | number;
+        positionSize?: string | number;
+        amount?: string | number;
+        side?: string;
+        entry_price?: string | number;
+        entryPrice?: string | number;
+        avgEntryPrice?: string | number;
+        pnl?: string | number;
+        unrealized_pnl?: string | number;
+        unrealizedPnl?: string | number;
+      }>;
       const positions: PerpPosition[] = [];
 
       for (const posData of positionsData) {
