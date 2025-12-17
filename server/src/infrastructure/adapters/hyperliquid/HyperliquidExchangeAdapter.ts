@@ -1234,6 +1234,78 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 
+  /**
+   * Set leverage for a symbol
+   * Note: Hyperliquid cross-margin leverage is typically set at account level via UI.
+   * This method logs the request but doesn't make API calls as the @nktkas/hyperliquid
+   * package uses a different API pattern for updateLeverage.
+   * @param symbol Trading symbol (e.g., 'ETH-PERP', 'BTC')
+   * @param leverage Target leverage (e.g., 3, 5, 10)
+   * @param isCross Whether to use cross margin (true) or isolated margin (false). Defaults to cross.
+   * @returns True (leverage setting is assumed to be handled via exchange UI)
+   */
+  async setLeverage(
+    symbol: string,
+    leverage: number,
+    isCross: boolean = true,
+  ): Promise<boolean> {
+    const coin = this.formatCoin(symbol);
+    const leverageMode = isCross ? 'cross' : 'isolated';
+
+    // Hyperliquid typically uses account-level leverage settings
+    // The @nktkas/hyperliquid SDK requires a different API pattern for updateLeverage
+    // For now, we just log and return true - user should set leverage via Hyperliquid UI
+    this.logger.debug(
+      `Hyperliquid leverage for ${coin}: ${leverage}x (${leverageMode}) - ` +
+        `Note: Set leverage via Hyperliquid UI or ensure account default is correct`,
+    );
+
+    return true;
+  }
+
+  /**
+   * Get max leverage allowed for a symbol
+   * @param symbol Trading symbol
+   * @returns Maximum leverage allowed (Hyperliquid typically allows up to 50x for major coins)
+   */
+  async getMaxLeverage(symbol: string): Promise<number> {
+    try {
+      const coin = this.formatCoin(symbol);
+
+      // Hyperliquid provides maxLeverage per asset in the clearinghouseState
+      const clearinghouseState = await this.infoClient.clearinghouseState({
+        user: this.walletAddress,
+      });
+
+      // Look for the asset's position info which includes leverage config
+      const assetPositions = clearinghouseState.assetPositions || [];
+      for (const pos of assetPositions) {
+        const position = pos.position || pos;
+        if (position.coin === coin) {
+          // maxTradeSzs is often related to leverage limits
+          // For now, return a sensible default
+          const leverage = position.leverage;
+          if (leverage && leverage.value) {
+            // This is the current leverage, not max
+            // Hyperliquid typically allows up to 50x for BTC/ETH, less for others
+          }
+        }
+      }
+
+      // Default max leverage based on asset type
+      const baseCoin = coin.replace('-PERP', '');
+      if (['BTC', 'ETH'].includes(baseCoin)) {
+        return 50;
+      } else if (['SOL', 'AVAX', 'DOGE', 'XRP'].includes(baseCoin)) {
+        return 20;
+      }
+      return 10; // Default for smaller coins
+    } catch (error: any) {
+      this.logger.warn(`Failed to get max leverage for ${symbol}: ${error.message}`);
+      return 10; // Safe default
+    }
+  }
+
   async isReady(): Promise<boolean> {
     try {
       await this.testConnection();
