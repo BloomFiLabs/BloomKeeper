@@ -60,6 +60,14 @@ export interface ArbitrageOpportunity {
   long24hVolume?: number; // 24h trading volume for long exchange (USD)
   short24hVolume?: number; // 24h trading volume for short exchange (USD)
   timestamp: Date;
+
+  // Prediction-based fields (populated when prediction service is available)
+  predictedSpread?: Percentage; // Predicted funding rate spread
+  predictionConfidence?: number; // Confidence in prediction (0-1)
+  predictedBreakEvenHours?: number; // Break-even using predicted spread
+  reliableHorizonHours?: number; // How many hours prediction is reliable
+  predictionScore?: number; // Overall opportunity score (0-1)
+  predictionRecommendation?: 'strong_buy' | 'buy' | 'hold' | 'skip'; // Recommendation
 }
 
 /**

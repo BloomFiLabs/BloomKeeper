@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
 import { IOpportunityEvaluator } from './IOpportunityEvaluator';
 import type { IHistoricalFundingRateService } from '../../ports/IHistoricalFundingRateService';
 import { HistoricalMetrics } from '../../ports/IHistoricalFundingRateService';
 import { FundingRateAggregator } from '../FundingRateAggregator';
 import type { IPositionLossTracker } from '../../ports/IPositionLossTracker';
+import type { IFundingRatePredictionService, EnsemblePredictionResult, MarketRegime } from '../../ports/IFundingRatePredictor';
 import { CostCalculator } from './CostCalculator';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
@@ -14,22 +15,203 @@ import { IPerpExchangeAdapter } from '../../ports/IPerpExchangeAdapter';
 import { Result } from '../../common/Result';
 import { DomainException } from '../../exceptions/DomainException';
 import { OrderSide } from '../../value-objects/PerpOrder';
+import { PredictedBreakEvenCalculator, PredictedBreakEven, OpportunityScore } from './PredictedBreakEvenCalculator';
+import { Percentage } from '../../value-objects/Percentage';
+
+/**
+ * Prediction-enhanced opportunity evaluation result
+ */
+export interface PredictionEnhancedEvaluation {
+  /** Standard historical evaluation */
+  historicalEvaluation: {
+    breakEvenHours: number | null;
+    historicalMetrics: { long: HistoricalMetrics | null; short: HistoricalMetrics | null };
+    worstCaseBreakEvenHours: number | null;
+    consistencyScore: number;
+  };
+  /** Prediction-based evaluation */
+  predictionEvaluation: {
+    predictedSpread: number;
+    predictionConfidence: number;
+    predictedBreakEvenHours: number | null;
+    regime: MarketRegime;
+    regimeConfidence: number;
+  } | null;
+  /** Combined score using both historical and prediction data */
+  combinedScore: number;
+}
 
 /**
  * Opportunity evaluator for funding arbitrage strategy
  * Handles opportunity evaluation with historical data, worst-case selection, and rebalancing decisions
+ * Enhanced with ensemble prediction capabilities
  */
 @Injectable()
 export class OpportunityEvaluator implements IOpportunityEvaluator {
   private readonly logger = new Logger(OpportunityEvaluator.name);
 
   constructor(
+    @Inject('IHistoricalFundingRateService')
     private readonly historicalService: IHistoricalFundingRateService,
     private readonly aggregator: FundingRateAggregator,
+    @Inject('IPositionLossTracker')
     private readonly lossTracker: IPositionLossTracker,
     private readonly costCalculator: CostCalculator,
     private readonly config: StrategyConfig,
+    @Optional()
+    @Inject('IFundingRatePredictionService')
+    private readonly predictionService?: IFundingRatePredictionService,
+    @Optional()
+    private readonly breakEvenCalculator?: PredictedBreakEvenCalculator,
   ) {}
+
+  /**
+   * Enrich an opportunity with prediction-based break-even data
+   * This is the main entry point for integrating predictions into opportunity discovery
+   */
+  async enrichOpportunityWithPredictions(
+    opportunity: ArbitrageOpportunity,
+    positionSizeUsd: number,
+    totalCosts: number,
+  ): Promise<ArbitrageOpportunity> {
+    if (!this.breakEvenCalculator) {
+      return opportunity;
+    }
+
+    try {
+      const [breakEven, score] = await Promise.all([
+        this.breakEvenCalculator.calculatePredictedBreakEven(
+          opportunity,
+          positionSizeUsd,
+          totalCosts,
+        ),
+        this.breakEvenCalculator.scoreOpportunity(
+          opportunity,
+          positionSizeUsd,
+          totalCosts,
+        ),
+      ]);
+
+      // Enrich opportunity with prediction data
+      return {
+        ...opportunity,
+        predictedSpread: Percentage.fromDecimal(breakEven.predictedSpread),
+        predictionConfidence: breakEven.confidence,
+        predictedBreakEvenHours: breakEven.confidenceAdjustedBreakEvenHours,
+        reliableHorizonHours: breakEven.reliableHorizonHours,
+        predictionScore: score.score,
+        predictionRecommendation: score.recommendation,
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.debug(
+        `Failed to enrich ${opportunity.symbol} with predictions: ${message}`,
+      );
+      return opportunity;
+    }
+  }
+
+  /**
+   * Filter opportunities based on prediction reliability and break-even
+   * Returns only opportunities that meet prediction confidence and break-even thresholds
+   */
+  filterByPredictionQuality(
+    opportunities: ArbitrageOpportunity[],
+    minConfidence: number = 0.6,
+    maxBreakEvenHours: number = 168, // 7 days default
+  ): ArbitrageOpportunity[] {
+    return opportunities.filter((opp) => {
+      // If no prediction data, include opportunity (fallback to historical)
+      if (opp.predictionConfidence === undefined) {
+        return true;
+      }
+
+      // Filter by confidence threshold
+      if (opp.predictionConfidence < minConfidence) {
+        this.logger.debug(
+          `Filtering ${opp.symbol}: confidence ${(opp.predictionConfidence * 100).toFixed(0)}% < ${(minConfidence * 100).toFixed(0)}%`,
+        );
+        return false;
+      }
+
+      // Filter by break-even threshold
+      if (
+        opp.predictedBreakEvenHours !== undefined &&
+        opp.predictedBreakEvenHours > maxBreakEvenHours
+      ) {
+        this.logger.debug(
+          `Filtering ${opp.symbol}: break-even ${opp.predictedBreakEvenHours.toFixed(1)}h > ${maxBreakEvenHours}h`,
+        );
+        return false;
+      }
+
+      // Filter by prediction recommendation
+      if (opp.predictionRecommendation === 'skip') {
+        this.logger.debug(
+          `Filtering ${opp.symbol}: recommendation is 'skip'`,
+        );
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  /**
+   * Rank opportunities by prediction score
+   * Returns opportunities sorted by prediction quality (best first)
+   */
+  rankByPredictionScore(
+    opportunities: ArbitrageOpportunity[],
+  ): ArbitrageOpportunity[] {
+    return [...opportunities].sort((a, b) => {
+      // If both have prediction scores, sort by score
+      if (a.predictionScore !== undefined && b.predictionScore !== undefined) {
+        return b.predictionScore - a.predictionScore;
+      }
+
+      // If only one has prediction score, prefer that one
+      if (a.predictionScore !== undefined) return -1;
+      if (b.predictionScore !== undefined) return 1;
+
+      // Fallback: sort by current spread
+      return b.spread.toDecimal() - a.spread.toDecimal();
+    });
+  }
+
+  /**
+   * Get detailed prediction breakdown for logging/debugging
+   */
+  async getPredictionBreakdown(
+    opportunity: ArbitrageOpportunity,
+    positionSizeUsd: number,
+    totalCosts: number,
+  ): Promise<{
+    breakEven: PredictedBreakEven | null;
+    score: OpportunityScore | null;
+  }> {
+    if (!this.breakEvenCalculator) {
+      return { breakEven: null, score: null };
+    }
+
+    try {
+      const [breakEven, score] = await Promise.all([
+        this.breakEvenCalculator.calculatePredictedBreakEven(
+          opportunity,
+          positionSizeUsd,
+          totalCosts,
+        ),
+        this.breakEvenCalculator.scoreOpportunity(
+          opportunity,
+          positionSizeUsd,
+          totalCosts,
+        ),
+      ]);
+      return { breakEven, score };
+    } catch {
+      return { breakEven: null, score: null };
+    }
+  }
 
   evaluateOpportunityWithHistory(
     opportunity: ArbitrageOpportunity,
@@ -423,5 +605,221 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
       currentBreakEvenHours,
       newBreakEvenHours: p2TimeToBreakEven,
     });
+  }
+
+  /**
+   * Evaluate opportunity using ensemble predictions
+   * Combines historical analysis with forward-looking predictions
+   */
+  async evaluateWithPredictions(
+    opportunity: ArbitrageOpportunity,
+    plan: ArbitrageExecutionPlan | null,
+  ): Promise<Result<PredictionEnhancedEvaluation, DomainException>> {
+    // Get standard historical evaluation
+    const historicalResult = this.evaluateOpportunityWithHistory(opportunity, plan);
+    if (historicalResult.isFailure) {
+      return Result.failure(historicalResult.error);
+    }
+    const historicalEvaluation = historicalResult.value;
+
+    // Get prediction evaluation if service is available
+    let predictionEvaluation: PredictionEnhancedEvaluation['predictionEvaluation'] = null;
+
+    if (this.predictionService && opportunity.shortExchange) {
+      try {
+        const spreadPrediction = await this.predictionService.getSpreadPrediction(
+          opportunity.symbol,
+          opportunity.longExchange,
+          opportunity.shortExchange,
+        );
+
+        // Calculate predicted break-even hours
+        let predictedBreakEvenHours: number | null = null;
+        if (plan && spreadPrediction.predictedSpread !== 0) {
+          const periodsPerYear = 24 * 365;
+          const predictedAPY = Math.abs(spreadPrediction.predictedSpread) * periodsPerYear;
+
+          const avgMarkPrice =
+            opportunity.longMarkPrice && opportunity.shortMarkPrice
+              ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
+              : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
+          const positionSizeUsd = plan.positionSize.toUSD(avgMarkPrice);
+          const predictedHourlyReturn = (predictedAPY / periodsPerYear) * positionSizeUsd;
+
+          if (predictedHourlyReturn > 0) {
+            predictedBreakEvenHours = plan.estimatedCosts.total / predictedHourlyReturn;
+          }
+        }
+
+        predictionEvaluation = {
+          predictedSpread: spreadPrediction.predictedSpread,
+          predictionConfidence: spreadPrediction.confidence,
+          predictedBreakEvenHours,
+          regime: spreadPrediction.longPrediction.regime,
+          regimeConfidence: spreadPrediction.longPrediction.regimeConfidence,
+        };
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.debug(
+          `Prediction service unavailable for ${opportunity.symbol}: ${message}`,
+        );
+      }
+    }
+
+    // Calculate combined score
+    const combinedScore = this.calculateCombinedScore(
+      historicalEvaluation,
+      predictionEvaluation,
+    );
+
+    return Result.success({
+      historicalEvaluation,
+      predictionEvaluation,
+      combinedScore,
+    });
+  }
+
+  /**
+   * Calculate combined score from historical and prediction data
+   * Weights prediction more heavily when confidence is high
+   */
+  private calculateCombinedScore(
+    historical: PredictionEnhancedEvaluation['historicalEvaluation'],
+    prediction: PredictionEnhancedEvaluation['predictionEvaluation'],
+  ): number {
+    // Base score from historical consistency
+    let score = historical.consistencyScore;
+
+    // Adjust for worst-case break-even (lower is better)
+    if (historical.worstCaseBreakEvenHours && historical.worstCaseBreakEvenHours < Infinity) {
+      const breakEvenFactor = Math.max(0, 1 - historical.worstCaseBreakEvenHours / (24 * 7));
+      score *= 0.7 + 0.3 * breakEvenFactor;
+    }
+
+    // Incorporate prediction if available and confident
+    if (prediction && prediction.predictionConfidence > 0.5) {
+      const predictionWeight = prediction.predictionConfidence * 0.4;
+      const historicalWeight = 1 - predictionWeight;
+
+      // Prediction score based on predicted spread magnitude and break-even
+      let predictionScore = Math.min(1, Math.abs(prediction.predictedSpread) * 10000);
+      if (prediction.predictedBreakEvenHours && prediction.predictedBreakEvenHours < Infinity) {
+        const predBreakEvenFactor = Math.max(0, 1 - prediction.predictedBreakEvenHours / (24 * 7));
+        predictionScore *= 0.7 + 0.3 * predBreakEvenFactor;
+      }
+
+      // Regime adjustment
+      if (prediction.regime === 'mean_reverting') {
+        predictionScore *= 1.1; // Boost for favorable regime
+      } else if (prediction.regime === 'extreme_dislocation') {
+        predictionScore *= 0.8; // Reduce for risky regime
+      }
+
+      score = historicalWeight * score + predictionWeight * predictionScore;
+    }
+
+    return Math.max(0, Math.min(1, score));
+  }
+
+  /**
+   * Select best opportunity using prediction-enhanced evaluation
+   */
+  async selectBestOpportunityWithPredictions(
+    allOpportunities: Array<{
+      opportunity: ArbitrageOpportunity;
+      plan: ArbitrageExecutionPlan | null;
+      netReturn: number;
+      positionValueUsd: number;
+      breakEvenHours: number | null;
+    }>,
+  ): Promise<
+    Result<
+      {
+        opportunity: ArbitrageOpportunity;
+        plan: ArbitrageExecutionPlan;
+        evaluation: PredictionEnhancedEvaluation;
+        reason: string;
+      } | null,
+      DomainException
+    >
+  > {
+    if (allOpportunities.length === 0) {
+      return Result.success(null);
+    }
+
+    const evaluated: Array<{
+      opportunity: ArbitrageOpportunity;
+      plan: ArbitrageExecutionPlan;
+      evaluation: PredictionEnhancedEvaluation;
+    }> = [];
+
+    // Evaluate all opportunities with predictions
+    for (const item of allOpportunities) {
+      if (!item.plan) continue;
+      if ('perpOrder' in item.plan && 'spotOrder' in item.plan) continue;
+
+      const evalResult = await this.evaluateWithPredictions(
+        item.opportunity,
+        item.plan as ArbitrageExecutionPlan,
+      );
+
+      if (evalResult.isSuccess) {
+        evaluated.push({
+          opportunity: item.opportunity,
+          plan: item.plan as ArbitrageExecutionPlan,
+          evaluation: evalResult.value,
+        });
+      }
+    }
+
+    if (evaluated.length === 0) {
+      return Result.success(null);
+    }
+
+    // Sort by combined score (highest first)
+    evaluated.sort((a, b) => b.evaluation.combinedScore - a.evaluation.combinedScore);
+    const best = evaluated[0];
+
+    // Build reason string
+    const reason = this.buildSelectionReason(best.evaluation);
+
+    this.logger.log(
+      `🎯 Selected opportunity: ${best.opportunity.symbol} - ${reason}`,
+    );
+
+    return Result.success({
+      opportunity: best.opportunity,
+      plan: best.plan,
+      evaluation: best.evaluation,
+      reason,
+    });
+  }
+
+  /**
+   * Build human-readable reason for opportunity selection
+   */
+  private buildSelectionReason(evaluation: PredictionEnhancedEvaluation): string {
+    const parts: string[] = [];
+
+    parts.push(`Combined score: ${(evaluation.combinedScore * 100).toFixed(1)}%`);
+    parts.push(`Consistency: ${(evaluation.historicalEvaluation.consistencyScore * 100).toFixed(1)}%`);
+
+    if (evaluation.historicalEvaluation.worstCaseBreakEvenHours) {
+      parts.push(
+        `Worst-case BE: ${(evaluation.historicalEvaluation.worstCaseBreakEvenHours / 24).toFixed(1)}d`,
+      );
+    }
+
+    if (evaluation.predictionEvaluation) {
+      parts.push(
+        `Predicted spread: ${(evaluation.predictionEvaluation.predictedSpread * 100).toFixed(4)}%`,
+      );
+      parts.push(`Regime: ${evaluation.predictionEvaluation.regime}`);
+      parts.push(
+        `Prediction confidence: ${(evaluation.predictionEvaluation.predictionConfidence * 100).toFixed(0)}%`,
+      );
+    }
+
+    return parts.join(', ');
   }
 }

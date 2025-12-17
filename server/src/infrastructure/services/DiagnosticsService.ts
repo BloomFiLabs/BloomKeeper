@@ -5,7 +5,65 @@ import type { RateLimiterService } from './RateLimiterService';
 import type { PositionStateRepository } from '../repositories/PositionStateRepository';
 
 /**
- * Error event for tracking
+ * Error context snapshot - captures full state at time of error
+ */
+export interface ErrorContextSnapshot {
+  // Order details if applicable
+  order?: {
+    symbol: string;
+    exchange: ExchangeType;
+    side: 'LONG' | 'SHORT';
+    size: number;
+    price: number;
+    orderType: string;
+    // Market context at time of order
+    marketPrice?: number;
+    bestBid?: number;
+    bestAsk?: number;
+    spread?: number;
+    deviationFromMidBps?: number;
+  };
+  // Position state
+  positions?: Array<{
+    symbol: string;
+    exchange: ExchangeType;
+    side: string;
+    size: number;
+    marginMode?: string;
+    margin?: number;
+  }>;
+  // Exchange-specific state
+  exchangeState?: {
+    nonce?: number;
+    expectedNonce?: number;
+    balance?: number;
+    marginMode?: string;
+    openOrderCount?: number;
+    rateLimitRemaining?: number;
+  };
+  // Execution context
+  execution?: {
+    threadId?: string;
+    operation?: string;
+    globalLockHeld?: boolean;
+    globalLockDurationMs?: number;
+    symbolLockHeld?: boolean;
+    timeSinceLastOrderMs?: number;
+  };
+  // Market specs
+  marketSpecs?: {
+    minOrderSize?: number;
+    tickSize?: number;
+    stepSize?: number;
+    maxLeverage?: number;
+  };
+  // Raw request/response for debugging
+  rawRequest?: string;
+  rawResponse?: string;
+}
+
+/**
+ * Error event for tracking - enhanced with context snapshot
  */
 export interface ErrorEvent {
   type: string;
@@ -14,6 +72,76 @@ export interface ErrorEvent {
   symbol?: string;
   timestamp: Date;
   context?: Record<string, any>;
+  // NEW: Full context snapshot at time of error
+  snapshot?: ErrorContextSnapshot;
+}
+
+/**
+ * Single-leg failure event for tracking patterns
+ */
+export interface SingleLegFailureEvent {
+  id: string;
+  symbol: string;
+  timestamp: Date;
+  // Which leg failed?
+  failedLeg: 'long' | 'short';
+  failedExchange: ExchangeType;
+  successfulExchange: ExchangeType;
+  // Why did it fail?
+  failureReason: 'price_moved' | 'order_rejected' | 'timeout' | 'size_mismatch' | 'exchange_error' | 'unknown';
+  failureMessage?: string;
+  // Timing
+  timeBetweenLegsMs: number;
+  // Price context
+  longPrice?: number;
+  shortPrice?: number;
+  priceSlippageBps?: number;
+  // Order details
+  attemptedSize?: number;
+  filledSize?: number;
+}
+
+/**
+ * Lighter exchange state snapshot
+ */
+export interface LighterStateSnapshot {
+  timestamp: Date;
+  nonce: {
+    current: number;
+    expected: number;
+    lastSync: Date;
+    pendingIncrements: number;
+  };
+  positions: Array<{
+    symbol: string;
+    marginMode: 'cross' | 'isolated';
+    size: number;
+    margin: number;
+    leverage: number;
+  }>;
+  balances: {
+    total: number;
+    available: number;
+    marginUsed: number;
+  };
+  openOrders: number;
+}
+
+/**
+ * Unfilled order analysis
+ */
+export interface UnfilledOrderInfo {
+  orderId: string;
+  symbol: string;
+  exchange: ExchangeType;
+  side: 'LONG' | 'SHORT';
+  orderPrice: number;
+  marketPrice: number;
+  deviationBps: number;
+  ageSeconds: number;
+  size: number;
+  filledSize: number;
+  bookDepthAtPrice?: number;
 }
 
 /**
@@ -138,17 +266,39 @@ export interface DiagnosticsResponse {
       last1h: number; 
       last24h: number; 
       avgResolutionMin: number;
-      // Single-leg rate: percentage of executions that resulted in single-leg
-      singleLegRate1h: number; // e.g., 0.15 = 15% of executions had single-leg
+      singleLegRate1h: number;
       singleLegRate24h: number;
-      // Time spent in single-leg state as percentage of total position time
       singleLegTimePercent24h: number;
+    };
+    // NEW: Failure analysis
+    failureAnalysis?: {
+      byLeg: { long: number; short: number };
+      byExchange: Record<string, number>;
+      byReason: Record<string, number>;
+      avgTimeBetweenLegsMs: number;
+      avgPriceSlippageBps: number;
+      recentFailures: Array<{
+        symbol: string;
+        failedLeg: string;
+        failedExchange: string;
+        reason: string;
+        message?: string;
+        timeAgo: string;
+      }>;
     };
   };
   errors: {
     total: { last1h: number; last24h: number };
     byType: Record<string, { count: number; last: string }>;
     recent: Array<{ time: string; type: string; exchange?: string; msg: string }>;
+    // NEW: Recent errors with full context snapshots
+    recentWithContext: Array<{
+      time: string;
+      type: string;
+      exchange?: string;
+      msg: string;
+      snapshot?: ErrorContextSnapshot;
+    }>;
   };
   positions: {
     count: number;
@@ -167,7 +317,6 @@ export interface DiagnosticsResponse {
     nextHarvestIn: string;
     totalHarvested: number;
   };
-  // New fields for enhanced diagnostics
   circuitBreaker?: {
     state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
     errorsThisHour: number;
@@ -220,6 +369,142 @@ export interface DiagnosticsResponse {
       avgSlippageBps: number;
       avgFillTimeMs: number;
     }>;
+  };
+
+  // ==================== NEW DIAGNOSTIC SECTIONS ====================
+
+  /** Lighter exchange specific state */
+  lighterState?: {
+    nonce: {
+      current: number;
+      expected: number;
+      lastSync: string;
+      syncStatus: 'OK' | 'STALE' | 'MISMATCH';
+    };
+    positions: Array<{
+      symbol: string;
+      marginMode: string;
+      size: number;
+      margin: number;
+    }>;
+    balance: {
+      total: number;
+      available: number;
+      marginUsed: number;
+    };
+    recentErrors: Array<{
+      type: string;
+      message: string;
+      timeAgo: string;
+      context?: string;
+    }>;
+  };
+
+  /** Unfilled/stale orders analysis */
+  staleOrders?: {
+    count: number;
+    totalValue: number;
+    byExchange: Record<string, number>;
+    orders: Array<{
+      orderId: string;
+      symbol: string;
+      exchange: string;
+      side: string;
+      price: number;
+      size: number;
+      marketPrice: number;
+      deviationBps: number;
+      ageMinutes: number;
+    }>;
+    recommendation: string;
+  };
+
+  /** Execution lock diagnostics */
+  executionLocks?: {
+    globalLock: {
+      held: boolean;
+      holder?: string;
+      durationMs?: number;
+      currentOperation?: string;
+      isStale: boolean;
+      warning?: string;
+    };
+    symbolLocks: Array<{
+      symbol: string;
+      holder: string;
+      durationMs: number;
+    }>;
+    activeOrders: Array<{
+      orderId: string;
+      symbol: string;
+      exchange: string;
+      side: string;
+      ageMs: number;
+    }>;
+    recentOrderHistory: Array<{
+      orderId: string;
+      symbol: string;
+      exchange: string;
+      side: string;
+      threadId: string;
+      placedAt: string;
+      status: string;
+      size?: number;
+      price?: number;
+    }>;
+    blockedOperationsCount: number;
+  };
+
+  /** Capital utilization */
+  capital?: {
+    byExchange: Record<string, {
+      total: number;
+      available: number;
+      marginUsed: number;
+      inOrders: number;
+      utilizationPercent: number;
+    }>;
+    summary: {
+      totalCapital: number;
+      deployed: number;
+      idle: number;
+      idlePercent: number;
+    };
+  };
+
+  /** Current operation status */
+  currentOperation?: {
+    description: string;
+    startedAt: string;
+    durationMs: number;
+    stage: string;
+    symbol?: string;
+    exchanges?: string[];
+  };
+
+  /** Prediction system diagnostics */
+  predictions?: {
+    enabled: boolean;
+    accuracy?: {
+      last24h: {
+        predictions: number;
+        directionallyCorrect: number;
+        accuracyPercent: number;
+        avgErrorBps: number;
+      };
+    };
+    currentPredictions?: Array<{
+      symbol: string;
+      predictedSpread: number;
+      confidence: number;
+      regime: string;
+      recommendation: string;
+      predictedBreakEvenHours: number;
+    }>;
+    cacheStats?: {
+      size: number;
+      hitRate: number;
+    };
   };
 }
 
@@ -289,8 +574,57 @@ export class DiagnosticsService {
     totalHarvested: 0,
   };
 
+  // ==================== NEW: Enhanced tracking data ====================
+
+  // Recent errors with full context snapshots (ring buffer, last 50)
+  private readonly MAX_ERRORS_WITH_CONTEXT = 50;
+  private readonly errorsWithContext: ErrorEvent[] = [];
+
+  // Single-leg failure tracking (ring buffer, last 100)
+  private readonly MAX_SINGLE_LEG_FAILURES = 100;
+  private readonly singleLegFailures: SingleLegFailureEvent[] = [];
+
+  // Lighter state snapshot (updated on each operation)
+  private lighterState: LighterStateSnapshot | null = null;
+
+  // Unfilled orders tracking
+  private unfilledOrders: Map<string, UnfilledOrderInfo> = new Map();
+
+  // Current operation tracking (what is the system doing right now?)
+  private currentOperation: {
+    description: string;
+    startedAt: Date;
+    stage: string;
+    symbol?: string;
+    exchanges?: ExchangeType[];
+  } | null = null;
+
+  // Global lock tracking (separate from ExecutionLockService for diagnostics)
+  private globalLockInfo: {
+    held: boolean;
+    holder?: string;
+    startedAt?: Date;
+    currentOperation?: string;
+  } = { held: false };
+
+  // Blocked operations counter
+  private blockedOperationsCount = 0;
+
+  // Capital data (set externally)
+  private capitalData: {
+    byExchange: Map<ExchangeType, {
+      total: number;
+      available: number;
+      marginUsed: number;
+      inOrders: number;
+    }>;
+  } = { byExchange: new Map() };
+
+  // Prediction service reference
+  private predictionService?: any;
+
   constructor() {
-    this.logger.log('DiagnosticsService initialized');
+    this.logger.log('DiagnosticsService initialized with enhanced tracking');
   }
 
   // ==================== Recording Methods ====================
@@ -320,6 +654,83 @@ export class DiagnosticsService {
     if (this.recentErrors.length > this.MAX_RECENT_ERRORS) {
       this.recentErrors.shift();
     }
+
+    // Also store in errors with context if snapshot provided
+    if (event.snapshot) {
+      this.errorsWithContext.push(event);
+      if (this.errorsWithContext.length > this.MAX_ERRORS_WITH_CONTEXT) {
+        this.errorsWithContext.shift();
+      }
+    }
+  }
+
+  /**
+   * Record an error with full context snapshot
+   * Use this for critical errors where we need full debugging context
+   */
+  recordErrorWithContext(
+    type: string,
+    message: string,
+    snapshot: ErrorContextSnapshot,
+    exchange?: ExchangeType,
+    symbol?: string,
+  ): void {
+    const event: ErrorEvent = {
+      type,
+      message,
+      exchange,
+      symbol,
+      timestamp: new Date(),
+      snapshot,
+    };
+    this.recordError(event);
+    
+    this.logger.debug(
+      `Recorded error with context: ${type} - ${message} ` +
+      `(snapshot: ${JSON.stringify(snapshot).substring(0, 200)}...)`,
+    );
+  }
+
+  /**
+   * Create an error context snapshot from current state
+   * Call this when an error occurs to capture full debugging context
+   */
+  createErrorSnapshot(
+    orderDetails?: ErrorContextSnapshot['order'],
+    exchangeState?: ErrorContextSnapshot['exchangeState'],
+    additionalContext?: Partial<ErrorContextSnapshot>,
+  ): ErrorContextSnapshot {
+    const snapshot: ErrorContextSnapshot = {
+      ...additionalContext,
+    };
+
+    // Add order details if provided
+    if (orderDetails) {
+      snapshot.order = orderDetails;
+    }
+
+    // Add exchange state if provided
+    if (exchangeState) {
+      snapshot.exchangeState = exchangeState;
+    }
+
+    // Add current execution context
+    snapshot.execution = {
+      globalLockHeld: this.globalLockInfo.held,
+      globalLockDurationMs: this.globalLockInfo.startedAt
+        ? Date.now() - this.globalLockInfo.startedAt.getTime()
+        : undefined,
+      operation: this.currentOperation?.description,
+      threadId: this.globalLockInfo.holder,
+    };
+
+    // Add positions from our tracked data
+    if (this.positionData.count > 0) {
+      // Note: Full position details would need to be passed in
+      snapshot.positions = [];
+    }
+
+    return snapshot;
   }
 
   /**
@@ -391,6 +802,88 @@ export class DiagnosticsService {
     if (singleLeg) {
       singleLeg.retryCount++;
     }
+  }
+
+  /**
+   * Record a single-leg failure event with analysis
+   * Call this when one leg of a trade fails to fill
+   */
+  recordSingleLegFailure(event: SingleLegFailureEvent): void {
+    this.singleLegFailures.push(event);
+    if (this.singleLegFailures.length > this.MAX_SINGLE_LEG_FAILURES) {
+      this.singleLegFailures.shift();
+    }
+
+    this.logger.warn(
+      `Single-leg failure recorded: ${event.symbol} ` +
+      `${event.failedLeg} leg failed on ${event.failedExchange} ` +
+      `(reason: ${event.failureReason}, time between legs: ${event.timeBetweenLegsMs}ms)`,
+    );
+  }
+
+  /**
+   * Get single-leg failure analysis for diagnostics
+   */
+  private getSingleLegFailureAnalysis(): DiagnosticsResponse['singleLegs']['failureAnalysis'] {
+    if (this.singleLegFailures.length === 0) {
+      return undefined;
+    }
+
+    const now = Date.now();
+    const last24h = this.singleLegFailures.filter(
+      f => now - f.timestamp.getTime() < 24 * 60 * 60 * 1000
+    );
+
+    // Count by leg
+    const byLeg = { long: 0, short: 0 };
+    for (const f of last24h) {
+      byLeg[f.failedLeg]++;
+    }
+
+    // Count by exchange
+    const byExchange: Record<string, number> = {};
+    for (const f of last24h) {
+      byExchange[f.failedExchange] = (byExchange[f.failedExchange] || 0) + 1;
+    }
+
+    // Count by reason
+    const byReason: Record<string, number> = {};
+    for (const f of last24h) {
+      byReason[f.failureReason] = (byReason[f.failureReason] || 0) + 1;
+    }
+
+    // Calculate averages
+    const timeBetween = last24h.map(f => f.timeBetweenLegsMs).filter(t => t > 0);
+    const avgTimeBetweenLegsMs = timeBetween.length > 0
+      ? Math.round(timeBetween.reduce((a, b) => a + b, 0) / timeBetween.length)
+      : 0;
+
+    const slippages = last24h.map(f => f.priceSlippageBps).filter((s): s is number => s !== undefined);
+    const avgPriceSlippageBps = slippages.length > 0
+      ? Math.round(slippages.reduce((a, b) => a + b, 0) / slippages.length * 10) / 10
+      : 0;
+
+    // Recent failures
+    const recentFailures = last24h.slice(-10).reverse().map(f => {
+      const minutesAgo = Math.round((now - f.timestamp.getTime()) / 60000);
+      return {
+        symbol: f.symbol,
+        failedLeg: f.failedLeg,
+        failedExchange: f.failedExchange,
+        reason: f.failureReason,
+        message: f.failureMessage,
+        timeAgo: minutesAgo < 60 ? `${minutesAgo}min ago` : `${Math.round(minutesAgo / 60)}h ago`,
+      };
+    });
+
+    return {
+      byLeg,
+      byExchange,
+      byReason,
+      avgTimeBetweenLegsMs,
+      avgPriceSlippageBps,
+      recentFailures,
+    };
   }
 
   /**
@@ -499,6 +992,408 @@ export class DiagnosticsService {
     this.executionAnalytics = analytics;
   }
 
+  /**
+   * Set prediction service reference for diagnostics
+   */
+  setPredictionService(service: any): void {
+    this.predictionService = service;
+  }
+
+  // ==================== NEW: Lighter State Tracking ====================
+
+  /**
+   * Update Lighter exchange state snapshot
+   * Call this after every Lighter operation to track state
+   */
+  updateLighterState(state: LighterStateSnapshot): void {
+    this.lighterState = state;
+    this.logger.debug(
+      `Lighter state updated: nonce=${state.nonce.current}/${state.nonce.expected}, ` +
+      `positions=${state.positions.length}, balance=$${state.balances.available.toFixed(2)}`,
+    );
+  }
+
+  /**
+   * Update just the Lighter nonce info
+   */
+  updateLighterNonce(current: number, expected: number, pendingIncrements: number = 0): void {
+    if (!this.lighterState) {
+      this.lighterState = {
+        timestamp: new Date(),
+        nonce: { current, expected, lastSync: new Date(), pendingIncrements },
+        positions: [],
+        balances: { total: 0, available: 0, marginUsed: 0 },
+        openOrders: 0,
+      };
+    } else {
+      this.lighterState.nonce = {
+        current,
+        expected,
+        lastSync: new Date(),
+        pendingIncrements,
+      };
+      this.lighterState.timestamp = new Date();
+    }
+  }
+
+  /**
+   * Get Lighter diagnostics for response
+   */
+  private getLighterDiagnostics(): DiagnosticsResponse['lighterState'] {
+    if (!this.lighterState) {
+      return undefined;
+    }
+
+    const now = Date.now();
+    const lastSyncAgeMs = now - this.lighterState.nonce.lastSync.getTime();
+    
+    // Determine nonce sync status
+    let syncStatus: 'OK' | 'STALE' | 'MISMATCH' = 'OK';
+    if (this.lighterState.nonce.current !== this.lighterState.nonce.expected) {
+      syncStatus = 'MISMATCH';
+    } else if (lastSyncAgeMs > 5 * 60 * 1000) { // > 5 minutes
+      syncStatus = 'STALE';
+    }
+
+    // Get recent Lighter-specific errors
+    const lighterErrors = this.errorsWithContext
+      .filter(e => e.exchange === ExchangeType.LIGHTER)
+      .slice(-5)
+      .reverse()
+      .map(e => {
+        const minutesAgo = Math.round((now - e.timestamp.getTime()) / 60000);
+        return {
+          type: e.type,
+          message: e.message,
+          timeAgo: minutesAgo < 60 ? `${minutesAgo}min ago` : `${Math.round(minutesAgo / 60)}h ago`,
+          context: e.snapshot?.exchangeState
+            ? `nonce=${e.snapshot.exchangeState.nonce}, mode=${e.snapshot.exchangeState.marginMode}`
+            : undefined,
+        };
+      });
+
+    return {
+      nonce: {
+        current: this.lighterState.nonce.current,
+        expected: this.lighterState.nonce.expected,
+        lastSync: this.formatTimeAgo(this.lighterState.nonce.lastSync),
+        syncStatus,
+      },
+      positions: this.lighterState.positions.map(p => ({
+        symbol: p.symbol,
+        marginMode: p.marginMode,
+        size: p.size,
+        margin: p.margin,
+      })),
+      balance: this.lighterState.balances,
+      recentErrors: lighterErrors,
+    };
+  }
+
+  // ==================== NEW: Unfilled Orders Tracking ====================
+
+  /**
+   * Record an unfilled order for tracking
+   */
+  recordUnfilledOrder(order: UnfilledOrderInfo): void {
+    this.unfilledOrders.set(order.orderId, order);
+  }
+
+  /**
+   * Update an unfilled order (e.g., update market price deviation)
+   */
+  updateUnfilledOrder(orderId: string, updates: Partial<UnfilledOrderInfo>): void {
+    const existing = this.unfilledOrders.get(orderId);
+    if (existing) {
+      Object.assign(existing, updates);
+    }
+  }
+
+  /**
+   * Remove an order from unfilled tracking (filled or cancelled)
+   */
+  removeUnfilledOrder(orderId: string): void {
+    this.unfilledOrders.delete(orderId);
+  }
+
+  /**
+   * Clear all unfilled orders for an exchange (e.g., after cancel all)
+   */
+  clearUnfilledOrders(exchange?: ExchangeType): void {
+    if (exchange) {
+      for (const [id, order] of this.unfilledOrders) {
+        if (order.exchange === exchange) {
+          this.unfilledOrders.delete(id);
+        }
+      }
+    } else {
+      this.unfilledOrders.clear();
+    }
+  }
+
+  /**
+   * Get stale orders diagnostics
+   */
+  private getStaleOrdersDiagnostics(): DiagnosticsResponse['staleOrders'] {
+    if (this.unfilledOrders.size === 0) {
+      return undefined;
+    }
+
+    const now = Date.now();
+    const orders = Array.from(this.unfilledOrders.values());
+    
+    // Count by exchange
+    const byExchange: Record<string, number> = {};
+    let totalValue = 0;
+    
+    const orderDetails = orders.map(o => {
+      byExchange[o.exchange] = (byExchange[o.exchange] || 0) + 1;
+      totalValue += o.size * o.orderPrice;
+      
+      return {
+        orderId: o.orderId.substring(0, 20) + (o.orderId.length > 20 ? '...' : ''),
+        symbol: o.symbol,
+        exchange: o.exchange,
+        side: o.side,
+        price: o.orderPrice,
+        size: o.size,
+        marketPrice: o.marketPrice,
+        deviationBps: Math.round(o.deviationBps * 10) / 10,
+        ageMinutes: Math.round(o.ageSeconds / 60),
+      };
+    }).sort((a, b) => b.ageMinutes - a.ageMinutes);
+
+    // Generate recommendation
+    let recommendation = '';
+    const staleCount = orders.filter(o => o.ageSeconds > 300).length; // > 5 min
+    const farFromMarket = orders.filter(o => Math.abs(o.deviationBps) > 50).length;
+    
+    if (staleCount > 0) {
+      recommendation += `${staleCount} orders older than 5 minutes. `;
+    }
+    if (farFromMarket > 0) {
+      recommendation += `${farFromMarket} orders >50bps from market. `;
+    }
+    if (orders.length > 5) {
+      recommendation += `Consider cancelling stale orders to free capital. `;
+    }
+    if (!recommendation) {
+      recommendation = 'Orders look healthy';
+    }
+
+    return {
+      count: orders.length,
+      totalValue: Math.round(totalValue * 100) / 100,
+      byExchange,
+      orders: orderDetails.slice(0, 20), // Limit to 20 for response size
+      recommendation: recommendation.trim(),
+    };
+  }
+
+  // ==================== NEW: Current Operation Tracking ====================
+
+  /**
+   * Set current operation (what is the system doing now?)
+   */
+  setCurrentOperation(
+    description: string,
+    stage: string,
+    symbol?: string,
+    exchanges?: ExchangeType[],
+  ): void {
+    this.currentOperation = {
+      description,
+      startedAt: new Date(),
+      stage,
+      symbol,
+      exchanges,
+    };
+  }
+
+  /**
+   * Update current operation stage
+   */
+  updateOperationStage(stage: string): void {
+    if (this.currentOperation) {
+      this.currentOperation.stage = stage;
+    }
+  }
+
+  /**
+   * Clear current operation (completed)
+   */
+  clearCurrentOperation(): void {
+    this.currentOperation = null;
+  }
+
+  /**
+   * Get current operation diagnostics
+   */
+  private getCurrentOperationDiagnostics(): DiagnosticsResponse['currentOperation'] {
+    if (!this.currentOperation) {
+      return undefined;
+    }
+
+    return {
+      description: this.currentOperation.description,
+      startedAt: this.currentOperation.startedAt.toISOString(),
+      durationMs: Date.now() - this.currentOperation.startedAt.getTime(),
+      stage: this.currentOperation.stage,
+      symbol: this.currentOperation.symbol,
+      exchanges: this.currentOperation.exchanges,
+    };
+  }
+
+  // ==================== NEW: Global Lock Tracking ====================
+
+  /**
+   * Record global lock acquisition
+   */
+  recordGlobalLockAcquired(holder: string, operation?: string): void {
+    this.globalLockInfo = {
+      held: true,
+      holder,
+      startedAt: new Date(),
+      currentOperation: operation,
+    };
+  }
+
+  /**
+   * Record global lock release
+   */
+  recordGlobalLockReleased(): void {
+    this.globalLockInfo = { held: false };
+  }
+
+  /**
+   * Update global lock operation
+   */
+  updateGlobalLockOperation(operation: string): void {
+    if (this.globalLockInfo.held) {
+      this.globalLockInfo.currentOperation = operation;
+    }
+  }
+
+  /**
+   * Record a blocked operation (something waiting for lock)
+   */
+  recordBlockedOperation(): void {
+    this.blockedOperationsCount++;
+  }
+
+  /**
+   * Reset blocked operations counter
+   */
+  resetBlockedOperationsCount(): void {
+    this.blockedOperationsCount = 0;
+  }
+
+  // ==================== NEW: Capital Tracking ====================
+
+  /**
+   * Update capital data for an exchange
+   */
+  updateCapitalData(
+    exchange: ExchangeType,
+    data: { total: number; available: number; marginUsed: number; inOrders: number },
+  ): void {
+    this.capitalData.byExchange.set(exchange, data);
+  }
+
+  /**
+   * Get capital diagnostics
+   */
+  private getCapitalDiagnostics(): DiagnosticsResponse['capital'] {
+    if (this.capitalData.byExchange.size === 0) {
+      return undefined;
+    }
+
+    const byExchange: Record<string, {
+      total: number;
+      available: number;
+      marginUsed: number;
+      inOrders: number;
+      utilizationPercent: number;
+    }> = {};
+
+    let totalCapital = 0;
+    let totalDeployed = 0;
+
+    for (const [exchange, data] of this.capitalData.byExchange) {
+      const utilization = data.total > 0
+        ? Math.round((data.marginUsed / data.total) * 1000) / 10
+        : 0;
+      
+      byExchange[exchange] = {
+        ...data,
+        utilizationPercent: utilization,
+      };
+
+      totalCapital += data.total;
+      totalDeployed += data.marginUsed + data.inOrders;
+    }
+
+    const idle = totalCapital - totalDeployed;
+
+    return {
+      byExchange,
+      summary: {
+        totalCapital: Math.round(totalCapital * 100) / 100,
+        deployed: Math.round(totalDeployed * 100) / 100,
+        idle: Math.round(idle * 100) / 100,
+        idlePercent: totalCapital > 0
+          ? Math.round((idle / totalCapital) * 1000) / 10
+          : 0,
+      },
+    };
+  }
+
+  // ==================== NEW: Prediction Diagnostics ====================
+
+  /**
+   * Get prediction system diagnostics
+   */
+  private getPredictionDiagnostics(): DiagnosticsResponse['predictions'] {
+    if (!this.predictionService) {
+      return { enabled: false };
+    }
+
+    try {
+      // Try to get prediction stats if available
+      const stats = this.predictionService.getAccuracyStats?.();
+      const currentPredictions = this.predictionService.getCurrentPredictions?.();
+
+      return {
+        enabled: true,
+        accuracy: stats ? {
+          last24h: {
+            predictions: stats.total || 0,
+            directionallyCorrect: stats.correct || 0,
+            accuracyPercent: stats.accuracy || 0,
+            avgErrorBps: stats.avgError || 0,
+          },
+        } : undefined,
+        currentPredictions: currentPredictions?.slice(0, 10),
+        cacheStats: this.predictionService.getCacheStats?.(),
+      };
+    } catch {
+      return { enabled: true };
+    }
+  }
+
+  // ==================== Helper Methods ====================
+
+  /**
+   * Format a date as "Xmin ago" or "Xh ago"
+   */
+  private formatTimeAgo(date: Date): string {
+    const minutesAgo = Math.round((Date.now() - date.getTime()) / 60000);
+    if (minutesAgo < 60) {
+      return `${minutesAgo}min ago`;
+    }
+    return `${Math.round(minutesAgo / 60)}h ago`;
+  }
+
   // ==================== Query Methods ====================
 
   /**
@@ -551,12 +1446,12 @@ export class DiagnosticsService {
           last1h: stats1h.singleLegs.started,
           last24h: stats24h.singleLegs.started,
           avgResolutionMin: this.calculateAvgResolutionTime(),
-          // Single-leg rate: percentage of executions that resulted in single-leg
           singleLegRate1h: this.calculateSingleLegRate(stats1h),
           singleLegRate24h: this.calculateSingleLegRate(stats24h),
-          // Time spent in single-leg state as percentage of total position time
           singleLegTimePercent24h: this.calculateSingleLegTimePercent(),
         },
+        // NEW: Failure analysis
+        failureAnalysis: this.getSingleLegFailureAnalysis(),
       },
       errors: {
         total: {
@@ -565,6 +1460,8 @@ export class DiagnosticsService {
         },
         byType: this.getErrorsByType(stats24h),
         recent: this.getRecentErrors(),
+        // NEW: Recent errors with full context snapshots
+        recentWithContext: this.getRecentErrorsWithContext(),
       },
       positions: this.positionData,
       liquidity: {
@@ -580,6 +1477,72 @@ export class DiagnosticsService {
       rateLimiter: this.getRateLimiterDiagnostics(),
       positionState: this.getPositionStateDiagnostics(),
       executionAnalytics: this.getExecutionAnalyticsDiagnostics(),
+
+      // ==================== NEW DIAGNOSTIC SECTIONS ====================
+      lighterState: this.getLighterDiagnostics(),
+      staleOrders: this.getStaleOrdersDiagnostics(),
+      executionLocks: this.getExecutionLocksDiagnostics(),
+      capital: this.getCapitalDiagnostics(),
+      currentOperation: this.getCurrentOperationDiagnostics(),
+      predictions: this.getPredictionDiagnostics(),
+    };
+  }
+
+  /**
+   * Get recent errors with full context snapshots
+   */
+  private getRecentErrorsWithContext(): DiagnosticsResponse['errors']['recentWithContext'] {
+    const now = Date.now();
+    
+    return this.errorsWithContext.slice(-10).reverse().map(err => {
+      const minutesAgo = Math.round((now - err.timestamp.getTime()) / 60000);
+      let timeStr: string;
+      if (minutesAgo < 60) {
+        timeStr = `${minutesAgo}min ago`;
+      } else {
+        timeStr = `${Math.round(minutesAgo / 60)}h ago`;
+      }
+      
+      return {
+        time: timeStr,
+        type: err.type,
+        exchange: err.exchange,
+        msg: err.message.substring(0, 100),
+        snapshot: err.snapshot,
+      };
+    });
+  }
+
+  /**
+   * Get execution locks diagnostics
+   */
+  private getExecutionLocksDiagnostics(): DiagnosticsResponse['executionLocks'] {
+    const now = Date.now();
+    
+    // Check if global lock is stale (held > 60s)
+    const lockDurationMs = this.globalLockInfo.startedAt
+      ? now - this.globalLockInfo.startedAt.getTime()
+      : 0;
+    const isStale = lockDurationMs > 60000;
+
+    let warning: string | undefined;
+    if (isStale && this.globalLockInfo.held) {
+      warning = `Global lock held for ${Math.round(lockDurationMs / 1000)}s - possible deadlock or slow operation`;
+    }
+
+    return {
+      globalLock: {
+        held: this.globalLockInfo.held,
+        holder: this.globalLockInfo.holder,
+        durationMs: lockDurationMs || undefined,
+        currentOperation: this.globalLockInfo.currentOperation,
+        isStale,
+        warning,
+      },
+      symbolLocks: [], // Populated externally if needed
+      activeOrders: [], // Populated externally if needed
+      recentOrderHistory: [], // Populated externally if needed
+      blockedOperationsCount: this.blockedOperationsCount,
     };
   }
 
@@ -1052,6 +2015,59 @@ export class DiagnosticsService {
     this.totalPositionTimeMs = 0;
     this.lastPositionCheckTime = null;
     this.lastPositionCount = 0;
+
+    // Reset new tracking data
+    this.errorsWithContext.length = 0;
+    this.singleLegFailures.length = 0;
+    this.lighterState = null;
+    this.unfilledOrders.clear();
+    this.currentOperation = null;
+    this.globalLockInfo = { held: false };
+    this.blockedOperationsCount = 0;
+    this.capitalData.byExchange.clear();
+  }
+
+  /**
+   * Get a summary suitable for AI context windows (condensed)
+   */
+  getSummary(): string {
+    const diag = this.getDiagnostics();
+    
+    const lines: string[] = [];
+    lines.push(`Health: ${diag.health.overall}`);
+    
+    if (diag.health.issues.length > 0) {
+      lines.push(`Issues: ${diag.health.issues.join('; ')}`);
+    }
+
+    lines.push(`Orders 1h: ${diag.orders.last1h.filled}/${diag.orders.last1h.placed} filled (${diag.orders.last1h.fillRate}%)`);
+    lines.push(`Errors 1h: ${diag.errors.total.last1h}`);
+    
+    if (diag.singleLegs.failureAnalysis) {
+      const fa = diag.singleLegs.failureAnalysis;
+      lines.push(`Single-leg failures: long=${fa.byLeg.long}, short=${fa.byLeg.short}`);
+      if (Object.keys(fa.byReason).length > 0) {
+        lines.push(`Failure reasons: ${Object.entries(fa.byReason).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+      }
+    }
+
+    if (diag.lighterState?.nonce.syncStatus !== 'OK') {
+      lines.push(`Lighter nonce: ${diag.lighterState.nonce.syncStatus} (${diag.lighterState.nonce.current}/${diag.lighterState.nonce.expected})`);
+    }
+
+    if (diag.staleOrders && diag.staleOrders.count > 0) {
+      lines.push(`Stale orders: ${diag.staleOrders.count} ($${diag.staleOrders.totalValue})`);
+    }
+
+    if (diag.executionLocks?.globalLock.isStale) {
+      lines.push(`⚠️ ${diag.executionLocks.globalLock.warning}`);
+    }
+
+    if (diag.currentOperation) {
+      lines.push(`Current: ${diag.currentOperation.description} (${diag.currentOperation.stage})`);
+    }
+
+    return lines.join('\n');
   }
 }
 

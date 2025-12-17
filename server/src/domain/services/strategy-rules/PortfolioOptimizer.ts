@@ -6,6 +6,7 @@ import {
 import { CostCalculator } from './CostCalculator';
 import type { IHistoricalFundingRateService } from '../../ports/IHistoricalFundingRateService';
 import type { IOptimalLeverageService } from '../../ports/IOptimalLeverageService';
+import type { IFundingRatePredictionService, MarketRegime } from '../../ports/IFundingRatePredictor';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
@@ -32,7 +33,45 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     @Optional()
     @Inject('IOptimalLeverageService')
     private readonly leverageService?: IOptimalLeverageService,
+    @Optional()
+    @Inject('IFundingRatePredictionService')
+    private readonly predictionService?: IFundingRatePredictionService,
   ) {}
+
+  /**
+   * Regime-based position size multipliers
+   * Reduce position size in volatile/risky regimes
+   */
+  private readonly REGIME_SIZE_MULTIPLIERS: Record<MarketRegime, number> = {
+    [MarketRegime.MEAN_REVERTING]: 1.0,      // Full size in normal conditions
+    [MarketRegime.TRENDING]: 0.85,           // Slightly reduced for trending
+    [MarketRegime.HIGH_VOLATILITY]: 0.7,     // Reduced for volatility
+    [MarketRegime.EXTREME_DISLOCATION]: 0.5, // Half size in extreme conditions
+  };
+
+  /**
+   * Confidence-based position size adjustment
+   * Lower confidence = smaller position
+   */
+  private adjustPositionForConfidence(
+    basePosition: number,
+    confidence: number,
+  ): number {
+    // Map confidence (0-1) to multiplier (0.5-1.0)
+    const minMultiplier = 0.5;
+    const multiplier = minMultiplier + (1 - minMultiplier) * confidence;
+    return basePosition * multiplier;
+  }
+
+  /**
+   * Adjust position size based on market regime
+   */
+  private adjustPositionForRegime(
+    basePosition: number,
+    regime: MarketRegime,
+  ): number {
+    return basePosition * (this.REGIME_SIZE_MULTIPLIERS[regime] ?? 1.0);
+  }
 
   /**
    * Calculate max portfolio size that yields target APY on collateral
@@ -761,5 +800,122 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     }
 
     return { isValid: true };
+  }
+
+  /**
+   * Calculate max portfolio with prediction-based adjustments
+   * Uses ensemble predictions to adjust position sizing for risk
+   */
+  async calculateMaxPortfolioWithPredictions(
+    opportunity: ArbitrageOpportunity,
+    longBidAsk: { bestBid: number; bestAsk: number },
+    shortBidAsk: { bestBid: number; bestAsk: number },
+    targetNetAPY: number = 0.35,
+  ): Promise<{
+    maxPortfolio: number;
+    optimalLeverage: number;
+    requiredCollateral: number;
+    estimatedAPY: number;
+    predictionAdjustment: {
+      regime: MarketRegime;
+      confidence: number;
+      sizeMultiplier: number;
+    } | null;
+  } | null> {
+    // Get base calculation without predictions
+    const baseResult = await this.calculateMaxPortfolioWithLeverage(
+      opportunity,
+      longBidAsk,
+      shortBidAsk,
+      targetNetAPY,
+    );
+
+    if (!baseResult) {
+      return null;
+    }
+
+    // If prediction service not available, return base result
+    if (!this.predictionService || !opportunity.shortExchange) {
+      return {
+        ...baseResult,
+        predictionAdjustment: null,
+      };
+    }
+
+    try {
+      // Get spread prediction
+      const spreadPrediction = await this.predictionService.getSpreadPrediction(
+        opportunity.symbol,
+        opportunity.longExchange,
+        opportunity.shortExchange,
+      );
+
+      const regime = spreadPrediction.longPrediction.regime;
+      const confidence = spreadPrediction.confidence;
+
+      // Calculate size multiplier based on regime and confidence
+      let sizeMultiplier = this.REGIME_SIZE_MULTIPLIERS[regime] ?? 1.0;
+
+      // Further adjust based on prediction confidence
+      sizeMultiplier = this.adjustPositionForConfidence(sizeMultiplier, confidence);
+
+      // Apply multiplier to max portfolio
+      const adjustedMaxPortfolio = baseResult.maxPortfolio * sizeMultiplier;
+      const adjustedCollateral = baseResult.requiredCollateral * sizeMultiplier;
+
+      this.logger.debug(
+        `${opportunity.symbol}: Prediction-adjusted position: ` +
+          `$${adjustedMaxPortfolio.toFixed(0)} (${(sizeMultiplier * 100).toFixed(0)}% of base), ` +
+          `regime=${regime}, confidence=${(confidence * 100).toFixed(0)}%`,
+      );
+
+      return {
+        maxPortfolio: adjustedMaxPortfolio,
+        optimalLeverage: baseResult.optimalLeverage,
+        requiredCollateral: adjustedCollateral,
+        estimatedAPY: baseResult.estimatedAPY,
+        predictionAdjustment: {
+          regime,
+          confidence,
+          sizeMultiplier,
+        },
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.debug(
+        `Prediction adjustment unavailable for ${opportunity.symbol}: ${message}`,
+      );
+      return {
+        ...baseResult,
+        predictionAdjustment: null,
+      };
+    }
+  }
+
+  /**
+   * Get predicted spread for an opportunity
+   * Useful for forward-looking APY calculations
+   */
+  async getPredictedSpread(
+    opportunity: ArbitrageOpportunity,
+  ): Promise<{ spread: number; confidence: number } | null> {
+    if (!this.predictionService || !opportunity.shortExchange) {
+      return null;
+    }
+
+    try {
+      const prediction = await this.predictionService.getSpreadPrediction(
+        opportunity.symbol,
+        opportunity.longExchange,
+        opportunity.shortExchange,
+      );
+
+      return {
+        spread: prediction.predictedSpread,
+        confidence: prediction.confidence,
+      };
+    } catch {
+      return null;
+    }
   }
 }

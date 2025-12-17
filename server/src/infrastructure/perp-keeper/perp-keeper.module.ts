@@ -53,11 +53,22 @@ import { CostCalculator } from '../../domain/services/strategy-rules/CostCalcula
 import { IdleFundsManager } from '../../domain/services/strategy-rules/IdleFundsManager';
 import { PerpSpotBalanceManager } from '../../domain/services/strategy-rules/PerpSpotBalanceManager';
 import { PerpSpotExecutionPlanBuilder } from '../../domain/services/strategy-rules/PerpSpotExecutionPlanBuilder';
+import { PredictedBreakEvenCalculator } from '../../domain/services/strategy-rules/PredictedBreakEvenCalculator';
 import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
 import { SimpleEventBus } from '../events/SimpleEventBus';
 import type { IEventBus } from '../../domain/events/DomainEvent';
 import type { IHistoricalFundingRateService } from '../../domain/ports/IHistoricalFundingRateService';
 import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTracker';
+
+// Prediction module imports
+import { FundingRatePredictionService } from '../../domain/services/prediction/FundingRatePredictionService';
+import { EnsemblePredictor } from '../../domain/services/prediction/EnsemblePredictor';
+import { MeanReversionPredictor } from '../../domain/services/prediction/predictors/MeanReversionPredictor';
+import { PremiumIndexPredictor } from '../../domain/services/prediction/predictors/PremiumIndexPredictor';
+import { OpenInterestPredictor } from '../../domain/services/prediction/predictors/OpenInterestPredictor';
+import { KalmanFilterEstimator } from '../../domain/services/prediction/filters/KalmanFilterEstimator';
+import { RegimeDetector } from '../../domain/services/prediction/filters/RegimeDetector';
+import { PredictionBacktester } from '../../domain/services/prediction/PredictionBacktester';
 
 /**
  * PerpKeeperModule - Module for perpetual keeper functionality
@@ -281,6 +292,25 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
     // Balance and opportunity evaluation
     BalanceManager,
     {
+      provide: PredictedBreakEvenCalculator,
+      useFactory: (
+        costCalculator: CostCalculator,
+        config: StrategyConfig,
+        predictionService?: FundingRatePredictionService,
+      ) => {
+        return new PredictedBreakEvenCalculator(
+          costCalculator,
+          config,
+          predictionService,
+        );
+      },
+      inject: [
+        CostCalculator,
+        StrategyConfig,
+        { token: 'IFundingRatePredictionService', optional: true },
+      ],
+    },
+    {
       provide: OpportunityEvaluator,
       useFactory: (
         historicalService: IHistoricalFundingRateService,
@@ -288,6 +318,8 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
         lossTracker: IPositionLossTracker,
         costCalculator: CostCalculator,
         config: StrategyConfig,
+        predictionService?: FundingRatePredictionService,
+        breakEvenCalculator?: PredictedBreakEvenCalculator,
       ) => {
         return new OpportunityEvaluator(
           historicalService,
@@ -295,6 +327,8 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
           lossTracker,
           costCalculator,
           config,
+          predictionService,
+          breakEvenCalculator,
         );
       },
       inject: [
@@ -303,6 +337,8 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
         'IPositionLossTracker',
         CostCalculator,
         StrategyConfig,
+        { token: 'IFundingRatePredictionService', optional: true },
+        { token: PredictedBreakEvenCalculator, optional: true },
       ],
     },
     
@@ -347,6 +383,103 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
       useClass: PositionLossTracker,
     },
     PositionLossTracker, // Keep for backward compatibility
+    
+    // Prediction services - Ensemble funding rate prediction system
+    KalmanFilterEstimator,
+    {
+      provide: RegimeDetector,
+      useFactory: (kalmanFilter: KalmanFilterEstimator) => {
+        return new RegimeDetector(kalmanFilter);
+      },
+      inject: [KalmanFilterEstimator],
+    },
+    {
+      provide: MeanReversionPredictor,
+      useFactory: (kalmanFilter: KalmanFilterEstimator) => {
+        return new MeanReversionPredictor(kalmanFilter);
+      },
+      inject: [KalmanFilterEstimator],
+    },
+    PremiumIndexPredictor,
+    OpenInterestPredictor,
+    {
+      provide: EnsemblePredictor,
+      useFactory: (
+        meanReversionPredictor: MeanReversionPredictor,
+        premiumIndexPredictor: PremiumIndexPredictor,
+        openInterestPredictor: OpenInterestPredictor,
+        regimeDetector: RegimeDetector,
+      ) => {
+        return new EnsemblePredictor(
+          meanReversionPredictor,
+          premiumIndexPredictor,
+          openInterestPredictor,
+          regimeDetector,
+        );
+      },
+      inject: [MeanReversionPredictor, PremiumIndexPredictor, OpenInterestPredictor, RegimeDetector],
+    },
+    {
+      provide: FundingRatePredictionService,
+      useFactory: (
+        ensemblePredictor: EnsemblePredictor,
+        kalmanFilter: KalmanFilterEstimator,
+        regimeDetector: RegimeDetector,
+        historicalService: IHistoricalFundingRateService,
+        aggregator: FundingRateAggregator,
+      ) => {
+        return new FundingRatePredictionService(
+          ensemblePredictor,
+          kalmanFilter,
+          regimeDetector,
+          historicalService,
+          aggregator,
+        );
+      },
+      inject: [
+        EnsemblePredictor,
+        KalmanFilterEstimator,
+        RegimeDetector,
+        'IHistoricalFundingRateService',
+        FundingRateAggregator,
+      ],
+    },
+    {
+      provide: 'IFundingRatePredictionService',
+      useExisting: FundingRatePredictionService,
+    },
+    {
+      provide: PredictionBacktester,
+      useFactory: (
+        meanReversionPredictor: MeanReversionPredictor,
+        premiumIndexPredictor: PremiumIndexPredictor,
+        openInterestPredictor: OpenInterestPredictor,
+        ensemblePredictor: EnsemblePredictor,
+        kalmanFilter: KalmanFilterEstimator,
+        regimeDetector: RegimeDetector,
+        historicalService: IHistoricalFundingRateService,
+      ) => {
+        return new PredictionBacktester(
+          meanReversionPredictor,
+          premiumIndexPredictor,
+          openInterestPredictor,
+          ensemblePredictor,
+          kalmanFilter,
+          regimeDetector,
+          historicalService,
+        );
+      },
+      inject: [
+        MeanReversionPredictor,
+        PremiumIndexPredictor,
+        OpenInterestPredictor,
+        EnsemblePredictor,
+        KalmanFilterEstimator,
+        RegimeDetector,
+        'IHistoricalFundingRateService',
+      ],
+    },
+    
     {
       provide: 'IPortfolioRiskAnalyzer',
       useClass: PortfolioRiskAnalyzer,
@@ -475,6 +608,13 @@ import type { IPositionLossTracker } from '../../domain/ports/IPositionLossTrack
     KeeperStrategyEventListener,
     WithdrawalFulfiller,
     NAVReporter,
+    // Prediction services
+    FundingRatePredictionService,
+    'IFundingRatePredictionService',
+    EnsemblePredictor,
+    KalmanFilterEstimator,
+    RegimeDetector,
+    PredictionBacktester,
   ],
 })
 export class PerpKeeperModule implements OnModuleInit {

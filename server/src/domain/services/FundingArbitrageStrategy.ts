@@ -56,6 +56,7 @@ import {
   StrategyExecutionCompletedEvent,
 } from '../events/ArbitrageEvents';
 import { DiagnosticsService } from '../../infrastructure/services/DiagnosticsService';
+import { Percentage } from '../value-objects/Percentage';
 
 /**
  * Execution plan for an arbitrage opportunity
@@ -180,6 +181,104 @@ export class FundingArbitrageStrategy {
     // Example: $100 capital, 2x leverage = $200 notional, 10% APY = $20/year vs $10/year (2x improvement)
     this.leverage = this.strategyConfig?.leverage ?? 2.0;
     // Removed strategy initialization log - only execution logs shown
+  }
+
+  /**
+   * Estimate total costs for an opportunity when no execution plan is available
+   */
+  private estimateTotalCosts(
+    opportunity: ArbitrageOpportunity,
+    positionSizeUsd: number,
+  ): number {
+    // Estimate fees (entry + exit) for both legs
+    const longTakerRate =
+      this.strategyConfig.takerFeeRates.get(opportunity.longExchange) ?? 0.0005;
+    const shortTakerRate = opportunity.shortExchange
+      ? (this.strategyConfig.takerFeeRates.get(opportunity.shortExchange) ?? 0.0005)
+      : 0.0005;
+
+    const totalFees =
+      positionSizeUsd * (longTakerRate + shortTakerRate) * 2; // Entry + exit
+
+    // Conservative slippage estimate (0.05% per leg)
+    const slippage = positionSizeUsd * 0.001;
+
+    return totalFees + slippage;
+  }
+
+  /**
+   * Select effective break-even hours using prediction when confident
+   * Uses more conservative (higher) value when prediction confidence is low
+   */
+  private selectEffectiveBreakEven(
+    currentBreakEven: number | null,
+    predictedBreakEven: number | undefined,
+    predictionConfidence: number | undefined,
+  ): number | null {
+    // If no current break-even, use predicted if available
+    if (currentBreakEven === null) {
+      return predictedBreakEven ?? null;
+    }
+
+    // If no prediction available, use current
+    if (predictedBreakEven === undefined || predictionConfidence === undefined) {
+      return currentBreakEven;
+    }
+
+    // High confidence (>70%): use predicted break-even
+    if (predictionConfidence >= 0.7) {
+      return predictedBreakEven;
+    }
+
+    // Medium confidence (50-70%): use more conservative (higher) value
+    if (predictionConfidence >= 0.5) {
+      return Math.max(currentBreakEven, predictedBreakEven);
+    }
+
+    // Low confidence (<50%): use current (don't trust prediction)
+    return currentBreakEven;
+  }
+
+  /**
+   * Calculate prediction-weighted score for opportunity ranking
+   * Combines expected return, prediction confidence, and break-even time
+   */
+  private calculatePredictionWeightedScore(
+    opportunity: ArbitrageOpportunity,
+    netReturn: number,
+    breakEvenHours: number | null,
+  ): number {
+    // Base score from expected return (APY)
+    const expectedAPY = opportunity.expectedReturn?.toAPY() ?? 0;
+    let score = expectedAPY;
+
+    // If prediction data is available, incorporate it
+    if (opportunity.predictionScore !== undefined) {
+      // Weight prediction score based on confidence
+      const predictionWeight = opportunity.predictionConfidence ?? 0.5;
+      const historicalWeight = 1 - predictionWeight * 0.4; // Max 40% weight to prediction
+
+      // Combine historical APY with prediction score
+      score = expectedAPY * historicalWeight + opportunity.predictionScore * predictionWeight * expectedAPY;
+
+      // Boost score for strong buy recommendations
+      if (opportunity.predictionRecommendation === 'strong_buy') {
+        score *= 1.2; // 20% boost
+      } else if (opportunity.predictionRecommendation === 'buy') {
+        score *= 1.1; // 10% boost
+      } else if (opportunity.predictionRecommendation === 'hold') {
+        score *= 0.9; // 10% penalty
+      }
+    }
+
+    // Penalize slow break-even
+    if (breakEvenHours !== null && breakEvenHours > 0 && isFinite(breakEvenHours)) {
+      const maxBreakEvenHours = this.strategyConfig.maxWorstCaseBreakEvenDays * 24;
+      const breakEvenPenalty = Math.max(0, 1 - breakEvenHours / maxBreakEvenHours);
+      score *= 0.7 + 0.3 * breakEvenPenalty; // 30% of score affected by break-even
+    }
+
+    return score;
   }
 
   /**
@@ -1247,13 +1346,32 @@ export class FundingArbitrageStrategy {
             }
           }
 
+          // Enrich opportunity with prediction-based break-even data
+          const totalCosts = plan
+            ? plan.estimatedCosts?.total ?? 0
+            : this.estimateTotalCosts(opportunity, positionValueUsd);
+          
+          const enrichedOpportunity =
+            await this.opportunityEvaluator.enrichOpportunityWithPredictions(
+              opportunity,
+              positionValueUsd,
+              totalCosts,
+            );
+
+          // Use predicted break-even if available and more conservative
+          const effectiveBreakEvenHours = this.selectEffectiveBreakEven(
+            breakEvenHours,
+            enrichedOpportunity.predictedBreakEvenHours,
+            enrichedOpportunity.predictionConfidence,
+          );
+
           // Track ALL opportunities (even unprofitable ones) for logging
           allEvaluatedOpportunities.push({
-            opportunity,
+            opportunity: enrichedOpportunity, // Use enriched opportunity with prediction data
             plan,
             netReturn,
             positionValueUsd,
-            breakEvenHours,
+            breakEvenHours: effectiveBreakEvenHours, // Use effective break-even
             maxPortfolioFor35APY,
             optimalLeverage,
             longBidAsk,
@@ -1698,6 +1816,16 @@ export class FundingArbitrageStrategy {
             }
           }
 
+          // Filter by prediction quality if available
+          if (item.opportunity.predictionRecommendation === 'skip') {
+            this.logger.debug(
+              `Skipping ${item.opportunity.symbol}: prediction recommends skip ` +
+                `(confidence: ${((item.opportunity.predictionConfidence ?? 0) * 100).toFixed(0)}%, ` +
+                `predicted BE: ${item.opportunity.predictedBreakEvenHours?.toFixed(1) ?? 'N/A'}h)`,
+            );
+            return false;
+          }
+
           // Must have a valid execution plan OR acceptable break-even time
           // (even if not instantly profitable, as long as they break even within threshold)
           const maxBreakEvenHours =
@@ -1730,11 +1858,27 @@ export class FundingArbitrageStrategy {
           );
         })
         .sort((a, b) => {
-          // Sort by expected return (highest APY first)
+          // Primary sort: prediction-weighted score
+          // Combines expected return with prediction confidence
+          const aScore = this.calculatePredictionWeightedScore(
+            a.opportunity,
+            a.netReturn,
+            a.breakEvenHours,
+          );
+          const bScore = this.calculatePredictionWeightedScore(
+            b.opportunity,
+            b.netReturn,
+            b.breakEvenHours,
+          );
+          const scoreDiff = bScore - aScore;
+          if (Math.abs(scoreDiff) > 0.001) return scoreDiff;
+
+          // Tiebreaker: expected return (highest APY first)
           const returnDiff =
             (b.opportunity.expectedReturn?.toAPY() || 0) -
             (a.opportunity.expectedReturn?.toAPY() || 0);
           if (Math.abs(returnDiff) > 0.001) return returnDiff;
+
           // Then by maxPortfolio as tiebreaker (opportunities with known caps first)
           const aMax = a.maxPortfolioFor35APY ?? Infinity;
           const bMax = b.maxPortfolioFor35APY ?? Infinity;

@@ -1,10 +1,18 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, Optional, Inject } from '@nestjs/common';
 import { FundingRateAggregator, FundingRateComparison, ArbitrageOpportunity } from '../../domain/services/FundingRateAggregator';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
+import { PredictionBacktester, BacktestResults } from '../../domain/services/prediction/PredictionBacktester';
+import type { IFundingRatePredictionService, EnsemblePredictionResult } from '../../domain/ports/IFundingRatePredictor';
 
 @Controller('funding-rates')
 export class FundingRateController {
-  constructor(private readonly aggregator: FundingRateAggregator) {}
+  constructor(
+    private readonly aggregator: FundingRateAggregator,
+    @Optional() private readonly backtester?: PredictionBacktester,
+    @Optional()
+    @Inject('IFundingRatePredictionService')
+    private readonly predictionService?: IFundingRatePredictionService,
+  ) {}
 
   /**
    * Get current funding rates from all exchanges for a symbol
@@ -81,6 +89,170 @@ export class FundingRateController {
       timestamp: exchangeRate.timestamp,
     };
   }
+
+  /**
+   * Get ensemble prediction for a symbol/exchange
+   * GET /funding-rates/prediction/:exchange/:symbol
+   */
+  @Get('prediction/:exchange/:symbol')
+  async getPrediction(
+    @Param('exchange') exchange: string,
+    @Param('symbol') symbol: string,
+  ): Promise<{ prediction: EnsemblePredictionResult } | { error: string }> {
+    if (!this.predictionService) {
+      return { error: 'Prediction service not available' };
+    }
+
+    try {
+      const prediction = await this.predictionService.getPrediction(
+        symbol.toUpperCase(),
+        exchange.toUpperCase() as ExchangeType,
+      );
+      return { prediction };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { error: `Failed to get prediction: ${message}` };
+    }
+  }
+
+  /**
+   * Get spread prediction for arbitrage pair
+   * GET /funding-rates/prediction/spread/:symbol?long=HYPERLIQUID&short=ASTER
+   */
+  @Get('prediction/spread/:symbol')
+  async getSpreadPrediction(
+    @Param('symbol') symbol: string,
+    @Query('long') longExchange: string,
+    @Query('short') shortExchange: string,
+  ): Promise<{
+    predictedSpread: number;
+    confidence: number;
+    longPrediction: EnsemblePredictionResult;
+    shortPrediction: EnsemblePredictionResult;
+  } | { error: string }> {
+    if (!this.predictionService) {
+      return { error: 'Prediction service not available' };
+    }
+
+    if (!longExchange || !shortExchange) {
+      return { error: 'Both long and short exchange parameters are required' };
+    }
+
+    try {
+      return await this.predictionService.getSpreadPrediction(
+        symbol.toUpperCase(),
+        longExchange.toUpperCase() as ExchangeType,
+        shortExchange.toUpperCase() as ExchangeType,
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { error: `Failed to get spread prediction: ${message}` };
+    }
+  }
+
+  /**
+   * Run backtest for a symbol/exchange
+   * GET /funding-rates/backtest/:exchange/:symbol?window=168
+   */
+  @Get('backtest/:exchange/:symbol')
+  async runBacktest(
+    @Param('exchange') exchange: string,
+    @Param('symbol') symbol: string,
+    @Query('window') trainingWindow?: string,
+    @Query('details') includeDetails?: string,
+  ): Promise<BacktestResults | { error: string }> {
+    if (!this.backtester) {
+      return { error: 'Backtester not available' };
+    }
+
+    try {
+      const result = await this.backtester.runBacktest(
+        symbol.toUpperCase(),
+        exchange.toUpperCase() as ExchangeType,
+        {
+          trainingWindowHours: trainingWindow ? parseInt(trainingWindow, 10) : 168,
+          includeDetailedPredictions: includeDetails === 'true',
+        },
+      );
+      return result;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { error: `Backtest failed: ${message}` };
+    }
+  }
+
+  /**
+   * Run backtest for all common symbols on an exchange
+   * GET /funding-rates/backtest/:exchange?window=168
+   */
+  @Get('backtest/:exchange')
+  async runBatchBacktest(
+    @Param('exchange') exchange: string,
+    @Query('window') trainingWindow?: string,
+  ): Promise<{
+    results: Array<{
+      symbol: string;
+      mae: number;
+      directionalAccuracy: number;
+      totalPredictions: number;
+    }>;
+    summary: {
+      avgMae: number;
+      avgDirectionalAccuracy: number;
+      totalSymbols: number;
+    };
+  } | { error: string }> {
+    if (!this.backtester) {
+      return { error: 'Backtester not available' };
+    }
+
+    try {
+      // Get common symbols from aggregator
+      const symbols = await this.aggregator.discoverCommonAssets();
+
+      const backtestResults = await this.backtester.runBatchBacktest(
+        exchange.toUpperCase() as ExchangeType,
+        symbols,
+        {
+          trainingWindowHours: trainingWindow ? parseInt(trainingWindow, 10) : 168,
+        },
+      );
+
+      // Format results
+      const results: Array<{
+        symbol: string;
+        mae: number;
+        directionalAccuracy: number;
+        totalPredictions: number;
+      }> = [];
+
+      let totalMae = 0;
+      let totalDirAcc = 0;
+
+      for (const [symbol, result] of backtestResults) {
+        results.push({
+          symbol,
+          mae: result.ensembleMetrics.meanAbsoluteError,
+          directionalAccuracy: result.ensembleMetrics.directionalAccuracy,
+          totalPredictions: result.ensembleMetrics.totalPredictions,
+        });
+        totalMae += result.ensembleMetrics.meanAbsoluteError;
+        totalDirAcc += result.ensembleMetrics.directionalAccuracy;
+      }
+
+      const count = results.length || 1;
+
+      return {
+        results,
+        summary: {
+          avgMae: totalMae / count,
+          avgDirectionalAccuracy: totalDirAcc / count,
+          totalSymbols: results.length,
+        },
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { error: `Batch backtest failed: ${message}` };
+    }
+  }
 }
-
-
