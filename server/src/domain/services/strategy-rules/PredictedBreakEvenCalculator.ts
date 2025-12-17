@@ -269,18 +269,24 @@ export class PredictedBreakEvenCalculator {
 
   /**
    * Calculate predicted spread from predictions
+   * Falls back to current rates if predictions are unavailable or contain NaN
    */
   private calculatePredictedSpread(
     longPrediction: EnsemblePredictionResult | null,
     shortPrediction: EnsemblePredictionResult | null,
     opportunity: ArbitrageOpportunity,
   ): number {
-    if (longPrediction && shortPrediction) {
-      // Use predicted rates
+    // Check if predictions exist AND have valid (non-NaN) rates
+    if (
+      longPrediction &&
+      shortPrediction &&
+      isFinite(longPrediction.predictedRate) &&
+      isFinite(shortPrediction.predictedRate)
+    ) {
       return longPrediction.predictedRate - shortPrediction.predictedRate;
     }
 
-    // Fallback to current rates
+    // Fallback to current rates from opportunity
     const longRate = opportunity.longRate?.toDecimal() ?? 0;
     const shortRate = opportunity.shortRate?.toDecimal() ?? 0;
     return longRate - shortRate;
@@ -288,15 +294,19 @@ export class PredictedBreakEvenCalculator {
 
   /**
    * Calculate worst-case spread (lower bound)
+   * Falls back to current spread with haircut if bounds are unavailable or NaN
    */
   private calculateWorstCaseSpread(
     longPrediction: EnsemblePredictionResult | null,
     shortPrediction: EnsemblePredictionResult | null,
     opportunity: ArbitrageOpportunity,
   ): number {
+    // Check if bounds exist AND are valid numbers
     if (
       longPrediction?.lowerBound !== undefined &&
-      shortPrediction?.upperBound !== undefined
+      shortPrediction?.upperBound !== undefined &&
+      isFinite(longPrediction.lowerBound) &&
+      isFinite(shortPrediction.upperBound)
     ) {
       // Worst case: long at lower bound, short at upper bound
       return longPrediction.lowerBound - shortPrediction.upperBound;
@@ -313,15 +323,19 @@ export class PredictedBreakEvenCalculator {
 
   /**
    * Calculate best-case spread (upper bound)
+   * Falls back to current spread with bonus if bounds are unavailable or NaN
    */
   private calculateBestCaseSpread(
     longPrediction: EnsemblePredictionResult | null,
     shortPrediction: EnsemblePredictionResult | null,
     opportunity: ArbitrageOpportunity,
   ): number {
+    // Check if bounds exist AND are valid numbers
     if (
       longPrediction?.upperBound !== undefined &&
-      shortPrediction?.lowerBound !== undefined
+      shortPrediction?.lowerBound !== undefined &&
+      isFinite(longPrediction.upperBound) &&
+      isFinite(shortPrediction.lowerBound)
     ) {
       // Best case: long at upper bound, short at lower bound
       return longPrediction.upperBound - shortPrediction.lowerBound;
@@ -437,71 +451,136 @@ export class PredictedBreakEvenCalculator {
 
   /**
    * Get recommendation based on score and break-even
+   * 
+   * KEY LOGIC: Only skip if we CAN'T break even before a predicted spread reversal.
+   * - If current spread is profitable AND we break even before any reversal → DEPLOY
+   * - If spread will reverse BEFORE we break even → SKIP (wait for flip, then deploy opposite)
+   * - If prediction is unreliable but current spread is good → DEPLOY using current rates
    */
   private getRecommendation(
     score: number,
     breakEven: PredictedBreakEven,
     opportunity: ArbitrageOpportunity,
   ): { recommendation: OpportunityScore['recommendation']; reason: string } {
-    // Skip if prediction unreliable
-    if (!breakEven.isPredictionReliable) {
-      return {
-        recommendation: 'skip',
-        reason: `Prediction confidence ${(breakEven.confidence * 100).toFixed(0)}% below threshold`,
-      };
-    }
-
-    // Skip if break-even longer than reliable horizon
-    if (
-      breakEven.confidenceAdjustedBreakEvenHours >
-      breakEven.reliableHorizonHours
-    ) {
-      return {
-        recommendation: 'skip',
-        reason: `Break-even ${breakEven.confidenceAdjustedBreakEvenHours.toFixed(1)}h exceeds reliable horizon ${breakEven.reliableHorizonHours}h`,
-      };
-    }
-
-    // Skip if break-even too long
+    const breakEvenHours = breakEven.confidenceAdjustedBreakEvenHours;
+    const reliableHorizonHours = breakEven.reliableHorizonHours;
+    const predictedSpread = breakEven.predictedSpread;
+    
+    // Calculate current spread - use opportunity.spread if available, else compute from rates
+    // This ensures we don't lose profitability info when spread field is undefined
+    const currentSpread = opportunity.spread?.toDecimal() ?? 
+      ((opportunity.longRate?.toDecimal() ?? 0) - (opportunity.shortRate?.toDecimal() ?? 0));
+    
     const maxBreakEvenDays = this.config.maxWorstCaseBreakEvenDays ?? 7;
-    if (breakEven.worstCaseBreakEvenHours / 24 > maxBreakEvenDays) {
-      return {
-        recommendation: 'skip',
-        reason: `Worst-case break-even ${(breakEven.worstCaseBreakEvenHours / 24).toFixed(1)} days exceeds max ${maxBreakEvenDays} days`,
-      };
-    }
+    const maxBreakEvenHours = maxBreakEvenDays * 24;
 
-    // Strong buy: high score, fast break-even, high confidence
-    if (
-      score >= 0.7 &&
-      breakEven.predictedBreakEvenHours < 24 &&
-      breakEven.confidence >= 0.8
-    ) {
-      return {
-        recommendation: 'strong_buy',
-        reason: `High score ${score.toFixed(2)}, fast break-even ${breakEven.predictedBreakEvenHours.toFixed(1)}h, high confidence ${(breakEven.confidence * 100).toFixed(0)}%`,
-      };
-    }
-
-    // Buy: good score, reasonable break-even
-    if (score >= 0.5 && breakEven.confidenceAdjustedBreakEvenHours < 72) {
-      return {
-        recommendation: 'buy',
-        reason: `Good score ${score.toFixed(2)}, break-even ${breakEven.confidenceAdjustedBreakEvenHours.toFixed(1)}h`,
-      };
-    }
-
-    // Hold: marginal opportunity
-    if (score >= 0.3) {
+    // If break-even is NaN or Infinity, fall back to current spread profitability
+    if (!isFinite(breakEvenHours) || isNaN(breakEvenHours)) {
+      const absCurrentSpread = Math.abs(currentSpread);
+      if (absCurrentSpread > 0.0001) { // 0.01% minimum spread
+        return {
+          recommendation: 'buy',
+          reason: `Prediction unavailable but current spread ${(currentSpread * 100).toFixed(4)}% is favorable`,
+        };
+      }
       return {
         recommendation: 'hold',
-        reason: `Marginal score ${score.toFixed(2)}, consider if no better options`,
+        reason: 'Cannot calculate break-even and current spread is minimal',
       };
     }
 
+    // Check if spread is predicted to REVERSE (sign flip)
+    const currentSign = Math.sign(currentSpread);
+    const predictedSign = Math.sign(predictedSpread);
+    const spreadWillReverse = currentSign !== 0 && predictedSign !== 0 && currentSign !== predictedSign;
+
+    // KEY DECISION: Only skip if we CAN'T break even before a predicted reversal
+    if (spreadWillReverse) {
+      // Use reliable horizon as proxy for "time until reversal"
+      // If we can break even BEFORE the reversal, still deploy!
+      const hoursUntilReversal = reliableHorizonHours;
+
+      if (breakEvenHours > hoursUntilReversal) {
+        return {
+          recommendation: 'skip',
+          reason: `Spread will reverse: BE ${breakEvenHours.toFixed(1)}h > reversal ${hoursUntilReversal.toFixed(1)}h - wait for flip`,
+        };
+      }
+      // Break-even before reversal - we can still profit!
+      return {
+        recommendation: 'buy',
+        reason: `Break-even ${breakEvenHours.toFixed(1)}h before reversal ${hoursUntilReversal.toFixed(1)}h - deploy now, flip later`,
+      };
+    }
+
+    // If prediction is unreliable but current spread is profitable, trust current rates
+    if (!breakEven.isPredictionReliable) {
+      const absCurrentSpread = Math.abs(currentSpread);
+      if (absCurrentSpread > 0.0001) { // 0.01% minimum spread
+        // Check if break-even is within acceptable range using current rates
+        if (breakEvenHours < maxBreakEvenHours) {
+          return {
+            recommendation: 'buy',
+            reason: `Low prediction confidence but current spread ${(currentSpread * 100).toFixed(4)}% with BE ${breakEvenHours.toFixed(1)}h`,
+          };
+        }
+        return {
+          recommendation: 'hold',
+          reason: `Current spread favorable but BE ${breakEvenHours.toFixed(1)}h is long`,
+        };
+      }
+      return {
+        recommendation: 'hold',
+        reason: `Prediction unreliable (${(breakEven.confidence * 100).toFixed(0)}%) and current spread minimal`,
+      };
+    }
+
+    // Spread won't reverse - check break-even time
+
+    // Skip only if worst-case break-even exceeds max days AND spread is reversing
+    // (already handled above if reversing, so here we're more lenient)
+    if (breakEven.worstCaseBreakEvenHours / 24 > maxBreakEvenDays * 2) {
+      return {
+        recommendation: 'hold',
+        reason: `Worst-case BE ${(breakEven.worstCaseBreakEvenHours / 24).toFixed(1)} days is long but spread stable`,
+      };
+    }
+
+    // Strong buy: fast break-even OR high score with reasonable BE
+    if (breakEvenHours < 12) {
+      return {
+        recommendation: 'strong_buy',
+        reason: `Fast break-even ${breakEvenHours.toFixed(1)}h, spread stable`,
+      };
+    }
+
+    if (score >= 0.7 && breakEvenHours < 48 && breakEven.confidence >= 0.7) {
+      return {
+        recommendation: 'strong_buy',
+        reason: `High score ${score.toFixed(2)}, BE ${breakEvenHours.toFixed(1)}h, ${(breakEven.confidence * 100).toFixed(0)}% confidence`,
+      };
+    }
+
+    // Buy: reasonable break-even within horizon, spread stable
+    if (breakEvenHours < reliableHorizonHours) {
+      return {
+        recommendation: 'buy',
+        reason: `Break-even ${breakEvenHours.toFixed(1)}h within horizon ${reliableHorizonHours.toFixed(1)}h, spread stable`,
+      };
+    }
+
+    // Buy: break-even exceeds horizon but spread won't reverse
+    if (breakEvenHours < maxBreakEvenHours) {
+      return {
+        recommendation: 'buy',
+        reason: `Break-even ${breakEvenHours.toFixed(1)}h, spread predicted stable (no reversal)`,
+      };
+    }
+
+    // Hold: long break-even but spread stable
     return {
-      recommendation: 'skip',
-      reason: `Low score ${score.toFixed(2)}`,
+      recommendation: 'hold',
+      reason: `Long BE ${breakEvenHours.toFixed(1)}h but spread stable - consider if capital available`,
     };
   }
 
