@@ -25,6 +25,7 @@ import {
   PerpOrderResponse,
   OrderStatus,
   OrderSide,
+  OrderType,
   TimeInForce,
 } from '../../value-objects/PerpOrder';
 import { Result } from '../../common/Result';
@@ -35,13 +36,16 @@ import {
   InsufficientBalanceException,
 } from '../../exceptions/DomainException';
 import { DiagnosticsService } from '../../../infrastructure/services/DiagnosticsService';
-import { CircuitBreakerService, CircuitState } from '../../../infrastructure/services/CircuitBreakerService';
+import {
+  CircuitBreakerService,
+  CircuitState,
+} from '../../../infrastructure/services/CircuitBreakerService';
 import { ExecutionLockService } from '../../../infrastructure/services/ExecutionLockService';
-import { 
-  ExecutionAnalytics, 
-  OrderExecutionMetrics, 
-  RetryConfig, 
-  DEFAULT_RETRY_CONFIG 
+import {
+  ExecutionAnalytics,
+  OrderExecutionMetrics,
+  RetryConfig,
+  DEFAULT_RETRY_CONFIG,
 } from './ExecutionAnalytics';
 
 /**
@@ -52,7 +56,7 @@ import {
 export class OrderExecutor implements IOrderExecutor {
   private readonly logger = new Logger(OrderExecutor.name);
   private executionAnalytics?: ExecutionAnalytics;
-  
+
   // Retry configuration for transient failures
   private readonly retryConfig: RetryConfig = {
     ...DEFAULT_RETRY_CONFIG,
@@ -93,7 +97,7 @@ export class OrderExecutor implements IOrderExecutor {
     // Initialize execution analytics
     this.executionAnalytics = new ExecutionAnalytics();
   }
-  
+
   /**
    * Get execution analytics instance for external access
    */
@@ -104,7 +108,13 @@ export class OrderExecutor implements IOrderExecutor {
   /**
    * Record an error to diagnostics service and circuit breaker
    */
-  private recordError(type: string, message: string, exchange?: ExchangeType, symbol?: string, context?: Record<string, any>): void {
+  private recordError(
+    type: string,
+    message: string,
+    exchange?: ExchangeType,
+    symbol?: string,
+    context?: Record<string, any>,
+  ): void {
     if (this.diagnosticsService) {
       this.diagnosticsService.recordError({
         type,
@@ -115,13 +125,13 @@ export class OrderExecutor implements IOrderExecutor {
         context,
       });
     }
-    
+
     // Notify circuit breaker of the error
     if (this.circuitBreaker) {
       this.circuitBreaker.recordError(type);
     }
   }
-  
+
   /**
    * Record a successful order execution to circuit breaker
    */
@@ -130,7 +140,7 @@ export class OrderExecutor implements IOrderExecutor {
       this.circuitBreaker.recordSuccess();
     }
   }
-  
+
   /**
    * Record an order event to diagnostics
    */
@@ -156,26 +166,28 @@ export class OrderExecutor implements IOrderExecutor {
       });
     }
   }
-  
+
   /**
    * Check if an error is retryable
    */
   private isRetryableError(error: any): boolean {
     const errorMessage = (error?.message || String(error)).toUpperCase();
-    return this.retryConfig.retryableErrors.some(
-      retryable => errorMessage.includes(retryable)
+    return this.retryConfig.retryableErrors.some((retryable) =>
+      errorMessage.includes(retryable),
     );
   }
-  
+
   /**
    * Calculate retry delay with exponential backoff and jitter
    */
   private calculateRetryDelay(attempt: number): number {
-    const delay = this.retryConfig.baseDelayMs * Math.pow(this.retryConfig.backoffMultiplier, attempt);
+    const delay =
+      this.retryConfig.baseDelayMs *
+      Math.pow(this.retryConfig.backoffMultiplier, attempt);
     const jitter = delay * 0.2 * (Math.random() * 2 - 1); // ±20% jitter
     return Math.min(delay + jitter, this.retryConfig.maxDelayMs);
   }
-  
+
   /**
    * Execute a function with retry logic and exponential backoff
    */
@@ -186,45 +198,48 @@ export class OrderExecutor implements IOrderExecutor {
     symbol: string,
   ): Promise<T> {
     let lastError: any;
-    
+
     for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
       try {
         const startTime = Date.now();
         const result = await operation();
-        
+
         // Record successful execution time
         if (attempt > 0) {
           this.logger.log(
-            `✅ ${operationName} succeeded on retry ${attempt} for ${symbol} (${exchange})`
+            `✅ ${operationName} succeeded on retry ${attempt} for ${symbol} (${exchange})`,
           );
         }
-        
+
         return result;
       } catch (error: any) {
         lastError = error;
-        
+
         // Check if error is retryable
-        if (!this.isRetryableError(error) || attempt === this.retryConfig.maxRetries) {
+        if (
+          !this.isRetryableError(error) ||
+          attempt === this.retryConfig.maxRetries
+        ) {
           this.logger.warn(
             `❌ ${operationName} failed for ${symbol} (${exchange}) - ` +
-            `${this.isRetryableError(error) ? 'max retries exceeded' : 'non-retryable error'}: ${error.message}`
+              `${this.isRetryableError(error) ? 'max retries exceeded' : 'non-retryable error'}: ${error.message}`,
           );
           throw error;
         }
-        
+
         const delay = this.calculateRetryDelay(attempt);
         this.logger.warn(
           `⚠️ ${operationName} failed for ${symbol} (${exchange}), ` +
-          `retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt + 1}/${this.retryConfig.maxRetries}): ${error.message}`
+            `retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt + 1}/${this.retryConfig.maxRetries}): ${error.message}`,
         );
-        
-        await new Promise(resolve => setTimeout(resolve, delay));
+
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
-    
+
     throw lastError;
   }
-  
+
   /**
    * Record order execution metrics
    */
@@ -241,13 +256,13 @@ export class OrderExecutor implements IOrderExecutor {
     success: boolean,
   ): void {
     if (!this.executionAnalytics) return;
-    
+
     const slippageBps = this.executionAnalytics.calculateSlippageBps(
       requestedPrice,
       executedPrice,
       side,
     );
-    
+
     this.executionAnalytics.recordExecution({
       symbol,
       exchange,
@@ -263,7 +278,7 @@ export class OrderExecutor implements IOrderExecutor {
       timestamp: new Date(),
     });
   }
-  
+
   /**
    * Refresh price from exchange and update order if needed
    * Returns updated price or original if refresh fails
@@ -277,42 +292,48 @@ export class OrderExecutor implements IOrderExecutor {
   ): Promise<{ price: number; priceChanged: boolean }> {
     try {
       const currentPrice = await adapter.getMarkPrice(symbol);
-      
+
       if (currentPrice <= 0) {
         return { price: originalPrice, priceChanged: false };
       }
-      
+
       const priceDiff = Math.abs(currentPrice - originalPrice) / originalPrice;
       const priceDiffBps = priceDiff * 10000;
-      
+
       if (priceDiffBps > maxSlippageBps) {
         this.logger.warn(
           `⚠️ Price moved ${priceDiffBps.toFixed(1)} bps for ${symbol} ` +
-          `(${originalPrice.toFixed(4)} -> ${currentPrice.toFixed(4)})`
+            `(${originalPrice.toFixed(4)} -> ${currentPrice.toFixed(4)})`,
         );
-        
+
         // For buys (LONG), only accept if price went down
         // For sells (SHORT), only accept if price went up
         if (side === OrderSide.LONG && currentPrice > originalPrice) {
-          this.logger.warn(`Price moved against LONG order, using original price`);
+          this.logger.warn(
+            `Price moved against LONG order, using original price`,
+          );
           return { price: originalPrice, priceChanged: false };
         }
         if (side === OrderSide.SHORT && currentPrice < originalPrice) {
-          this.logger.warn(`Price moved against SHORT order, using original price`);
+          this.logger.warn(
+            `Price moved against SHORT order, using original price`,
+          );
           return { price: originalPrice, priceChanged: false };
         }
       }
-      
-      return { 
-        price: currentPrice, 
-        priceChanged: Math.abs(currentPrice - originalPrice) > 0.0001 
+
+      return {
+        price: currentPrice,
+        priceChanged: Math.abs(currentPrice - originalPrice) > 0.0001,
       };
     } catch (error: any) {
-      this.logger.debug(`Failed to refresh price for ${symbol}: ${error.message}`);
+      this.logger.debug(
+        `Failed to refresh price for ${symbol}: ${error.message}`,
+      );
       return { price: originalPrice, priceChanged: false };
     }
   }
-  
+
   /**
    * Handle partial fill by creating a follow-up order for remaining size
    */
@@ -323,22 +344,22 @@ export class OrderExecutor implements IOrderExecutor {
     exchange: ExchangeType,
   ): Promise<PerpOrderResponse | null> {
     const remainingSize = originalOrder.size - filledSize;
-    
+
     // Skip if remaining size is too small (< 5% of original)
     if (remainingSize < originalOrder.size * 0.05) {
       this.logger.debug(
         `Partial fill for ${originalOrder.symbol}: remaining size ${remainingSize.toFixed(4)} ` +
-        `is too small, treating as complete`
+          `is too small, treating as complete`,
       );
       return null;
     }
-    
+
     this.logger.log(
       `📊 Handling partial fill for ${originalOrder.symbol} (${exchange}): ` +
-      `filled ${filledSize.toFixed(4)}/${originalOrder.size.toFixed(4)}, ` +
-      `placing follow-up for ${remainingSize.toFixed(4)}`
+        `filled ${filledSize.toFixed(4)}/${originalOrder.size.toFixed(4)}, ` +
+        `placing follow-up for ${remainingSize.toFixed(4)}`,
     );
-    
+
     try {
       // Refresh price for follow-up order
       const { price: refreshedPrice } = await this.refreshPrice(
@@ -347,7 +368,7 @@ export class OrderExecutor implements IOrderExecutor {
         originalOrder.price || 0,
         originalOrder.side,
       );
-      
+
       const followUpOrder = new PerpOrderRequest(
         originalOrder.symbol,
         originalOrder.side,
@@ -357,23 +378,23 @@ export class OrderExecutor implements IOrderExecutor {
         originalOrder.timeInForce,
         originalOrder.reduceOnly,
       );
-      
+
       const response = await this.executeWithRetry(
         () => adapter.placeOrder(followUpOrder),
         'Place partial fill follow-up order',
         exchange,
         originalOrder.symbol,
       );
-      
+
       return response;
     } catch (error: any) {
       this.logger.error(
-        `❌ Failed to place follow-up order for partial fill: ${error.message}`
+        `❌ Failed to place follow-up order for partial fill: ${error.message}`,
       );
       return null;
     }
   }
-  
+
   /**
    * Get adaptive timeout based on historical fill times
    */
@@ -381,24 +402,26 @@ export class OrderExecutor implements IOrderExecutor {
     if (!this.executionAnalytics) {
       return 30000; // Default 30 seconds
     }
-    
+
     return this.executionAnalytics.calculateAdaptiveTimeout(exchange);
   }
 
   /**
    * Get available margin from an adapter
    * Uses getAvailableMargin() if available, falls back to getBalance() with buffer
-   * 
+   *
    * This prevents "not enough margin" errors by using a more accurate margin calculation
    * that accounts for existing positions and applies safety buffers.
    */
-  private async getAdapterAvailableMargin(adapter: IPerpExchangeAdapter): Promise<number> {
+  private async getAdapterAvailableMargin(
+    adapter: IPerpExchangeAdapter,
+  ): Promise<number> {
     try {
       // Try to use getAvailableMargin if the adapter supports it
       if (typeof adapter.getAvailableMargin === 'function') {
         return await adapter.getAvailableMargin();
       }
-      
+
       // Fallback to getBalance with a conservative 30% buffer
       const balance = await adapter.getBalance();
       return balance * 0.7;
@@ -410,17 +433,17 @@ export class OrderExecutor implements IOrderExecutor {
 
   /**
    * Place a pair of orders (long and short) with intelligent execution strategy
-   * 
+   *
    * - If either exchange is Lighter, execute SEQUENTIALLY to avoid nonce conflicts
    * - If both exchanges are the same, execute SEQUENTIALLY
    * - Otherwise, execute in PARALLEL for speed
-   * 
+   *
    * Features:
    * - Order registry to prevent race conditions across threads
    * - Retry logic with exponential backoff for transient failures
    * - Execution metrics tracking (slippage, fill time)
    * - Dynamic timeout adjustment based on historical performance
-   * 
+   *
    * @returns Tuple of [longResponse, shortResponse]
    */
   private async placeOrderPair(
@@ -432,20 +455,32 @@ export class OrderExecutor implements IOrderExecutor {
     shortExchange: ExchangeType,
   ): Promise<[PerpOrderResponse, PerpOrderResponse]> {
     // Generate thread ID for order tracking
-    const threadId = this.executionLockService?.generateThreadId() || `order-${Date.now()}`;
-    
+    const threadId =
+      this.executionLockService?.generateThreadId() || `order-${Date.now()}`;
+
     // RACE CONDITION CHECK: Verify no active orders exist for this symbol/side
     if (this.executionLockService) {
-      const longActive = this.executionLockService.hasActiveOrder(longExchange, longOrder.symbol, 'LONG');
-      const shortActive = this.executionLockService.hasActiveOrder(shortExchange, shortOrder.symbol, 'SHORT');
-      
+      const longActive = this.executionLockService.hasActiveOrder(
+        longExchange,
+        longOrder.symbol,
+        'LONG',
+      );
+      const shortActive = this.executionLockService.hasActiveOrder(
+        shortExchange,
+        shortOrder.symbol,
+        'SHORT',
+      );
+
       if (longActive || shortActive) {
-        const msg = `Race condition detected: Active orders exist for ${longOrder.symbol} ` +
+        const msg =
+          `Race condition detected: Active orders exist for ${longOrder.symbol} ` +
           `(LONG active: ${longActive}, SHORT active: ${shortActive})`;
         this.logger.error(`🚨 ${msg}`);
-        throw new ExchangeException(msg, longExchange, { symbol: longOrder.symbol });
+        throw new ExchangeException(msg, longExchange, {
+          symbol: longOrder.symbol,
+        });
       }
-      
+
       // Register orders as PLACING
       const longRegistered = this.executionLockService.registerOrderPlacing(
         `pending-long-${Date.now()}`,
@@ -456,7 +491,7 @@ export class OrderExecutor implements IOrderExecutor {
         longOrder.size,
         longOrder.price,
       );
-      
+
       if (!longRegistered) {
         throw new ExchangeException(
           `Failed to register LONG order - another order is active`,
@@ -464,7 +499,7 @@ export class OrderExecutor implements IOrderExecutor {
           { symbol: longOrder.symbol },
         );
       }
-      
+
       const shortRegistered = this.executionLockService.registerOrderPlacing(
         `pending-short-${Date.now()}`,
         shortOrder.symbol,
@@ -474,10 +509,14 @@ export class OrderExecutor implements IOrderExecutor {
         shortOrder.size,
         shortOrder.price,
       );
-      
+
       if (!shortRegistered) {
         // Clean up long registration since short failed
-        this.executionLockService.forceClearOrder(longExchange, longOrder.symbol, 'LONG');
+        this.executionLockService.forceClearOrder(
+          longExchange,
+          longOrder.symbol,
+          'LONG',
+        );
         throw new ExchangeException(
           `Failed to register SHORT order - another order is active`,
           shortExchange,
@@ -485,9 +524,9 @@ export class OrderExecutor implements IOrderExecutor {
         );
       }
     }
-    
+
     // Determine if sequential execution is required
-    const requiresSequential = 
+    const requiresSequential =
       longExchange === shortExchange ||
       longExchange === ExchangeType.LIGHTER ||
       shortExchange === ExchangeType.LIGHTER;
@@ -498,13 +537,13 @@ export class OrderExecutor implements IOrderExecutor {
       if (requiresSequential) {
         this.logger.debug(
           `📋 Sequential order placement for ${longOrder.symbol}: ` +
-          `${longExchange} -> ${shortExchange} (Lighter or same exchange)`
+            `${longExchange} -> ${shortExchange} (Lighter or same exchange)`,
         );
-        
+
         // Execute sequentially with retry - long first, then short
         let longAttempts = 0;
         let shortAttempts = 0;
-        
+
         const longResponse = await this.executeWithRetry(
           async () => {
             longAttempts++;
@@ -514,7 +553,7 @@ export class OrderExecutor implements IOrderExecutor {
           longExchange,
           longOrder.symbol,
         );
-        
+
         // Update order registry with actual order ID
         if (this.executionLockService) {
           this.executionLockService.updateOrderStatus(
@@ -525,9 +564,9 @@ export class OrderExecutor implements IOrderExecutor {
             longResponse.orderId,
           );
         }
-        
+
         const longFillTime = Date.now() - startTime;
-        
+
         // Record long order metrics
         this.recordOrderMetrics(
           longOrder.symbol,
@@ -541,18 +580,22 @@ export class OrderExecutor implements IOrderExecutor {
           longAttempts,
           longResponse.isSuccess(),
         );
-        
+
         // Record long order to diagnostics
         this.recordOrderToDiagnostics(
           longResponse.orderId || 'unknown',
           longOrder.symbol,
           longExchange,
           'LONG',
-          longResponse.isSuccess() ? (longResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+          longResponse.isSuccess()
+            ? longResponse.isFilled()
+              ? 'FILLED'
+              : 'PLACED'
+            : 'FAILED',
           longFillTime,
           longResponse.error,
         );
-        
+
         const shortStartTime = Date.now();
         const shortResponse = await this.executeWithRetry(
           async () => {
@@ -563,7 +606,7 @@ export class OrderExecutor implements IOrderExecutor {
           shortExchange,
           shortOrder.symbol,
         );
-        
+
         // Update order registry with actual order ID
         if (this.executionLockService) {
           this.executionLockService.updateOrderStatus(
@@ -574,9 +617,9 @@ export class OrderExecutor implements IOrderExecutor {
             shortResponse.orderId,
           );
         }
-        
+
         const shortFillTime = Date.now() - shortStartTime;
-        
+
         // Record short order metrics
         this.recordOrderMetrics(
           shortOrder.symbol,
@@ -590,31 +633,37 @@ export class OrderExecutor implements IOrderExecutor {
           shortAttempts,
           shortResponse.isSuccess(),
         );
-        
+
         // Record short order to diagnostics
         this.recordOrderToDiagnostics(
           shortResponse.orderId || 'unknown',
           shortOrder.symbol,
           shortExchange,
           'SHORT',
-          shortResponse.isSuccess() ? (shortResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+          shortResponse.isSuccess()
+            ? shortResponse.isFilled()
+              ? 'FILLED'
+              : 'PLACED'
+            : 'FAILED',
           shortFillTime,
           shortResponse.error,
         );
-        
+
         return [longResponse, shortResponse];
       }
 
       // Different exchanges (non-Lighter) can be executed in parallel with retry
+      // CRITICAL: Use Promise.allSettled to handle partial failures and implement rollback
       this.logger.debug(
         `📋 Parallel order placement for ${longOrder.symbol}: ` +
-        `${longExchange} || ${shortExchange}`
+          `${longExchange} || ${shortExchange}`,
       );
-      
+
       let longAttempts = 0;
       let shortAttempts = 0;
-      
-      const [longResponse, shortResponse] = await Promise.all([
+
+      // Use allSettled to capture both success and failure cases
+      const [longResult, shortResult] = await Promise.allSettled([
         this.executeWithRetry(
           async () => {
             longAttempts++;
@@ -634,7 +683,193 @@ export class OrderExecutor implements IOrderExecutor {
           shortOrder.symbol,
         ),
       ]);
-      
+
+      const totalTime = Date.now() - startTime;
+
+      // Check for partial failure (one succeeded, one failed) - ROLLBACK REQUIRED
+      const longSuccess = longResult.status === 'fulfilled';
+      const shortSuccess = shortResult.status === 'fulfilled';
+
+      if (longSuccess !== shortSuccess) {
+        // PARTIAL FAILURE - One leg succeeded, one failed
+        // This creates a single-leg position - we need to cancel/close the successful order
+        this.logger.error(
+          `🚨 PARTIAL FAILURE: ${longOrder.symbol} - ` +
+            `LONG: ${longSuccess ? 'SUCCESS' : 'FAILED'}, SHORT: ${shortSuccess ? 'SUCCESS' : 'FAILED'}`,
+        );
+
+        if (longSuccess) {
+          // LONG succeeded, SHORT failed - cancel/close LONG
+          const longResponse = longResult.value;
+          const shortError = (shortResult as PromiseRejectedResult).reason;
+
+          this.logger.warn(
+            `⚠️ Attempting to rollback LONG order ${longResponse.orderId} on ${longExchange} ` +
+              `due to SHORT failure: ${shortError?.message || 'Unknown error'}`,
+          );
+
+          try {
+            // First try to cancel the order if it hasn't filled
+            if (longResponse.orderId && !longResponse.isFilled()) {
+              await longAdapter.cancelOrder(
+                longResponse.orderId,
+                longOrder.symbol,
+              );
+              this.logger.log(
+                `✅ Cancelled LONG order ${longResponse.orderId} for rollback`,
+              );
+            } else if (longResponse.isFilled()) {
+              // Order already filled - need to place a closing order
+              this.logger.warn(
+                `⚠️ LONG order ${longResponse.orderId} already filled - placing closing order for rollback`,
+              );
+              const closeOrder = new PerpOrderRequest(
+                longOrder.symbol,
+                OrderSide.SHORT, // Opposite side to close
+                OrderType.MARKET,
+                longResponse.filledSize || longOrder.size,
+                undefined,
+                TimeInForce.IOC,
+                true, // reduceOnly
+              );
+              await longAdapter.placeOrder(closeOrder);
+              this.logger.log(`✅ Closed LONG position for rollback`);
+            }
+          } catch (rollbackError: any) {
+            this.logger.error(
+              `🚨 ROLLBACK FAILED for LONG on ${longExchange}: ${rollbackError.message}. ` +
+                `MANUAL INTERVENTION REQUIRED for single-leg position!`,
+            );
+          }
+
+          // Clean up registries
+          if (this.executionLockService) {
+            this.executionLockService.forceClearOrder(
+              longExchange,
+              longOrder.symbol,
+              'LONG',
+            );
+            this.executionLockService.forceClearOrder(
+              shortExchange,
+              shortOrder.symbol,
+              'SHORT',
+            );
+          }
+
+          throw new ExchangeException(
+            `Parallel execution failed - SHORT order failed after LONG succeeded. ` +
+              `Rollback attempted. Short error: ${shortError?.message}`,
+            shortExchange,
+            {
+              longOrderId: longResponse.orderId,
+              shortError: shortError?.message,
+            },
+          );
+        } else {
+          // SHORT succeeded, LONG failed - cancel/close SHORT
+          const shortResponse = (
+            shortResult as PromiseFulfilledResult<PerpOrderResponse>
+          ).value;
+          const longError = longResult.reason;
+
+          this.logger.warn(
+            `⚠️ Attempting to rollback SHORT order ${shortResponse.orderId} on ${shortExchange} ` +
+              `due to LONG failure: ${longError?.message || 'Unknown error'}`,
+          );
+
+          try {
+            // First try to cancel the order if it hasn't filled
+            if (shortResponse.orderId && !shortResponse.isFilled()) {
+              await shortAdapter.cancelOrder(
+                shortResponse.orderId,
+                shortOrder.symbol,
+              );
+              this.logger.log(
+                `✅ Cancelled SHORT order ${shortResponse.orderId} for rollback`,
+              );
+            } else if (shortResponse.isFilled()) {
+              // Order already filled - need to place a closing order
+              this.logger.warn(
+                `⚠️ SHORT order ${shortResponse.orderId} already filled - placing closing order for rollback`,
+              );
+              const closeOrder = new PerpOrderRequest(
+                shortOrder.symbol,
+                OrderSide.LONG, // Opposite side to close
+                OrderType.MARKET,
+                shortResponse.filledSize || shortOrder.size,
+                undefined,
+                TimeInForce.IOC,
+                true, // reduceOnly
+              );
+              await shortAdapter.placeOrder(closeOrder);
+              this.logger.log(`✅ Closed SHORT position for rollback`);
+            }
+          } catch (rollbackError: any) {
+            this.logger.error(
+              `🚨 ROLLBACK FAILED for SHORT on ${shortExchange}: ${rollbackError.message}. ` +
+                `MANUAL INTERVENTION REQUIRED for single-leg position!`,
+            );
+          }
+
+          // Clean up registries
+          if (this.executionLockService) {
+            this.executionLockService.forceClearOrder(
+              longExchange,
+              longOrder.symbol,
+              'LONG',
+            );
+            this.executionLockService.forceClearOrder(
+              shortExchange,
+              shortOrder.symbol,
+              'SHORT',
+            );
+          }
+
+          throw new ExchangeException(
+            `Parallel execution failed - LONG order failed after SHORT succeeded. ` +
+              `Rollback attempted. Long error: ${longError?.message}`,
+            longExchange,
+            {
+              shortOrderId: shortResponse.orderId,
+              longError: longError?.message,
+            },
+          );
+        }
+      }
+
+      // Both failed
+      if (!longSuccess && !shortSuccess) {
+        const longError = longResult.reason;
+        const shortError = shortResult.reason;
+
+        if (this.executionLockService) {
+          this.executionLockService.forceClearOrder(
+            longExchange,
+            longOrder.symbol,
+            'LONG',
+          );
+          this.executionLockService.forceClearOrder(
+            shortExchange,
+            shortOrder.symbol,
+            'SHORT',
+          );
+        }
+
+        throw new ExchangeException(
+          `Both orders failed - LONG: ${longError?.message}, SHORT: ${shortError?.message}`,
+          longExchange,
+          { longError: longError?.message, shortError: shortError?.message },
+        );
+      }
+
+      // Both succeeded - extract responses
+      const longResponse = (
+        longResult as PromiseFulfilledResult<PerpOrderResponse>
+      ).value;
+      const shortResponse = (
+        shortResult as PromiseFulfilledResult<PerpOrderResponse>
+      ).value;
+
       // Update order registry with actual order IDs
       if (this.executionLockService) {
         this.executionLockService.updateOrderStatus(
@@ -652,63 +887,77 @@ export class OrderExecutor implements IOrderExecutor {
           shortResponse.orderId,
         );
       }
-      
-      const totalTime = Date.now() - startTime;
-    
-    // Record metrics for both orders
-    this.recordOrderMetrics(
-      longOrder.symbol,
-      longExchange,
-      'LONG',
-      longOrder.size,
-      longResponse.filledSize || longOrder.size,
-      longOrder.price || 0,
-      longResponse.averageFillPrice || longOrder.price || 0,
-      totalTime,
-      longAttempts,
-      longResponse.isSuccess(),
-    );
-    
-    this.recordOrderMetrics(
-      shortOrder.symbol,
-      shortExchange,
-      'SHORT',
-      shortOrder.size,
-      shortResponse.filledSize || shortOrder.size,
-      shortOrder.price || 0,
-      shortResponse.averageFillPrice || shortOrder.price || 0,
-      totalTime,
-      shortAttempts,
-      shortResponse.isSuccess(),
-    );
-    
+
+      // Record metrics for both orders
+      this.recordOrderMetrics(
+        longOrder.symbol,
+        longExchange,
+        'LONG',
+        longOrder.size,
+        longResponse.filledSize || longOrder.size,
+        longOrder.price || 0,
+        longResponse.averageFillPrice || longOrder.price || 0,
+        totalTime,
+        longAttempts,
+        longResponse.isSuccess(),
+      );
+
+      this.recordOrderMetrics(
+        shortOrder.symbol,
+        shortExchange,
+        'SHORT',
+        shortOrder.size,
+        shortResponse.filledSize || shortOrder.size,
+        shortOrder.price || 0,
+        shortResponse.averageFillPrice || shortOrder.price || 0,
+        totalTime,
+        shortAttempts,
+        shortResponse.isSuccess(),
+      );
+
       // Record both orders to diagnostics (parallel execution)
       this.recordOrderToDiagnostics(
         longResponse.orderId || 'unknown',
         longOrder.symbol,
         longExchange,
         'LONG',
-        longResponse.isSuccess() ? (longResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+        longResponse.isSuccess()
+          ? longResponse.isFilled()
+            ? 'FILLED'
+            : 'PLACED'
+          : 'FAILED',
         totalTime,
         longResponse.error,
       );
-      
+
       this.recordOrderToDiagnostics(
         shortResponse.orderId || 'unknown',
         shortOrder.symbol,
         shortExchange,
         'SHORT',
-        shortResponse.isSuccess() ? (shortResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+        shortResponse.isSuccess()
+          ? shortResponse.isFilled()
+            ? 'FILLED'
+            : 'PLACED'
+          : 'FAILED',
         totalTime,
         shortResponse.error,
       );
-      
+
       return [longResponse, shortResponse];
     } catch (error: any) {
       // On error, clean up order registry
       if (this.executionLockService) {
-        this.executionLockService.forceClearOrder(longExchange, longOrder.symbol, 'LONG');
-        this.executionLockService.forceClearOrder(shortExchange, shortOrder.symbol, 'SHORT');
+        this.executionLockService.forceClearOrder(
+          longExchange,
+          longOrder.symbol,
+          'LONG',
+        );
+        this.executionLockService.forceClearOrder(
+          shortExchange,
+          shortOrder.symbol,
+          'SHORT',
+        );
       }
       throw error;
     }
@@ -726,7 +975,7 @@ export class OrderExecutor implements IOrderExecutor {
     orderSide?: 'LONG' | 'SHORT',
   ): Promise<PerpOrderResponse> {
     const operationType = isClosingPosition ? 'CLOSE' : 'OPEN';
-    
+
     // Update order registry to WAITING_FILL status
     if (this.executionLockService && orderSide) {
       this.executionLockService.updateOrderStatus(
@@ -953,16 +1202,18 @@ export class OrderExecutor implements IOrderExecutor {
     // CRITICAL: Cancel the unfilled order to prevent orphaned orders on the order book
     // This is especially important for GTC (Good Till Cancel) orders on Lighter
     try {
-      this.logger.log(`🗑️ Cancelling unfilled ${operationType} order ${orderId} on ${exchangeType}...`);
+      this.logger.log(
+        `🗑️ Cancelling unfilled ${operationType} order ${orderId} on ${exchangeType}...`,
+      );
       await adapter.cancelOrder(orderId, symbol);
       this.logger.log(`✅ Successfully cancelled unfilled order ${orderId}`);
     } catch (cancelError: any) {
       this.logger.warn(
         `⚠️ Failed to cancel unfilled order ${orderId}: ${cancelError.message}. ` +
-        `Order may still be resting on order book - manual cleanup may be required.`
+          `Order may still be resting on order book - manual cleanup may be required.`,
       );
     }
-    
+
     this.recordError(
       'ORDER_FILL_TIMEOUT',
       `${operationType} order did not fill after ${maxRetries} attempts (~${Math.round(totalTime / 1000)}s)`,
@@ -1007,7 +1258,8 @@ export class OrderExecutor implements IOrderExecutor {
 
     // SYMBOL-LEVEL LOCK: Prevent concurrent execution on the same symbol
     // This prevents race conditions where multiple threads try to execute the same symbol
-    const threadId = this.executionLockService?.generateThreadId() || `thread-${Date.now()}`;
+    const threadId =
+      this.executionLockService?.generateThreadId() || `thread-${Date.now()}`;
     if (this.executionLockService) {
       const lockAcquired = this.executionLockService.tryAcquireSymbolLock(
         opportunity.symbol,
@@ -1016,9 +1268,11 @@ export class OrderExecutor implements IOrderExecutor {
       );
       if (!lockAcquired) {
         this.logger.warn(
-          `⏳ Symbol ${opportunity.symbol} is already being executed by another thread - skipping`
+          `⏳ Symbol ${opportunity.symbol} is already being executed by another thread - skipping`,
         );
-        result.errors.push(`Symbol ${opportunity.symbol} locked by another execution`);
+        result.errors.push(
+          `Symbol ${opportunity.symbol} locked by another execution`,
+        );
         return Result.success(result);
       }
     }
@@ -1032,7 +1286,10 @@ export class OrderExecutor implements IOrderExecutor {
     } finally {
       // Always release the symbol lock
       if (this.executionLockService) {
-        this.executionLockService.releaseSymbolLock(opportunity.symbol, threadId);
+        this.executionLockService.releaseSymbolLock(
+          opportunity.symbol,
+          threadId,
+        );
       }
     }
   }
@@ -1054,9 +1311,11 @@ export class OrderExecutor implements IOrderExecutor {
     if (this.circuitBreaker && !this.circuitBreaker.canOpenNewPosition()) {
       const state = this.circuitBreaker.getState();
       this.logger.warn(
-        `🔴 Circuit breaker is ${state} - blocking new position for ${opportunity.symbol}`
+        `🔴 Circuit breaker is ${state} - blocking new position for ${opportunity.symbol}`,
       );
-      result.errors.push(`Circuit breaker ${state}: blocking new position opening`);
+      result.errors.push(
+        `Circuit breaker ${state}: blocking new position opening`,
+      );
       return Result.success(result);
     }
 
@@ -1242,13 +1501,13 @@ export class OrderExecutor implements IOrderExecutor {
           longOrder,
           shortOrder,
           opportunity.longExchange,
-          opportunity.shortExchange!,
-          );
+          opportunity.shortExchange,
+        );
       } catch (err: any) {
         // If placeOrderPair throws, we need to determine which order failed
         // For sequential execution, the first failure stops execution
-          const errorMsg = err?.message || String(err);
-        
+        const errorMsg = err?.message || String(err);
+
         // Check if we have partial results (long succeeded, short failed)
         // This can happen in sequential execution
         if (err.longResponse) {
@@ -1268,35 +1527,35 @@ export class OrderExecutor implements IOrderExecutor {
             errorMsg,
             new Date(),
           );
-      } else {
+        } else {
           // Long order failed
           longError = err;
           this.logger.error(
             `❌ Failed to place LONG order on ${opportunity.longExchange}: ${errorMsg}`,
           );
-        longResponse = new PerpOrderResponse(
-          'error',
-          OrderStatus.REJECTED,
-          opportunity.symbol,
-          OrderSide.LONG,
-          undefined,
-          undefined,
-          undefined,
-          errorMsg,
-          new Date(),
-        );
+          longResponse = new PerpOrderResponse(
+            'error',
+            OrderStatus.REJECTED,
+            opportunity.symbol,
+            OrderSide.LONG,
+            undefined,
+            undefined,
+            undefined,
+            errorMsg,
+            new Date(),
+          );
           // Short was never attempted
-        shortResponse = new PerpOrderResponse(
+          shortResponse = new PerpOrderResponse(
             'not-attempted',
-          OrderStatus.REJECTED,
-          opportunity.symbol,
-          OrderSide.SHORT,
-          undefined,
-          undefined,
-          undefined,
+            OrderStatus.REJECTED,
+            opportunity.symbol,
+            OrderSide.SHORT,
+            undefined,
+            undefined,
+            undefined,
             'Not attempted due to long order failure',
-          new Date(),
-        );
+            new Date(),
+          );
         }
       }
 
@@ -1322,9 +1581,9 @@ export class OrderExecutor implements IOrderExecutor {
         return Result.success(result);
       } else {
         const longErrorMsg =
-          longResponse.error || (longError as any)?.message || 'unknown';
+          longResponse.error || longError?.message || 'unknown';
         const shortErrorMsg =
-          shortResponse.error || (shortError as any)?.message || 'unknown';
+          shortResponse.error || shortError?.message || 'unknown';
 
         this.logger.error(
           `❌ Order execution failed for ${opportunity.symbol}: ` +
@@ -1352,7 +1611,7 @@ export class OrderExecutor implements IOrderExecutor {
       if (error.stack) {
         this.logger.error(`Error stack: ${error.stack}`);
       }
-      
+
       // Record error to circuit breaker
       this.recordError(
         'ORDER_EXECUTION_ERROR',
@@ -1361,7 +1620,7 @@ export class OrderExecutor implements IOrderExecutor {
         opportunity.symbol,
         { error: error.message },
       );
-      
+
       return Result.failure(
         new OrderExecutionException(
           `Failed to execute orders: ${error.message}`,
@@ -1407,9 +1666,11 @@ export class OrderExecutor implements IOrderExecutor {
     if (this.circuitBreaker && !this.circuitBreaker.canOpenNewPosition()) {
       const state = this.circuitBreaker.getState();
       this.logger.warn(
-        `🔴 Circuit breaker is ${state} - blocking all new positions (${opportunities.length} opportunities)`
+        `🔴 Circuit breaker is ${state} - blocking all new positions (${opportunities.length} opportunities)`,
       );
-      result.errors.push(`Circuit breaker ${state}: blocking new position opening`);
+      result.errors.push(
+        `Circuit breaker ${state}: blocking new position opening`,
+      );
       return Result.success({
         successfulExecutions: 0,
         totalOrders: 0,
@@ -1434,7 +1695,9 @@ export class OrderExecutor implements IOrderExecutor {
         const { opportunity, plan } = item;
 
         // SYMBOL-LEVEL LOCK: Prevent concurrent execution on the same symbol
-        const threadId = this.executionLockService?.generateThreadId() || `batch-${Date.now()}-${i}`;
+        const threadId =
+          this.executionLockService?.generateThreadId() ||
+          `batch-${Date.now()}-${i}`;
         if (this.executionLockService) {
           const lockAcquired = this.executionLockService.tryAcquireSymbolLock(
             opportunity.symbol,
@@ -1443,9 +1706,11 @@ export class OrderExecutor implements IOrderExecutor {
           );
           if (!lockAcquired) {
             this.logger.warn(
-              `⏳ Symbol ${opportunity.symbol} is already being executed - skipping in batch`
+              `⏳ Symbol ${opportunity.symbol} is already being executed - skipping in batch`,
             );
-            result.errors.push(`Symbol ${opportunity.symbol} locked by another execution`);
+            result.errors.push(
+              `Symbol ${opportunity.symbol} locked by another execution`,
+            );
             continue;
           }
           lockedSymbols.set(opportunity.symbol, threadId);
@@ -1518,7 +1783,7 @@ export class OrderExecutor implements IOrderExecutor {
               );
               continue;
             }
-            const perpPerpPlan = plan as ArbitrageExecutionPlan;
+            const perpPerpPlan = plan;
             const avgPrice =
               ((perpPerpPlan.longOrder.price || 0) +
                 (perpPerpPlan.shortOrder.price || 0)) /
@@ -1622,7 +1887,7 @@ export class OrderExecutor implements IOrderExecutor {
               longOrder,
               shortOrder,
               opportunity.longExchange,
-              opportunity.shortExchange!,
+              opportunity.shortExchange,
             );
 
             // Wait for orders to fill if they're not immediately filled
@@ -1761,7 +2026,7 @@ export class OrderExecutor implements IOrderExecutor {
                   longOrderId: longResponse.orderId,
                   shortOrderId: shortResponse.orderId,
                   longExchange: opportunity.longExchange,
-                  shortExchange: opportunity.shortExchange!,
+                  shortExchange: opportunity.shortExchange,
                   positionSize: perpPerpPlan.positionSize.toBaseAsset(),
                   opportunity,
                   timestamp: new Date(),
@@ -1777,7 +2042,7 @@ export class OrderExecutor implements IOrderExecutor {
               successfulExecutions++;
               totalOrders += 2;
               totalExpectedReturn += perpPerpPlan.expectedNetReturn;
-              
+
               // Record success to circuit breaker
               this.recordSuccess();
 
@@ -1838,7 +2103,7 @@ export class OrderExecutor implements IOrderExecutor {
                       opportunity.symbol,
                       'SHORT',
                       perpPerpPlan.positionSize.toBaseAsset(),
-                      opportunity.shortExchange!,
+                      opportunity.shortExchange,
                       result,
                     );
                   if (closeResult.isFailure) {

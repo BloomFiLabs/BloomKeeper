@@ -78,35 +78,38 @@ export interface CombinedFundingSummary {
 
 // Browser-like headers to avoid CloudFlare blocking
 const BROWSER_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'application/json, text/plain, */*',
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  Accept: 'application/json, text/plain, */*',
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
 /**
  * RealFundingPaymentsService - Fetches actual funding payments from all exchanges
- * 
+ *
  * This service fetches real funding payment history (not just rates) to calculate
  * true realized APY based on actual payments received/paid.
  */
 @Injectable()
 export class RealFundingPaymentsService implements OnModuleInit {
   private readonly logger = new Logger(RealFundingPaymentsService.name);
-  
+
   // Cached funding data
   private fundingPayments: FundingPayment[] = [];
   private lastFetchTime: Date | null = null;
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-  
+
   // Trading costs for break-even calculation
   private totalTradingCosts: number = 0;
-  
+
   constructor(private readonly configService: ConfigService) {}
 
   async onModuleInit() {
     // Initial fetch on startup (background, don't block)
-    this.fetchAllFundingPayments(30).catch(err => {
-      this.logger.warn(`Failed to fetch initial funding payments: ${err.message}`);
+    this.fetchAllFundingPayments(30).catch((err) => {
+      this.logger.warn(
+        `Failed to fetch initial funding payments: ${err.message}`,
+      );
     });
   }
 
@@ -129,31 +132,41 @@ export class RealFundingPaymentsService implements OnModuleInit {
    */
   async fetchAllFundingPayments(days: number = 30): Promise<FundingPayment[]> {
     const now = Date.now();
-    
+
     // Use cache if fresh
-    if (this.lastFetchTime && (now - this.lastFetchTime.getTime()) < this.CACHE_TTL_MS) {
+    if (
+      this.lastFetchTime &&
+      now - this.lastFetchTime.getTime() < this.CACHE_TTL_MS
+    ) {
       return this.fundingPayments;
     }
 
     const allPayments: FundingPayment[] = [];
 
     // Fetch from all exchanges in parallel
-    const [hyperliquidPayments, asterPayments, lighterPayments] = await Promise.all([
-      this.fetchHyperliquidPayments(days).catch(err => {
-        this.logger.warn(`Failed to fetch Hyperliquid payments: ${err.message}`);
-        return [];
-      }),
-      this.fetchAsterPayments(days).catch(err => {
-        this.logger.warn(`Failed to fetch Aster payments: ${err.message}`);
-        return [];
-      }),
-      this.fetchLighterPayments(days).catch(err => {
-        this.logger.warn(`Failed to fetch Lighter payments: ${err.message}`);
-        return [];
-      }),
-    ]);
+    const [hyperliquidPayments, asterPayments, lighterPayments] =
+      await Promise.all([
+        this.fetchHyperliquidPayments(days).catch((err) => {
+          this.logger.warn(
+            `Failed to fetch Hyperliquid payments: ${err.message}`,
+          );
+          return [];
+        }),
+        this.fetchAsterPayments(days).catch((err) => {
+          this.logger.warn(`Failed to fetch Aster payments: ${err.message}`);
+          return [];
+        }),
+        this.fetchLighterPayments(days).catch((err) => {
+          this.logger.warn(`Failed to fetch Lighter payments: ${err.message}`);
+          return [];
+        }),
+      ]);
 
-    allPayments.push(...hyperliquidPayments, ...asterPayments, ...lighterPayments);
+    allPayments.push(
+      ...hyperliquidPayments,
+      ...asterPayments,
+      ...lighterPayments,
+    );
 
     // Update cache
     this.fundingPayments = allPayments;
@@ -161,9 +174,9 @@ export class RealFundingPaymentsService implements OnModuleInit {
 
     this.logger.log(
       `Fetched ${allPayments.length} funding payments: ` +
-      `Hyperliquid=${hyperliquidPayments.length}, ` +
-      `Aster=${asterPayments.length}, ` +
-      `Lighter=${lighterPayments.length}`
+        `Hyperliquid=${hyperliquidPayments.length}, ` +
+        `Aster=${asterPayments.length}, ` +
+        `Lighter=${lighterPayments.length}`,
     );
 
     return allPayments;
@@ -189,27 +202,37 @@ export class RealFundingPaymentsService implements OnModuleInit {
       };
     }
 
-    const wins = payments.filter(p => p.amount > 0);
-    const losses = payments.filter(p => p.amount < 0);
-    
+    const wins = payments.filter((p) => p.amount > 0);
+    const losses = payments.filter((p) => p.amount < 0);
+
     const totalWins = wins.reduce((sum, p) => sum + p.amount, 0);
     const totalLosses = Math.abs(losses.reduce((sum, p) => sum + p.amount, 0));
-    
+
     const winRate = (wins.length / payments.length) * 100;
-    const profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0;
-    
+    const profitFactor =
+      totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0;
+
     const averageWin = wins.length > 0 ? totalWins / wins.length : 0;
     const averageLoss = losses.length > 0 ? totalLosses / losses.length : 0;
-    
-    const largestWin = wins.length > 0 ? Math.max(...wins.map(p => p.amount)) : 0;
-    const largestLoss = losses.length > 0 ? Math.abs(Math.min(...losses.map(p => p.amount))) : 0;
-    
-    const winLossRatio = averageLoss > 0 ? averageWin / averageLoss : averageWin > 0 ? Infinity : 0;
-    
+
+    const largestWin =
+      wins.length > 0 ? Math.max(...wins.map((p) => p.amount)) : 0;
+    const largestLoss =
+      losses.length > 0
+        ? Math.abs(Math.min(...losses.map((p) => p.amount)))
+        : 0;
+
+    const winLossRatio =
+      averageLoss > 0
+        ? averageWin / averageLoss
+        : averageWin > 0
+          ? Infinity
+          : 0;
+
     // Expectancy = (Win% × Avg Win) - (Loss% × Avg Loss)
     const winPct = wins.length / payments.length;
     const lossPct = losses.length / payments.length;
-    const expectancy = (winPct * averageWin) - (lossPct * averageLoss);
+    const expectancy = winPct * averageWin - lossPct * averageLoss;
 
     return {
       totalPayments: payments.length,
@@ -230,24 +253,32 @@ export class RealFundingPaymentsService implements OnModuleInit {
    * Calculate symbol performance
    */
   calculateSymbolPerformance(payments: FundingPayment[]): SymbolPerformance[] {
-    const symbolMap = new Map<string, { 
-      total: number; 
-      wins: number; 
-      losses: number; 
-      exchange: ExchangeType 
-    }>();
+    const symbolMap = new Map<
+      string,
+      {
+        total: number;
+        wins: number;
+        losses: number;
+        exchange: ExchangeType;
+      }
+    >();
 
     for (const payment of payments) {
       const key = `${payment.symbol}:${payment.exchange}`;
-      const existing = symbolMap.get(key) || { total: 0, wins: 0, losses: 0, exchange: payment.exchange };
-      
+      const existing = symbolMap.get(key) || {
+        total: 0,
+        wins: 0,
+        losses: 0,
+        exchange: payment.exchange,
+      };
+
       existing.total += payment.amount;
       if (payment.amount > 0) {
         existing.wins++;
       } else if (payment.amount < 0) {
         existing.losses++;
       }
-      
+
       symbolMap.set(key, existing);
     }
 
@@ -271,12 +302,19 @@ export class RealFundingPaymentsService implements OnModuleInit {
   /**
    * Get combined funding summary with real APY calculation
    */
-  async getCombinedSummary(days: number = 30, capitalDeployed: number = 0): Promise<CombinedFundingSummary> {
+  async getCombinedSummary(
+    days: number = 30,
+    capitalDeployed: number = 0,
+  ): Promise<CombinedFundingSummary> {
     const payments = await this.fetchAllFundingPayments(days);
 
     // Initialize exchange summaries
     const exchanges = new Map<ExchangeType, ExchangeFundingSummary>();
-    for (const exchange of [ExchangeType.HYPERLIQUID, ExchangeType.ASTER, ExchangeType.LIGHTER]) {
+    for (const exchange of [
+      ExchangeType.HYPERLIQUID,
+      ExchangeType.ASTER,
+      ExchangeType.LIGHTER,
+    ]) {
       exchanges.set(exchange, {
         exchange,
         totalReceived: 0,
@@ -303,11 +341,17 @@ export class RealFundingPaymentsService implements OnModuleInit {
       if (payment.amount > 0) {
         summary.totalReceived += payment.amount;
         totalReceived += payment.amount;
-        exchangeWins.set(payment.exchange, (exchangeWins.get(payment.exchange) || 0) + 1);
+        exchangeWins.set(
+          payment.exchange,
+          (exchangeWins.get(payment.exchange) || 0) + 1,
+        );
       } else if (payment.amount < 0) {
         summary.totalPaid += Math.abs(payment.amount);
         totalPaid += Math.abs(payment.amount);
-        exchangeLosses.set(payment.exchange, (exchangeLosses.get(payment.exchange) || 0) + 1);
+        exchangeLosses.set(
+          payment.exchange,
+          (exchangeLosses.get(payment.exchange) || 0) + 1,
+        );
       }
 
       summary.paymentCount++;
@@ -319,7 +363,8 @@ export class RealFundingPaymentsService implements OnModuleInit {
     for (const [exchange, summary] of exchanges) {
       summary.netFunding = summary.totalReceived - summary.totalPaid;
       const wins = exchangeWins.get(exchange) || 0;
-      summary.winRate = summary.paymentCount > 0 ? (wins / summary.paymentCount) * 100 : 0;
+      summary.winRate =
+        summary.paymentCount > 0 ? (wins / summary.paymentCount) * 100 : 0;
     }
 
     const netFunding = totalReceived - totalPaid;
@@ -346,7 +391,7 @@ export class RealFundingPaymentsService implements OnModuleInit {
 
     // Calculate symbol performance
     const symbolPerformance = this.calculateSymbolPerformance(payments);
-    
+
     // Sort by total funding
     symbolPerformance.sort((a, b) => b.totalFunding - a.totalFunding);
     const topSymbols = symbolPerformance.slice(0, 5);
@@ -371,32 +416,41 @@ export class RealFundingPaymentsService implements OnModuleInit {
   /**
    * Fetch Hyperliquid funding payments
    */
-  private async fetchHyperliquidPayments(days: number): Promise<FundingPayment[]> {
-    const privateKey = this.configService.get<string>('PRIVATE_KEY') || 
-                       this.configService.get<string>('HYPERLIQUID_PRIVATE_KEY');
-    
+  private async fetchHyperliquidPayments(
+    days: number,
+  ): Promise<FundingPayment[]> {
+    const privateKey =
+      this.configService.get<string>('PRIVATE_KEY') ||
+      this.configService.get<string>('HYPERLIQUID_PRIVATE_KEY');
+
     if (!privateKey) {
       this.logger.debug('No Hyperliquid private key configured');
       return [];
     }
 
-    const normalizedKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+    const normalizedKey = privateKey.startsWith('0x')
+      ? privateKey
+      : `0x${privateKey}`;
     const wallet = new ethers.Wallet(normalizedKey);
     const address = wallet.address;
 
     const now = Date.now();
-    const startTime = now - (days * 24 * 60 * 60 * 1000);
+    const startTime = now - days * 24 * 60 * 60 * 1000;
 
     try {
-      const response = await axios.post('https://api.hyperliquid.xyz/info', {
-        type: 'userFunding',
-        user: address,
-        startTime,
-        endTime: now,
-      }, {
-        headers: BROWSER_HEADERS,
-        timeout: 30000,
-      });
+      const response = await axios.post(
+        'https://api.hyperliquid.xyz/info',
+        {
+          type: 'userFunding',
+          user: address,
+          startTime,
+          endTime: now,
+        },
+        {
+          headers: BROWSER_HEADERS,
+          timeout: 30000,
+        },
+      );
 
       const data = response.data;
       if (!Array.isArray(data)) return [];
@@ -435,12 +489,16 @@ export class RealFundingPaymentsService implements OnModuleInit {
       return [];
     }
 
-    const baseUrl = this.configService.get<string>('ASTER_BASE_URL') || 'https://fapi.asterdex.com';
+    const baseUrl =
+      this.configService.get<string>('ASTER_BASE_URL') ||
+      'https://fapi.asterdex.com';
     const now = Date.now();
-    const startTime = now - (days * 24 * 60 * 60 * 1000);
+    const startTime = now - days * 24 * 60 * 60 * 1000;
 
     try {
-      const normalizedKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      const normalizedKey = privateKey.startsWith('0x')
+        ? privateKey
+        : `0x${privateKey}`;
       const wallet = new ethers.Wallet(normalizedKey);
 
       const params: Record<string, any> = {
@@ -458,13 +516,16 @@ export class RealFundingPaymentsService implements OnModuleInit {
         trimmedParams[key] = String(value);
       }
 
-      const jsonStr = JSON.stringify(trimmedParams, Object.keys(trimmedParams).sort());
+      const jsonStr = JSON.stringify(
+        trimmedParams,
+        Object.keys(trimmedParams).sort(),
+      );
       const nonce = Math.floor(Date.now() * 1000);
 
       const abiCoder = ethers.AbiCoder.defaultAbiCoder();
       const encoded = abiCoder.encode(
         ['string', 'address', 'address', 'uint256'],
-        [jsonStr, userAddress, signerAddress, nonce]
+        [jsonStr, userAddress, signerAddress, nonce],
       );
       const keccakHash = ethers.keccak256(encoded);
       const hashBytes = ethers.getBytes(keccakHash);
@@ -522,10 +583,16 @@ export class RealFundingPaymentsService implements OnModuleInit {
    * Fetch Lighter funding payments
    */
   private async fetchLighterPayments(days: number): Promise<FundingPayment[]> {
-    const accountIndex = parseInt(this.configService.get<string>('LIGHTER_ACCOUNT_INDEX') || '0');
+    const accountIndex = parseInt(
+      this.configService.get<string>('LIGHTER_ACCOUNT_INDEX') || '0',
+    );
     const apiKey = this.configService.get<string>('LIGHTER_API_KEY');
-    const apiKeyIndex = parseInt(this.configService.get<string>('LIGHTER_API_KEY_INDEX') || '1');
-    const baseUrl = this.configService.get<string>('LIGHTER_API_BASE_URL') || 'https://mainnet.zklighter.elliot.ai';
+    const apiKeyIndex = parseInt(
+      this.configService.get<string>('LIGHTER_API_KEY_INDEX') || '1',
+    );
+    const baseUrl =
+      this.configService.get<string>('LIGHTER_API_BASE_URL') ||
+      'https://mainnet.zklighter.elliot.ai';
 
     if (!apiKey || accountIndex === 0) {
       this.logger.debug('Lighter credentials not configured');
@@ -569,7 +636,10 @@ export class RealFundingPaymentsService implements OnModuleInit {
       else if (Array.isArray(data)) fundingData = data;
 
       // Get market symbols
-      const marketsRes = await axios.get('https://explorer.elliot.ai/api/markets', { timeout: 10000 });
+      const marketsRes = await axios.get(
+        'https://explorer.elliot.ai/api/markets',
+        { timeout: 10000 },
+      );
       const symbolMap = new Map<number, string>();
       if (Array.isArray(marketsRes.data)) {
         for (const m of marketsRes.data) {
@@ -579,7 +649,7 @@ export class RealFundingPaymentsService implements OnModuleInit {
 
       // Filter to last N days
       const now = Date.now();
-      const cutoff = now - (days * 24 * 60 * 60 * 1000);
+      const cutoff = now - days * 24 * 60 * 60 * 1000;
 
       const payments: FundingPayment[] = [];
       for (const entry of fundingData) {
@@ -613,7 +683,7 @@ export class RealFundingPaymentsService implements OnModuleInit {
     if (hours === null) return 'N/A';
     if (!isFinite(hours)) return '∞ (never)';
     if (hours <= 0) return '✅ Already profitable';
-    
+
     if (hours < 1) {
       return `${(hours * 60).toFixed(0)} minutes`;
     } else if (hours < 24) {
@@ -647,7 +717,10 @@ export class RealFundingPaymentsService implements OnModuleInit {
   /**
    * Log funding summary
    */
-  async logFundingSummary(days: number = 30, capitalDeployed: number = 0): Promise<void> {
+  async logFundingSummary(
+    days: number = 30,
+    capitalDeployed: number = 0,
+  ): Promise<void> {
     const summary = await this.getCombinedSummary(days, capitalDeployed);
     const wr = summary.winRateMetrics;
 
@@ -660,12 +733,20 @@ export class RealFundingPaymentsService implements OnModuleInit {
     // Win Rate Section
     this.logger.log('📊 WIN RATE ANALYSIS');
     this.logger.log('-'.repeat(70));
-    this.logger.log(`  ${this.getWinRateEmoji(wr.winRate)} Win Rate:        ${wr.winRate.toFixed(1)}% (${wr.winningPayments}W / ${wr.losingPayments}L)`);
-    this.logger.log(`  📈 Profit Factor:   ${wr.profitFactor === Infinity ? '∞' : wr.profitFactor.toFixed(2)} ${this.getProfitFactorStatus(wr.profitFactor)}`);
+    this.logger.log(
+      `  ${this.getWinRateEmoji(wr.winRate)} Win Rate:        ${wr.winRate.toFixed(1)}% (${wr.winningPayments}W / ${wr.losingPayments}L)`,
+    );
+    this.logger.log(
+      `  📈 Profit Factor:   ${wr.profitFactor === Infinity ? '∞' : wr.profitFactor.toFixed(2)} ${this.getProfitFactorStatus(wr.profitFactor)}`,
+    );
     this.logger.log(`  💵 Average Win:     +$${wr.averageWin.toFixed(4)}`);
     this.logger.log(`  💸 Average Loss:    -$${wr.averageLoss.toFixed(4)}`);
-    this.logger.log(`  🎯 Win/Loss Ratio:  ${wr.winLossRatio === Infinity ? '∞' : wr.winLossRatio.toFixed(2)}x`);
-    this.logger.log(`  📊 Expectancy:      ${wr.expectancy >= 0 ? '+' : ''}$${wr.expectancy.toFixed(4)} per payment`);
+    this.logger.log(
+      `  🎯 Win/Loss Ratio:  ${wr.winLossRatio === Infinity ? '∞' : wr.winLossRatio.toFixed(2)}x`,
+    );
+    this.logger.log(
+      `  📊 Expectancy:      ${wr.expectancy >= 0 ? '+' : ''}$${wr.expectancy.toFixed(4)} per payment`,
+    );
     this.logger.log(`  🏆 Largest Win:     +$${wr.largestWin.toFixed(4)}`);
     this.logger.log(`  💀 Largest Loss:    -$${wr.largestLoss.toFixed(4)}`);
     this.logger.log('');
@@ -676,18 +757,25 @@ export class RealFundingPaymentsService implements OnModuleInit {
       this.logger.log('-'.repeat(70));
       for (const sym of summary.topSymbols) {
         const sign = sym.totalFunding >= 0 ? '+' : '';
-        this.logger.log(`  ${sym.symbol.padEnd(12)} (${sym.exchange}): ${sign}$${sym.totalFunding.toFixed(4)} | WR: ${sym.winRate.toFixed(0)}%`);
+        this.logger.log(
+          `  ${sym.symbol.padEnd(12)} (${sym.exchange}): ${sign}$${sym.totalFunding.toFixed(4)} | WR: ${sym.winRate.toFixed(0)}%`,
+        );
       }
       this.logger.log('');
     }
 
-    if (summary.bottomSymbols.length > 0 && summary.bottomSymbols[0].totalFunding < 0) {
+    if (
+      summary.bottomSymbols.length > 0 &&
+      summary.bottomSymbols[0].totalFunding < 0
+    ) {
       this.logger.log('💀 WORST PERFORMERS');
       this.logger.log('-'.repeat(70));
       for (const sym of summary.bottomSymbols) {
         if (sym.totalFunding >= 0) continue;
         const sign = sym.totalFunding >= 0 ? '+' : '';
-        this.logger.log(`  ${sym.symbol.padEnd(12)} (${sym.exchange}): ${sign}$${sym.totalFunding.toFixed(4)} | WR: ${sym.winRate.toFixed(0)}%`);
+        this.logger.log(
+          `  ${sym.symbol.padEnd(12)} (${sym.exchange}): ${sign}$${sym.totalFunding.toFixed(4)} | WR: ${sym.winRate.toFixed(0)}%`,
+        );
       }
       this.logger.log('');
     }
@@ -697,10 +785,12 @@ export class RealFundingPaymentsService implements OnModuleInit {
     this.logger.log('-'.repeat(70));
     for (const [exchange, data] of summary.exchanges) {
       if (data.paymentCount === 0) continue;
-      
+
       const sign = data.netFunding >= 0 ? '+' : '';
       this.logger.log(`  ${exchange}:`);
-      this.logger.log(`     Payments: ${data.paymentCount} | Win Rate: ${data.winRate.toFixed(1)}%`);
+      this.logger.log(
+        `     Payments: ${data.paymentCount} | Win Rate: ${data.winRate.toFixed(1)}%`,
+      );
       this.logger.log(`     Net: ${sign}$${data.netFunding.toFixed(4)}`);
     }
 
@@ -708,23 +798,31 @@ export class RealFundingPaymentsService implements OnModuleInit {
     this.logger.log('═'.repeat(70));
     this.logger.log('  TOTALS');
     this.logger.log('═'.repeat(70));
-    
+
     const netSign = summary.netFunding >= 0 ? '+' : '';
-    this.logger.log(`  Total (${days} days):     ${netSign}$${summary.netFunding.toFixed(4)}`);
-    this.logger.log(`  Daily Average:       ${netSign}$${summary.dailyAverage.toFixed(4)}`);
-    this.logger.log(`  Annualized:          ${netSign}$${summary.annualized.toFixed(2)}`);
-    
+    this.logger.log(
+      `  Total (${days} days):     ${netSign}$${summary.netFunding.toFixed(4)}`,
+    );
+    this.logger.log(
+      `  Daily Average:       ${netSign}$${summary.dailyAverage.toFixed(4)}`,
+    );
+    this.logger.log(
+      `  Annualized:          ${netSign}$${summary.annualized.toFixed(2)}`,
+    );
+
     if (capitalDeployed > 0) {
       this.logger.log(`  Real APY:            ${summary.realAPY.toFixed(2)}%`);
     }
 
     this.logger.log('');
-    this.logger.log(`  ⏱️  Break-Even Time:  ${this.formatBreakEvenTime(summary.breakEvenHours)}`);
-    this.logger.log(`  💸 Trading Costs:    $${this.totalTradingCosts.toFixed(4)}`);
-    
+    this.logger.log(
+      `  ⏱️  Break-Even Time:  ${this.formatBreakEvenTime(summary.breakEvenHours)}`,
+    );
+    this.logger.log(
+      `  💸 Trading Costs:    $${this.totalTradingCosts.toFixed(4)}`,
+    );
+
     this.logger.log('');
     this.logger.log('═'.repeat(70));
   }
 }
-
-

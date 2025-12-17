@@ -48,7 +48,9 @@ describe('FundingArbitrageStrategy', () => {
 
     const mockHistoricalService = {
       getHistoricalMetrics: jest.fn().mockReturnValue(null),
-      getWeightedAverageRate: jest.fn().mockImplementation((symbol, exchange, rate) => rate),
+      getWeightedAverageRate: jest
+        .fn()
+        .mockImplementation((symbol, exchange, rate) => rate),
       getSpreadVolatilityMetrics: jest.fn().mockReturnValue(null),
     } as any;
 
@@ -68,36 +70,75 @@ describe('FundingArbitrageStrategy', () => {
     } as any;
 
     const mockPortfolioOptimizer = {
-      calculateMaxPortfolioFor35APY: jest.fn().mockResolvedValue({ maxPortfolio: 10000, breakEvenHours: 1 }),
+      calculateMaxPortfolioFor35APY: jest
+        .fn()
+        .mockResolvedValue({ maxPortfolio: 10000, breakEvenHours: 1 }),
       calculateOptimalPortfolioAllocation: jest.fn().mockResolvedValue([]),
     } as any;
 
     const mockOrderExecutor = {
-      executeMultiplePositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { successfulExecutions: 0, totalOrders: 0, totalExpectedReturn: 0 } }),
-      executeSinglePosition: jest.fn().mockResolvedValue({ isSuccess: () => true, value: {} }),
+      executeMultiplePositions: jest.fn().mockResolvedValue({
+        isSuccess: () => true,
+        value: {
+          successfulExecutions: 0,
+          totalOrders: 0,
+          totalExpectedReturn: 0,
+        },
+      }),
+      executeSinglePosition: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true, value: {} }),
     } as any;
 
     const mockPositionManager = {
-      getAllPositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: [] }),
-      closeAllPositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { closed: [], stillOpen: [] } }),
+      getAllPositions: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true, value: [] }),
+      closeAllPositions: jest.fn().mockResolvedValue({
+        isSuccess: () => true,
+        value: { closed: [], stillOpen: [] },
+      }),
       detectSingleLegPositions: jest.fn().mockReturnValue([]),
-      handleAsymmetricFills: jest.fn().mockResolvedValue({ isSuccess: () => true }),
+      handleAsymmetricFills: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true }),
     } as any;
 
     const mockBalanceManager = {
-      getWalletUsdcBalance: jest.fn().mockResolvedValue({ isSuccess: () => true, value: 0 }),
-      attemptRebalanceForOpportunity: jest.fn().mockResolvedValue({ isSuccess: () => true, value: false }),
-      checkAndDepositWalletFunds: jest.fn().mockResolvedValue({ isSuccess: () => true }),
+      getWalletUsdcBalance: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true, value: 0 }),
+      attemptRebalanceForOpportunity: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true, value: false }),
+      checkAndDepositWalletFunds: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true }),
     } as any;
 
     const mockOpportunityEvaluator = {
-      evaluateOpportunityWithHistory: jest.fn().mockReturnValue({ isSuccess: () => true, value: { breakEvenHours: 1, historicalMetrics: { long: null, short: null }, worstCaseBreakEvenHours: 1, consistencyScore: 0.5 } }),
-      shouldRebalance: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { shouldRebalance: false, reason: 'test' } }),
-      evaluateCurrentPositionPerformance: jest.fn().mockResolvedValue({ isSuccess: () => true, value: {} }),
+      evaluateOpportunityWithHistory: jest.fn().mockReturnValue({
+        isSuccess: () => true,
+        value: {
+          breakEvenHours: 1,
+          historicalMetrics: { long: null, short: null },
+          worstCaseBreakEvenHours: 1,
+          consistencyScore: 0.5,
+        },
+      }),
+      shouldRebalance: jest.fn().mockResolvedValue({
+        isSuccess: () => true,
+        value: { shouldRebalance: false, reason: 'test' },
+      }),
+      evaluateCurrentPositionPerformance: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true, value: {} }),
     } as any;
 
     const mockExecutionPlanBuilder = {
-      buildPlan: jest.fn().mockResolvedValue({ isSuccess: () => true, value: null }),
+      buildPlan: jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true, value: null }),
     } as any;
 
     const mockCostCalculator = {
@@ -177,47 +218,107 @@ describe('FundingArbitrageStrategy', () => {
     describe('recordPositionOpenTime / removePositionOpenTime / getPositionAgeHours', () => {
       it('should record and retrieve position open time', () => {
         // Record a position open time
-        strategy.recordPositionOpenTime('ETH', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER);
-        
+        strategy.recordPositionOpenTime(
+          'ETH',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+        );
+
         // Get the age - should be very small (just opened)
-        const ageHours = strategy.getPositionAgeHours('ETH', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER);
-        
+        const ageHours = strategy.getPositionAgeHours(
+          'ETH',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+        );
+
         expect(ageHours).not.toBeNull();
         expect(ageHours).toBeGreaterThanOrEqual(0);
         expect(ageHours).toBeLessThan(0.01); // Less than ~36 seconds
       });
 
       it('should return null for untracked positions', () => {
-        const ageHours = strategy.getPositionAgeHours('BTC', ExchangeType.ASTER, ExchangeType.LIGHTER);
-        
+        const ageHours = strategy.getPositionAgeHours(
+          'BTC',
+          ExchangeType.ASTER,
+          ExchangeType.LIGHTER,
+        );
+
         // Untracked positions return null (assumed old enough)
         expect(ageHours).toBeNull();
       });
 
       it('should remove position open time tracking', () => {
         // Record then remove
-        strategy.recordPositionOpenTime('SOL', ExchangeType.HYPERLIQUID, ExchangeType.ASTER);
-        strategy.removePositionOpenTime('SOL', ExchangeType.HYPERLIQUID, ExchangeType.ASTER);
-        
+        strategy.recordPositionOpenTime(
+          'SOL',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.ASTER,
+        );
+        strategy.removePositionOpenTime(
+          'SOL',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.ASTER,
+        );
+
         // Should return null after removal
-        const ageHours = strategy.getPositionAgeHours('SOL', ExchangeType.HYPERLIQUID, ExchangeType.ASTER);
+        const ageHours = strategy.getPositionAgeHours(
+          'SOL',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.ASTER,
+        );
         expect(ageHours).toBeNull();
       });
 
       it('should track multiple positions independently', () => {
-        strategy.recordPositionOpenTime('ETH', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER);
-        strategy.recordPositionOpenTime('BTC', ExchangeType.ASTER, ExchangeType.LIGHTER);
-        
+        strategy.recordPositionOpenTime(
+          'ETH',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+        );
+        strategy.recordPositionOpenTime(
+          'BTC',
+          ExchangeType.ASTER,
+          ExchangeType.LIGHTER,
+        );
+
         // Both should be tracked
-        expect(strategy.getPositionAgeHours('ETH', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER)).not.toBeNull();
-        expect(strategy.getPositionAgeHours('BTC', ExchangeType.ASTER, ExchangeType.LIGHTER)).not.toBeNull();
-        
+        expect(
+          strategy.getPositionAgeHours(
+            'ETH',
+            ExchangeType.HYPERLIQUID,
+            ExchangeType.LIGHTER,
+          ),
+        ).not.toBeNull();
+        expect(
+          strategy.getPositionAgeHours(
+            'BTC',
+            ExchangeType.ASTER,
+            ExchangeType.LIGHTER,
+          ),
+        ).not.toBeNull();
+
         // Remove one
-        strategy.removePositionOpenTime('ETH', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER);
-        
+        strategy.removePositionOpenTime(
+          'ETH',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+        );
+
         // ETH should be null, BTC should still be tracked
-        expect(strategy.getPositionAgeHours('ETH', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER)).toBeNull();
-        expect(strategy.getPositionAgeHours('BTC', ExchangeType.ASTER, ExchangeType.LIGHTER)).not.toBeNull();
+        expect(
+          strategy.getPositionAgeHours(
+            'ETH',
+            ExchangeType.HYPERLIQUID,
+            ExchangeType.LIGHTER,
+          ),
+        ).toBeNull();
+        expect(
+          strategy.getPositionAgeHours(
+            'BTC',
+            ExchangeType.ASTER,
+            ExchangeType.LIGHTER,
+          ),
+        ).not.toBeNull();
       });
     });
 
@@ -225,14 +326,14 @@ describe('FundingArbitrageStrategy', () => {
       it('should calculate positive spread correctly', async () => {
         // Mock the aggregator to return specific funding rates
         mockAggregator.getFundingRates = jest.fn().mockResolvedValue([
-          { exchange: ExchangeType.LIGHTER, currentRate: 0.0003 },  // High rate on short side
-          { exchange: ExchangeType.ASTER, currentRate: 0.0001 },    // Low rate on long side
+          { exchange: ExchangeType.LIGHTER, currentRate: 0.0003 }, // High rate on short side
+          { exchange: ExchangeType.ASTER, currentRate: 0.0001 }, // Low rate on long side
         ]);
 
         const spread = await strategy.getCurrentSpreadForPosition(
           'ETH',
-          ExchangeType.ASTER,    // Long exchange (low rate = we pay less)
-          ExchangeType.LIGHTER,  // Short exchange (high rate = we receive more)
+          ExchangeType.ASTER, // Long exchange (low rate = we pay less)
+          ExchangeType.LIGHTER, // Short exchange (high rate = we receive more)
         );
 
         // Spread = shortRate - longRate = 0.0003 - 0.0001 = 0.0002
@@ -241,8 +342,8 @@ describe('FundingArbitrageStrategy', () => {
 
       it('should calculate negative spread correctly', async () => {
         mockAggregator.getFundingRates = jest.fn().mockResolvedValue([
-          { exchange: ExchangeType.LIGHTER, currentRate: 0.0001 },  // Low rate on short side
-          { exchange: ExchangeType.ASTER, currentRate: 0.0003 },    // High rate on long side
+          { exchange: ExchangeType.LIGHTER, currentRate: 0.0001 }, // Low rate on short side
+          { exchange: ExchangeType.ASTER, currentRate: 0.0003 }, // High rate on long side
         ]);
 
         const spread = await strategy.getCurrentSpreadForPosition(
@@ -283,7 +384,9 @@ describe('FundingArbitrageStrategy', () => {
       });
 
       it('should handle API errors gracefully', async () => {
-        mockAggregator.getFundingRates = jest.fn().mockRejectedValue(new Error('API Error'));
+        mockAggregator.getFundingRates = jest
+          .fn()
+          .mockRejectedValue(new Error('API Error'));
 
         const spread = await strategy.getCurrentSpreadForPosition(
           'ETH',
@@ -319,8 +422,8 @@ describe('FundingArbitrageStrategy', () => {
       it('should close position with severely negative spread', async () => {
         // Mock severely negative spread (< -0.02% = closeThreshold * 2)
         mockAggregator.getFundingRates = jest.fn().mockResolvedValue([
-          { exchange: ExchangeType.LIGHTER, currentRate: -0.0005 },  // Negative on short
-          { exchange: ExchangeType.ASTER, currentRate: 0.0002 },     // Positive on long
+          { exchange: ExchangeType.LIGHTER, currentRate: -0.0005 }, // Negative on short
+          { exchange: ExchangeType.ASTER, currentRate: 0.0002 }, // Positive on long
         ]);
 
         const result = await strategy.shouldKeepPosition(
@@ -337,7 +440,11 @@ describe('FundingArbitrageStrategy', () => {
 
       it('should keep young position with positive spread', async () => {
         // Record position as just opened
-        strategy.recordPositionOpenTime('ETH', ExchangeType.ASTER, ExchangeType.LIGHTER);
+        strategy.recordPositionOpenTime(
+          'ETH',
+          ExchangeType.ASTER,
+          ExchangeType.LIGHTER,
+        );
 
         const result = await strategy.shouldKeepPosition(
           'ETH',
@@ -351,7 +458,11 @@ describe('FundingArbitrageStrategy', () => {
         expect(result.reason).toContain('young');
 
         // Cleanup
-        strategy.removePositionOpenTime('ETH', ExchangeType.ASTER, ExchangeType.LIGHTER);
+        strategy.removePositionOpenTime(
+          'ETH',
+          ExchangeType.ASTER,
+          ExchangeType.LIGHTER,
+        );
       });
 
       it('should keep position when unable to get current spread (conservative)', async () => {
@@ -462,12 +573,23 @@ describe('FundingArbitrageStrategy', () => {
         ];
 
         const existingPositionsBySymbol = new Map([
-          ['ETH', {
-            long: createMockPosition('ETH', ExchangeType.ASTER, OrderSide.LONG),
-            short: createMockPosition('ETH', ExchangeType.LIGHTER, OrderSide.SHORT),
-            currentValue: 6000,
-            currentCollateral: 3000,
-          }],
+          [
+            'ETH',
+            {
+              long: createMockPosition(
+                'ETH',
+                ExchangeType.ASTER,
+                OrderSide.LONG,
+              ),
+              short: createMockPosition(
+                'ETH',
+                ExchangeType.LIGHTER,
+                OrderSide.SHORT,
+              ),
+              currentValue: 6000,
+              currentCollateral: 3000,
+            },
+          ],
         ]);
 
         const result = await strategy.filterPositionsToCloseWithStickiness(
@@ -493,12 +615,23 @@ describe('FundingArbitrageStrategy', () => {
         ];
 
         const existingPositionsBySymbol = new Map([
-          ['ETH', {
-            long: createMockPosition('ETH', ExchangeType.ASTER, OrderSide.LONG),
-            short: createMockPosition('ETH', ExchangeType.LIGHTER, OrderSide.SHORT),
-            currentValue: 6000,
-            currentCollateral: 3000,
-          }],
+          [
+            'ETH',
+            {
+              long: createMockPosition(
+                'ETH',
+                ExchangeType.ASTER,
+                OrderSide.LONG,
+              ),
+              short: createMockPosition(
+                'ETH',
+                ExchangeType.LIGHTER,
+                OrderSide.SHORT,
+              ),
+              currentValue: 6000,
+              currentCollateral: 3000,
+            },
+          ],
         ]);
 
         const result = await strategy.filterPositionsToCloseWithStickiness(
@@ -519,12 +652,19 @@ describe('FundingArbitrageStrategy', () => {
         ];
 
         const existingPositionsBySymbol = new Map([
-          ['ETH', {
-            long: createMockPosition('ETH', ExchangeType.ASTER, OrderSide.LONG),
-            // short is undefined
-            currentValue: 3000,
-            currentCollateral: 1500,
-          }],
+          [
+            'ETH',
+            {
+              long: createMockPosition(
+                'ETH',
+                ExchangeType.ASTER,
+                OrderSide.LONG,
+              ),
+              // short is undefined
+              currentValue: 3000,
+              currentCollateral: 1500,
+            },
+          ],
         ]);
 
         const result = await strategy.filterPositionsToCloseWithStickiness(
@@ -540,19 +680,21 @@ describe('FundingArbitrageStrategy', () => {
 
       it('should process multiple symbols independently', async () => {
         // ETH has positive spread, BTC has negative spread
-        mockAggregator.getFundingRates = jest.fn().mockImplementation((symbol) => {
-          if (symbol === 'ETH') {
-            return Promise.resolve([
-              { exchange: ExchangeType.LIGHTER, currentRate: 0.0003 },
-              { exchange: ExchangeType.ASTER, currentRate: 0.0001 },
-            ]);
-          } else {
-            return Promise.resolve([
-              { exchange: ExchangeType.LIGHTER, currentRate: -0.0003 },
-              { exchange: ExchangeType.ASTER, currentRate: 0.0001 },
-            ]);
-          }
-        });
+        mockAggregator.getFundingRates = jest
+          .fn()
+          .mockImplementation((symbol) => {
+            if (symbol === 'ETH') {
+              return Promise.resolve([
+                { exchange: ExchangeType.LIGHTER, currentRate: 0.0003 },
+                { exchange: ExchangeType.ASTER, currentRate: 0.0001 },
+              ]);
+            } else {
+              return Promise.resolve([
+                { exchange: ExchangeType.LIGHTER, currentRate: -0.0003 },
+                { exchange: ExchangeType.ASTER, currentRate: 0.0001 },
+              ]);
+            }
+          });
 
         const positionsToClose = [
           createMockPosition('ETH', ExchangeType.ASTER, OrderSide.LONG),
@@ -562,18 +704,40 @@ describe('FundingArbitrageStrategy', () => {
         ];
 
         const existingPositionsBySymbol = new Map([
-          ['ETH', {
-            long: createMockPosition('ETH', ExchangeType.ASTER, OrderSide.LONG),
-            short: createMockPosition('ETH', ExchangeType.LIGHTER, OrderSide.SHORT),
-            currentValue: 6000,
-            currentCollateral: 3000,
-          }],
-          ['BTC', {
-            long: createMockPosition('BTC', ExchangeType.ASTER, OrderSide.LONG),
-            short: createMockPosition('BTC', ExchangeType.LIGHTER, OrderSide.SHORT),
-            currentValue: 60000,
-            currentCollateral: 30000,
-          }],
+          [
+            'ETH',
+            {
+              long: createMockPosition(
+                'ETH',
+                ExchangeType.ASTER,
+                OrderSide.LONG,
+              ),
+              short: createMockPosition(
+                'ETH',
+                ExchangeType.LIGHTER,
+                OrderSide.SHORT,
+              ),
+              currentValue: 6000,
+              currentCollateral: 3000,
+            },
+          ],
+          [
+            'BTC',
+            {
+              long: createMockPosition(
+                'BTC',
+                ExchangeType.ASTER,
+                OrderSide.LONG,
+              ),
+              short: createMockPosition(
+                'BTC',
+                ExchangeType.LIGHTER,
+                OrderSide.SHORT,
+              ),
+              currentValue: 60000,
+              currentCollateral: 30000,
+            },
+          ],
         ]);
 
         const result = await strategy.filterPositionsToCloseWithStickiness(
@@ -603,8 +767,12 @@ describe('FundingArbitrageStrategy', () => {
 
       mockBalanceManager = {
         getDeployableCapital: jest.fn().mockResolvedValue(100),
-        checkAndDepositWalletFunds: jest.fn().mockResolvedValue({ isSuccess: () => true }),
-        attemptRebalanceForOpportunity: jest.fn().mockResolvedValue({ isSuccess: () => true, value: false }),
+        checkAndDepositWalletFunds: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true }),
+        attemptRebalanceForOpportunity: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: false }),
       };
 
       // Update the strategy creation to include balanceRebalancer
@@ -617,7 +785,9 @@ describe('FundingArbitrageStrategy', () => {
 
       const mockHistoricalService = {
         getHistoricalMetrics: jest.fn().mockReturnValue(null),
-        getWeightedAverageRate: jest.fn().mockImplementation((symbol, exchange, rate) => rate),
+        getWeightedAverageRate: jest
+          .fn()
+          .mockImplementation((symbol, exchange, rate) => rate),
         getSpreadVolatilityMetrics: jest.fn().mockReturnValue(null),
       } as any;
 
@@ -637,30 +807,63 @@ describe('FundingArbitrageStrategy', () => {
       } as any;
 
       const mockPortfolioOptimizer = {
-        calculateMaxPortfolioFor35APY: jest.fn().mockResolvedValue({ maxPortfolio: 10000, breakEvenHours: 1 }),
+        calculateMaxPortfolioFor35APY: jest
+          .fn()
+          .mockResolvedValue({ maxPortfolio: 10000, breakEvenHours: 1 }),
         calculateOptimalPortfolioAllocation: jest.fn().mockResolvedValue([]),
       } as any;
 
       const mockOrderExecutor = {
-        executeMultiplePositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { successfulExecutions: 0, totalOrders: 0, totalExpectedReturn: 0 } }),
-        executeSinglePosition: jest.fn().mockResolvedValue({ isSuccess: () => true, value: {} }),
+        executeMultiplePositions: jest.fn().mockResolvedValue({
+          isSuccess: () => true,
+          value: {
+            successfulExecutions: 0,
+            totalOrders: 0,
+            totalExpectedReturn: 0,
+          },
+        }),
+        executeSinglePosition: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: {} }),
       } as any;
 
       const mockPositionManager = {
-        getAllPositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: [] }),
-        closeAllPositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { closed: [], stillOpen: [] } }),
+        getAllPositions: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: [] }),
+        closeAllPositions: jest.fn().mockResolvedValue({
+          isSuccess: () => true,
+          value: { closed: [], stillOpen: [] },
+        }),
         detectSingleLegPositions: jest.fn().mockReturnValue([]),
-        handleAsymmetricFills: jest.fn().mockResolvedValue({ isSuccess: () => true }),
+        handleAsymmetricFills: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true }),
       } as any;
 
       const mockOpportunityEvaluator = {
-        evaluateOpportunityWithHistory: jest.fn().mockReturnValue({ isSuccess: () => true, value: { breakEvenHours: 1, historicalMetrics: { long: null, short: null }, worstCaseBreakEvenHours: 1, consistencyScore: 0.5 } }),
-        shouldRebalance: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { shouldRebalance: false, reason: 'test' } }),
-        evaluateCurrentPositionPerformance: jest.fn().mockResolvedValue({ isSuccess: () => true, value: {} }),
+        evaluateOpportunityWithHistory: jest.fn().mockReturnValue({
+          isSuccess: () => true,
+          value: {
+            breakEvenHours: 1,
+            historicalMetrics: { long: null, short: null },
+            worstCaseBreakEvenHours: 1,
+            consistencyScore: 0.5,
+          },
+        }),
+        shouldRebalance: jest.fn().mockResolvedValue({
+          isSuccess: () => true,
+          value: { shouldRebalance: false, reason: 'test' },
+        }),
+        evaluateCurrentPositionPerformance: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: {} }),
       } as any;
 
       const mockExecutionPlanBuilder = {
-        buildPlan: jest.fn().mockResolvedValue({ isSuccess: () => true, value: null }),
+        buildPlan: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: null }),
       } as any;
 
       const mockCostCalculator = {
@@ -720,10 +923,16 @@ describe('FundingArbitrageStrategy', () => {
         },
       ];
 
-      mockAggregator.findArbitrageOpportunities = jest.fn().mockResolvedValue(opportunities);
-      mockBalanceManager.getDeployableCapital = jest.fn().mockResolvedValue(100);
-      mockBalanceManager.checkAndDepositWalletFunds = jest.fn().mockResolvedValue({ isSuccess: () => true });
-      
+      mockAggregator.findArbitrageOpportunities = jest
+        .fn()
+        .mockResolvedValue(opportunities);
+      mockBalanceManager.getDeployableCapital = jest
+        .fn()
+        .mockResolvedValue(100);
+      mockBalanceManager.checkAndDepositWalletFunds = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true });
+
       // Execute strategy
       const result = await strategy.executeStrategy(
         ['ETH'],
@@ -734,20 +943,25 @@ describe('FundingArbitrageStrategy', () => {
       // Verify that execution completed
       // getDeployableCapital should be called for exchanges with adapters
       // This includes exchanges in opportunities AND all exchanges with adapters (new behavior)
-      const allCalls = (mockBalanceManager.getDeployableCapital as jest.Mock).mock.calls;
-      
+      const allCalls = (mockBalanceManager.getDeployableCapital as jest.Mock)
+        .mock.calls;
+
       if (allCalls.length > 0) {
         // Verify it was called for ASTER and LIGHTER (from opportunities)
-        const asterCalls = allCalls.filter(call => call[1] === ExchangeType.ASTER);
-        const lighterCalls = allCalls.filter(call => call[1] === ExchangeType.LIGHTER);
-        
+        const asterCalls = allCalls.filter(
+          (call) => call[1] === ExchangeType.ASTER,
+        );
+        const lighterCalls = allCalls.filter(
+          (call) => call[1] === ExchangeType.LIGHTER,
+        );
+
         expect(asterCalls.length).toBeGreaterThan(0);
         expect(lighterCalls.length).toBeGreaterThan(0);
-        
+
         // If HYPERLIQUID adapter exists, it should also be called (new behavior)
         if (mockAdapters.has(ExchangeType.HYPERLIQUID)) {
           const hyperliquidCalls = allCalls.filter(
-            call => call[1] === ExchangeType.HYPERLIQUID
+            (call) => call[1] === ExchangeType.HYPERLIQUID,
           );
           expect(hyperliquidCalls.length).toBeGreaterThan(0);
         }
@@ -775,26 +989,33 @@ describe('FundingArbitrageStrategy', () => {
         },
       ];
 
-      mockAggregator.findArbitrageOpportunities = jest.fn().mockResolvedValue(opportunities);
-      mockBalanceManager.checkAndDepositWalletFunds = jest.fn().mockResolvedValue({ isSuccess: () => true });
+      mockAggregator.findArbitrageOpportunities = jest
+        .fn()
+        .mockResolvedValue(opportunities);
+      mockBalanceManager.checkAndDepositWalletFunds = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true });
 
       // Set up balances: ASTER has $2 (insufficient), LIGHTER has $242, HYPERLIQUID has $18
       // Min required is $5 / 2 leverage = $2.50
       let callCount = 0;
-      mockBalanceManager.getDeployableCapital = jest.fn().mockImplementation((adapter, exchange) => {
-        callCount++;
-        if (callCount <= 3) {
-          // Initial fetch
-          if (exchange === ExchangeType.ASTER) return Promise.resolve(2);
-          if (exchange === ExchangeType.LIGHTER) return Promise.resolve(242);
-          if (exchange === ExchangeType.HYPERLIQUID) return Promise.resolve(18);
-        } else {
-          // After rebalancing
-          if (exchange === ExchangeType.ASTER) return Promise.resolve(50);
-          if (exchange === ExchangeType.LIGHTER) return Promise.resolve(200);
-        }
-        return Promise.resolve(0);
-      });
+      mockBalanceManager.getDeployableCapital = jest
+        .fn()
+        .mockImplementation((adapter, exchange) => {
+          callCount++;
+          if (callCount <= 3) {
+            // Initial fetch
+            if (exchange === ExchangeType.ASTER) return Promise.resolve(2);
+            if (exchange === ExchangeType.LIGHTER) return Promise.resolve(242);
+            if (exchange === ExchangeType.HYPERLIQUID)
+              return Promise.resolve(18);
+          } else {
+            // After rebalancing
+            if (exchange === ExchangeType.ASTER) return Promise.resolve(50);
+            if (exchange === ExchangeType.LIGHTER) return Promise.resolve(200);
+          }
+          return Promise.resolve(0);
+        });
 
       // Mock successful rebalancing
       mockBalanceRebalancer.rebalance = jest.fn().mockResolvedValue({
@@ -805,11 +1026,7 @@ describe('FundingArbitrageStrategy', () => {
         details: [],
       });
 
-      await strategy.executeStrategy(
-        ['ETH'],
-        mockAdapters,
-        new Map(),
-      );
+      await strategy.executeStrategy(['ETH'], mockAdapters, new Map());
 
       // Verify execution completed without throwing
       // The key is that it doesn't throw and execution completes
@@ -818,7 +1035,7 @@ describe('FundingArbitrageStrategy', () => {
       if (mockBalanceRebalancer.rebalance.mock.calls.length > 0) {
         expect(mockBalanceRebalancer.rebalance).toHaveBeenCalled();
       }
-      
+
       // The test passes if execution completes without throwing
       // This verifies that proactive rebalancing doesn't break execution flow
     });
@@ -840,17 +1057,19 @@ describe('FundingArbitrageStrategy', () => {
         },
       ];
 
-      mockAggregator.findArbitrageOpportunities = jest.fn().mockResolvedValue(opportunities);
-      mockBalanceManager.checkAndDepositWalletFunds = jest.fn().mockResolvedValue({ isSuccess: () => true });
+      mockAggregator.findArbitrageOpportunities = jest
+        .fn()
+        .mockResolvedValue(opportunities);
+      mockBalanceManager.checkAndDepositWalletFunds = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true });
 
       // All exchanges have sufficient balance (> $2.50)
-      mockBalanceManager.getDeployableCapital = jest.fn().mockResolvedValue(100);
+      mockBalanceManager.getDeployableCapital = jest
+        .fn()
+        .mockResolvedValue(100);
 
-      await strategy.executeStrategy(
-        ['ETH'],
-        mockAdapters,
-        new Map(),
-      );
+      await strategy.executeStrategy(['ETH'], mockAdapters, new Map());
 
       // Rebalancing should not be called when balances are sufficient
       // (or if it is called, it should return success with no transfers)
@@ -881,18 +1100,24 @@ describe('FundingArbitrageStrategy', () => {
         },
       ];
 
-      mockAggregator.findArbitrageOpportunities = jest.fn().mockResolvedValue(opportunities);
-      mockBalanceManager.checkAndDepositWalletFunds = jest.fn().mockResolvedValue({ isSuccess: () => true });
+      mockAggregator.findArbitrageOpportunities = jest
+        .fn()
+        .mockResolvedValue(opportunities);
+      mockBalanceManager.checkAndDepositWalletFunds = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true });
       mockBalanceManager.getDeployableCapital = jest.fn().mockResolvedValue(2); // Insufficient
 
       // Mock rebalancing failure
-      mockBalanceRebalancer.rebalance = jest.fn().mockRejectedValue(new Error('Rebalancing failed'));
+      mockBalanceRebalancer.rebalance = jest
+        .fn()
+        .mockRejectedValue(new Error('Rebalancing failed'));
 
       // Should not throw, should continue execution even if rebalancing fails
       await expect(
         strategy.executeStrategy(['ETH'], mockAdapters, new Map()),
       ).resolves.not.toThrow();
-      
+
       // Verify execution completed - the key is that it handles rebalancing failures gracefully
       // findArbitrageOpportunities may or may not be called depending on execution path
       // The important thing is that execution completes without throwing
@@ -915,20 +1140,28 @@ describe('FundingArbitrageStrategy', () => {
         },
       ];
 
-      mockAggregator.findArbitrageOpportunities = jest.fn().mockResolvedValue(opportunities);
-      mockBalanceManager.checkAndDepositWalletFunds = jest.fn().mockResolvedValue({ isSuccess: () => true });
-      
+      mockAggregator.findArbitrageOpportunities = jest
+        .fn()
+        .mockResolvedValue(opportunities);
+      mockBalanceManager.checkAndDepositWalletFunds = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true });
+
       let callCount = 0;
-      mockBalanceManager.getDeployableCapital = jest.fn().mockImplementation((adapter, exchange) => {
-        callCount++;
-        // First call: insufficient balance, after rebalancing: sufficient
-        if (callCount <= 3) return Promise.resolve(2); // Initial fetch for all 3 exchanges
-        return Promise.resolve(50); // After rebalancing for ASTER and LIGHTER
-      });
+      mockBalanceManager.getDeployableCapital = jest
+        .fn()
+        .mockImplementation((adapter, exchange) => {
+          callCount++;
+          // First call: insufficient balance, after rebalancing: sufficient
+          if (callCount <= 3) return Promise.resolve(2); // Initial fetch for all 3 exchanges
+          return Promise.resolve(50); // After rebalancing for ASTER and LIGHTER
+        });
 
       // Mock getAllPositions to return empty array
       const mockPositionManager = (strategy as any).positionManager;
-      mockPositionManager.getAllPositions = jest.fn().mockResolvedValue({ isSuccess: () => true, value: [] });
+      mockPositionManager.getAllPositions = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true, value: [] });
 
       mockBalanceRebalancer.rebalance = jest.fn().mockResolvedValue({
         success: true,
@@ -938,32 +1171,33 @@ describe('FundingArbitrageStrategy', () => {
         details: [],
       });
 
-      await strategy.executeStrategy(
-        ['ETH'],
-        mockAdapters,
-        new Map(),
-      );
+      await strategy.executeStrategy(['ETH'], mockAdapters, new Map());
 
       // Verify that execution completed without throwing
       // The balance fetching and rebalancing happen inside executeStrategy
       // They may not be called if execution returns early (e.g., no opportunities after filtering)
       // The key is that execution completes successfully
-      
+
       // If getDeployableCapital was called, verify it was called correctly
-      const allCalls = (mockBalanceManager.getDeployableCapital as jest.Mock).mock.calls;
+      const allCalls = (mockBalanceManager.getDeployableCapital as jest.Mock)
+        .mock.calls;
       if (allCalls.length > 0) {
-        const asterCalls = allCalls.filter(call => call[1] === ExchangeType.ASTER);
-        const lighterCalls = allCalls.filter(call => call[1] === ExchangeType.LIGHTER);
-        
+        const asterCalls = allCalls.filter(
+          (call) => call[1] === ExchangeType.ASTER,
+        );
+        const lighterCalls = allCalls.filter(
+          (call) => call[1] === ExchangeType.LIGHTER,
+        );
+
         // Verify it was called for exchanges in the opportunity
         expect(asterCalls.length + lighterCalls.length).toBeGreaterThan(0);
-        
+
         // If rebalancing was called, verify it completed
         if (mockBalanceRebalancer.rebalance.mock.calls.length > 0) {
           expect(mockBalanceRebalancer.rebalance).toHaveBeenCalled();
         }
       }
-      
+
       // The test passes if execution completes without throwing
       // This verifies that the proactive rebalancing code doesn't break execution
     });
@@ -971,10 +1205,16 @@ describe('FundingArbitrageStrategy', () => {
     it('should not rebalance when there are no opportunities', async () => {
       // Reset mocks
       jest.clearAllMocks();
-      
-      mockAggregator.findArbitrageOpportunities = jest.fn().mockResolvedValue([]);
-      mockBalanceManager.checkAndDepositWalletFunds = jest.fn().mockResolvedValue({ isSuccess: () => true });
-      mockBalanceManager.getDeployableCapital = jest.fn().mockResolvedValue(100);
+
+      mockAggregator.findArbitrageOpportunities = jest
+        .fn()
+        .mockResolvedValue([]);
+      mockBalanceManager.checkAndDepositWalletFunds = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true });
+      mockBalanceManager.getDeployableCapital = jest
+        .fn()
+        .mockResolvedValue(100);
 
       const result = await strategy.executeStrategy(
         ['ETH'],
@@ -984,7 +1224,7 @@ describe('FundingArbitrageStrategy', () => {
 
       // Should not call rebalance when no opportunities
       expect(mockBalanceRebalancer.rebalance).not.toHaveBeenCalled();
-      
+
       // Verify execution completed - result should be defined
       expect(result).toBeDefined();
       // The key is that execution completes without throwing when there are no opportunities
@@ -1003,7 +1243,9 @@ describe('FundingArbitrageStrategy', () => {
 
       const mockHistoricalService = {
         getHistoricalMetrics: jest.fn().mockReturnValue(null),
-        getWeightedAverageRate: jest.fn().mockImplementation((symbol, exchange, rate) => rate),
+        getWeightedAverageRate: jest
+          .fn()
+          .mockImplementation((symbol, exchange, rate) => rate),
         getSpreadVolatilityMetrics: jest.fn().mockReturnValue(null),
       } as any;
 
@@ -1023,30 +1265,63 @@ describe('FundingArbitrageStrategy', () => {
       } as any;
 
       const mockPortfolioOptimizer = {
-        calculateMaxPortfolioFor35APY: jest.fn().mockResolvedValue({ maxPortfolio: 10000, breakEvenHours: 1 }),
+        calculateMaxPortfolioFor35APY: jest
+          .fn()
+          .mockResolvedValue({ maxPortfolio: 10000, breakEvenHours: 1 }),
         calculateOptimalPortfolioAllocation: jest.fn().mockResolvedValue([]),
       } as any;
 
       const mockOrderExecutor = {
-        executeMultiplePositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { successfulExecutions: 0, totalOrders: 0, totalExpectedReturn: 0 } }),
-        executeSinglePosition: jest.fn().mockResolvedValue({ isSuccess: () => true, value: {} }),
+        executeMultiplePositions: jest.fn().mockResolvedValue({
+          isSuccess: () => true,
+          value: {
+            successfulExecutions: 0,
+            totalOrders: 0,
+            totalExpectedReturn: 0,
+          },
+        }),
+        executeSinglePosition: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: {} }),
       } as any;
 
       const mockPositionManager = {
-        getAllPositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: [] }),
-        closeAllPositions: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { closed: [], stillOpen: [] } }),
+        getAllPositions: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: [] }),
+        closeAllPositions: jest.fn().mockResolvedValue({
+          isSuccess: () => true,
+          value: { closed: [], stillOpen: [] },
+        }),
         detectSingleLegPositions: jest.fn().mockReturnValue([]),
-        handleAsymmetricFills: jest.fn().mockResolvedValue({ isSuccess: () => true }),
+        handleAsymmetricFills: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true }),
       } as any;
 
       const mockOpportunityEvaluator = {
-        evaluateOpportunityWithHistory: jest.fn().mockReturnValue({ isSuccess: () => true, value: { breakEvenHours: 1, historicalMetrics: { long: null, short: null }, worstCaseBreakEvenHours: 1, consistencyScore: 0.5 } }),
-        shouldRebalance: jest.fn().mockResolvedValue({ isSuccess: () => true, value: { shouldRebalance: false, reason: 'test' } }),
-        evaluateCurrentPositionPerformance: jest.fn().mockResolvedValue({ isSuccess: () => true, value: {} }),
+        evaluateOpportunityWithHistory: jest.fn().mockReturnValue({
+          isSuccess: () => true,
+          value: {
+            breakEvenHours: 1,
+            historicalMetrics: { long: null, short: null },
+            worstCaseBreakEvenHours: 1,
+            consistencyScore: 0.5,
+          },
+        }),
+        shouldRebalance: jest.fn().mockResolvedValue({
+          isSuccess: () => true,
+          value: { shouldRebalance: false, reason: 'test' },
+        }),
+        evaluateCurrentPositionPerformance: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: {} }),
       } as any;
 
       const mockExecutionPlanBuilder = {
-        buildPlan: jest.fn().mockResolvedValue({ isSuccess: () => true, value: null }),
+        buildPlan: jest
+          .fn()
+          .mockResolvedValue({ isSuccess: () => true, value: null }),
       } as any;
 
       const mockCostCalculator = {
@@ -1093,8 +1368,12 @@ describe('FundingArbitrageStrategy', () => {
         },
       ];
 
-      mockAggregator.findArbitrageOpportunities = jest.fn().mockResolvedValue(opportunities);
-      mockBalanceManager.checkAndDepositWalletFunds = jest.fn().mockResolvedValue({ isSuccess: () => true });
+      mockAggregator.findArbitrageOpportunities = jest
+        .fn()
+        .mockResolvedValue(opportunities);
+      mockBalanceManager.checkAndDepositWalletFunds = jest
+        .fn()
+        .mockResolvedValue({ isSuccess: () => true });
       mockBalanceManager.getDeployableCapital = jest.fn().mockResolvedValue(2); // Insufficient
 
       // Set up mockAggregator for this test
@@ -1110,9 +1389,13 @@ describe('FundingArbitrageStrategy', () => {
 
       // Should not throw even without balanceRebalancer
       await expect(
-        strategyWithoutRebalancer.executeStrategy(['ETH'], mockAdapters, new Map()),
+        strategyWithoutRebalancer.executeStrategy(
+          ['ETH'],
+          mockAdapters,
+          new Map(),
+        ),
       ).resolves.not.toThrow();
-      
+
       // Verify execution attempted - the key is that it doesn't throw when balanceRebalancer is undefined
       // The important thing is that execution completes without throwing
       // This verifies that the code handles missing balanceRebalancer gracefully

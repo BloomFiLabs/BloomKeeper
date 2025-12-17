@@ -6,10 +6,3 @@ export interface IStrategyExecutor {
   harvest(strategyAddress: string): Promise<string>; // Collect fees without rebalancing
   getLastHarvestAmount?(strategyAddress: string): Promise<number>; // Get amount from last harvest
 }
-
-
-
-
-
-
-

@@ -15,8 +15,8 @@ import { PerpKeeperModule } from './infrastructure/perp-keeper/perp-keeper.modul
     ...(process.env.STORAGE_TYPE?.toLowerCase() === 'file'
       ? [FilePersistenceModule]
       : process.env.STORAGE_TYPE?.toLowerCase() === 'memory'
-      ? [MemoryPersistenceModule]
-      : [PersistenceModule]), // Default to Prisma/PostgreSQL
+        ? [MemoryPersistenceModule]
+        : [PersistenceModule]), // Default to Prisma/PostgreSQL
     GraphModule,
     ApplicationModule,
     PerpKeeperModule,

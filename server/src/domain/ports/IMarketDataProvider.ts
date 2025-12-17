@@ -6,4 +6,3 @@ export interface IMarketDataProvider {
   getPoolFeeApr(poolAddress: string): Promise<number>;
   getPoolFeeTier(poolAddress: string): Promise<number>; // Returns fee tier as decimal (e.g., 0.01 = 1%)
 }
-

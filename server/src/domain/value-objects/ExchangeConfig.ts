@@ -38,7 +38,9 @@ export class ExchangeConfig {
     // Exchange-specific validation
     if (exchangeType === ExchangeType.ASTER) {
       if (!userAddress || !signerAddress || !privateKey) {
-        throw new Error('Aster exchange requires userAddress, signerAddress, and privateKey');
+        throw new Error(
+          'Aster exchange requires userAddress, signerAddress, and privateKey',
+        );
       }
     }
 
@@ -127,5 +129,3 @@ export class ExchangeConfig {
     return this.rateLimitRps ?? 10; // Default 10 requests per second
   }
 }
-
-

@@ -33,7 +33,9 @@ describe('DeribitAdapter', () => {
     const iv = await adapter.getImpliedVolatility('BTC');
     expect(iv).toBe(0.53); // 53% / 100
     expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('deribit.com/api/v2/public/get_volatility_index_data'),
+      expect.stringContaining(
+        'deribit.com/api/v2/public/get_volatility_index_data',
+      ),
     );
   });
 
@@ -87,4 +89,3 @@ describe('DeribitAdapter', () => {
     );
   });
 });
-

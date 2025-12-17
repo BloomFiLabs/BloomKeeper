@@ -126,10 +126,9 @@ export class CostCalculator {
       ? this.config.exchangeFeeRates
       : this.config.takerFeeRates;
 
-    const feeRate =
-      feeRates.has(exchangeType)
-        ? feeRates.get(exchangeType)!
-        : 0.0005; // Default 0.05% if unknown
+    const feeRate = feeRates.has(exchangeType)
+      ? feeRates.get(exchangeType)!
+      : 0.0005; // Default 0.05% if unknown
 
     return positionSizeUsd * feeRate;
   }
@@ -155,4 +154,3 @@ export class CostCalculator {
     return totalCosts / hourlyReturn;
   }
 }
-

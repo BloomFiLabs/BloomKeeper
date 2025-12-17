@@ -3,20 +3,29 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { ethers } from 'ethers';
 import * as crypto from 'crypto';
-import { ExchangeConfig, ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
+import {
+  ExchangeConfig,
+  ExchangeType,
+} from '../../../domain/value-objects/ExchangeConfig';
 import {
   OrderSide,
   OrderType,
   OrderStatus,
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
-import { SpotOrderRequest, SpotOrderResponse } from '../../../domain/value-objects/SpotOrder';
+import {
+  SpotOrderRequest,
+  SpotOrderResponse,
+} from '../../../domain/value-objects/SpotOrder';
 import { SpotPosition } from '../../../domain/entities/SpotPosition';
-import { ISpotExchangeAdapter, SpotExchangeError } from '../../../domain/ports/ISpotExchangeAdapter';
+import {
+  ISpotExchangeAdapter,
+  SpotExchangeError,
+} from '../../../domain/ports/ISpotExchangeAdapter';
 
 /**
  * AsterSpotAdapter - Implements ISpotExchangeAdapter for Aster DEX
- * 
+ *
  * Uses REST API with EIP-712 signing for authenticated requests
  * Spot endpoints: /api/v1/spot/... (may need verification)
  */
@@ -30,7 +39,9 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
   private readonly apiSecret: string | undefined;
 
   constructor(private readonly configService: ConfigService) {
-    let baseUrl = this.configService.get<string>('ASTER_BASE_URL') || 'https://fapi.asterdex.com';
+    let baseUrl =
+      this.configService.get<string>('ASTER_BASE_URL') ||
+      'https://fapi.asterdex.com';
     baseUrl = baseUrl.replace(/\/$/, '');
     const user = this.configService.get<string>('ASTER_USER');
     const signer = this.configService.get<string>('ASTER_SIGNER');
@@ -42,7 +53,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       if (!apiKey || !apiSecret) {
         this.logger.warn(
           'Aster spot adapter requires either (ASTER_USER, ASTER_SIGNER, ASTER_PRIVATE_KEY) ' +
-          'or (ASTER_API_KEY, ASTER_API_SECRET) for authentication'
+            'or (ASTER_API_KEY, ASTER_API_SECRET) for authentication',
         );
       }
     }
@@ -75,7 +86,9 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
     });
 
     if (privateKey) {
-      const normalizedPrivateKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      const normalizedPrivateKey = privateKey.startsWith('0x')
+        ? privateKey
+        : `0x${privateKey}`;
       this.wallet = new ethers.Wallet(normalizedPrivateKey);
     } else {
       this.wallet = null;
@@ -85,9 +98,18 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
   /**
    * Sign parameters with EIP-712 (Ethereum signature)
    */
-  private signParams(params: Record<string, any>, nonce: number): Record<string, any> {
-    if (!this.wallet || !this.config.userAddress || !this.config.signerAddress) {
-      throw new Error('Ethereum signature authentication requires wallet, user, and signer');
+  private signParams(
+    params: Record<string, any>,
+    nonce: number,
+  ): Record<string, any> {
+    if (
+      !this.wallet ||
+      !this.config.userAddress ||
+      !this.config.signerAddress
+    ) {
+      throw new Error(
+        'Ethereum signature authentication requires wallet, user, and signer',
+      );
     }
 
     const cleanParams = { ...params };
@@ -96,7 +118,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
     const abiCoder = ethers.AbiCoder.defaultAbiCoder();
     const encoded = abiCoder.encode(
       ['string', 'address', 'address', 'uint256'],
-      [jsonStr, this.config.userAddress!, this.config.signerAddress!, nonce],
+      [jsonStr, this.config.userAddress, this.config.signerAddress, nonce],
     );
 
     const keccakHash = ethers.keccak256(encoded);
@@ -131,15 +153,19 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
   /**
    * Sign parameters with API key (HMAC)
    */
-  private signParamsWithApiKey(params: Record<string, any>): Record<string, any> {
+  private signParamsWithApiKey(
+    params: Record<string, any>,
+  ): Record<string, any> {
     if (!this.apiKey || !this.apiSecret) {
-      throw new Error('API key authentication requires ASTER_API_KEY and ASTER_API_SECRET');
+      throw new Error(
+        'API key authentication requires ASTER_API_KEY and ASTER_API_SECRET',
+      );
     }
 
     const timestamp = Date.now();
     const queryString = Object.keys(params)
       .sort()
-      .map(key => `${key}=${params[key]}`)
+      .map((key) => `${key}=${params[key]}`)
       .join('&');
 
     const signature = crypto
@@ -175,7 +201,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
   async placeSpotOrder(request: SpotOrderRequest): Promise<SpotOrderResponse> {
     try {
       this.logger.log(
-        `📤 Placing spot ${request.side} order on Aster: ${request.size} ${request.symbol} @ ${request.price || 'MARKET'}`
+        `📤 Placing spot ${request.side} order on Aster: ${request.size} ${request.symbol} @ ${request.price || 'MARKET'}`,
       );
 
       const symbol = this.formatSymbol(request.symbol);
@@ -194,7 +220,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       }
 
       let signedParams: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         signedParams = this.signParamsWithApiKey(params);
@@ -206,18 +232,25 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       }
 
       // Aster spot endpoint (may need verification)
-      const response = await this.client.post('/api/v1/spot/order', signedParams, { headers });
+      const response = await this.client.post(
+        '/api/v1/spot/order',
+        signedParams,
+        { headers },
+      );
 
       if (response.data && response.data.orderId) {
         const orderId = response.data.orderId.toString();
         const filledSize = parseFloat(response.data.executedQty || '0');
-        const averagePrice = response.data.avgPrice ? parseFloat(response.data.avgPrice) : undefined;
+        const averagePrice = response.data.avgPrice
+          ? parseFloat(response.data.avgPrice)
+          : undefined;
 
-        const status = response.data.status === 'FILLED'
-          ? OrderStatus.FILLED
-          : (response.data.status === 'PARTIALLY_FILLED'
-            ? OrderStatus.PARTIALLY_FILLED
-            : OrderStatus.SUBMITTED);
+        const status =
+          response.data.status === 'FILLED'
+            ? OrderStatus.FILLED
+            : response.data.status === 'PARTIALLY_FILLED'
+              ? OrderStatus.PARTIALLY_FILLED
+              : OrderStatus.SUBMITTED;
 
         this.logger.log(`✅ Spot order placed: ${orderId} (${status})`);
 
@@ -248,7 +281,11 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
   async getSpotPosition(symbol: string): Promise<SpotPosition | null> {
     const positions = await this.getSpotPositions();
     const formattedSymbol = this.formatSymbol(symbol);
-    return positions.find(p => p.symbol === formattedSymbol || p.symbol === symbol) || null;
+    return (
+      positions.find(
+        (p) => p.symbol === formattedSymbol || p.symbol === symbol,
+      ) || null
+    );
   }
 
   async getSpotPositions(): Promise<SpotPosition[]> {
@@ -257,7 +294,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       const params = {};
 
       let signedParams: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         signedParams = this.signParamsWithApiKey(params);
@@ -328,7 +365,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       }
 
       let signedParams: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         signedParams = this.signParamsWithApiKey(params);
@@ -356,7 +393,10 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
     }
   }
 
-  async getSpotOrderStatus(orderId: string, symbol?: string): Promise<SpotOrderResponse> {
+  async getSpotOrderStatus(
+    orderId: string,
+    symbol?: string,
+  ): Promise<SpotOrderResponse> {
     try {
       const nonce = Math.floor(Date.now() * 1000);
       const params: Record<string, any> = {
@@ -368,7 +408,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       }
 
       let signedParams: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         signedParams = this.signParamsWithApiKey(params);
@@ -385,17 +425,21 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       });
 
       if (response.data) {
-        const side = response.data.side === 'BUY' ? OrderSide.LONG : OrderSide.SHORT;
+        const side =
+          response.data.side === 'BUY' ? OrderSide.LONG : OrderSide.SHORT;
         const filledSize = parseFloat(response.data.executedQty || '0');
-        const averagePrice = response.data.avgPrice ? parseFloat(response.data.avgPrice) : undefined;
+        const averagePrice = response.data.avgPrice
+          ? parseFloat(response.data.avgPrice)
+          : undefined;
 
-        const status = response.data.status === 'FILLED'
-          ? OrderStatus.FILLED
-          : (response.data.status === 'PARTIALLY_FILLED'
-            ? OrderStatus.PARTIALLY_FILLED
-            : (response.data.status === 'CANCELED'
-              ? OrderStatus.CANCELLED
-              : OrderStatus.SUBMITTED));
+        const status =
+          response.data.status === 'FILLED'
+            ? OrderStatus.FILLED
+            : response.data.status === 'PARTIALLY_FILLED'
+              ? OrderStatus.PARTIALLY_FILLED
+              : response.data.status === 'CANCELED'
+                ? OrderStatus.CANCELLED
+                : OrderStatus.SUBMITTED;
 
         return new SpotOrderResponse(
           orderId,
@@ -426,7 +470,7 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       const params = {};
 
       let signedParams: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         signedParams = this.signParamsWithApiKey(params);
@@ -496,10 +540,12 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
       // Aster API: type 1 = spot to futures, type 2 = futures to spot
       const transferType = toPerp ? 1 : 2;
       const direction = toPerp ? 'spot → futures' : 'futures → spot';
-      this.logger.log(`Transferring $${amount.toFixed(2)} ${direction} on Aster...`);
+      this.logger.log(
+        `Transferring $${amount.toFixed(2)} ${direction} on Aster...`,
+      );
 
       let params: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         params = this.signParamsWithApiKey({
@@ -509,7 +555,9 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
         });
         headers['X-MBX-APIKEY'] = this.apiKey;
       } else {
-        throw new Error('API key and secret required for transfers. Provide ASTER_API_KEY and ASTER_API_SECRET.');
+        throw new Error(
+          'API key and secret required for transfers. Provide ASTER_API_KEY and ASTER_API_SECRET.',
+        );
       }
 
       const queryParams: string[] = [];
@@ -522,19 +570,29 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
         }
       }
       queryParams.sort();
-      const finalQueryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+      const finalQueryString =
+        queryParams.join('&') +
+        (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
-      const response = await this.client.post(`/fapi/v1/transfer?${finalQueryString}`, {}, { headers });
+      const response = await this.client.post(
+        `/fapi/v1/transfer?${finalQueryString}`,
+        {},
+        { headers },
+      );
 
       if (response.data && response.data.tranId) {
         const tranId = response.data.tranId;
-        this.logger.log(`✅ Transfer successful: ${direction} - Transaction ID: ${tranId}`);
+        this.logger.log(
+          `✅ Transfer successful: ${direction} - Transaction ID: ${tranId}`,
+        );
         return tranId.toString();
       } else {
         throw new Error(`Transfer failed: ${JSON.stringify(response.data)}`);
       }
     } catch (error: any) {
-      this.logger.error(`Failed to transfer ${toPerp ? 'spot → futures' : 'futures → spot'}: ${error.message}`);
+      this.logger.error(
+        `Failed to transfer ${toPerp ? 'spot → futures' : 'futures → spot'}: ${error.message}`,
+      );
       throw new SpotExchangeError(
         `Failed to transfer: ${error.message}`,
         ExchangeType.ASTER,
@@ -566,8 +624,3 @@ export class AsterSpotAdapter implements ISpotExchangeAdapter {
     }
   }
 }
-
-
-
-
-

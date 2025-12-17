@@ -2,7 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { ethers } from 'ethers';
-import { ExchangeConfig, ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
+import {
+  ExchangeConfig,
+  ExchangeType,
+} from '../../../domain/value-objects/ExchangeConfig';
 import {
   PerpOrderRequest,
   PerpOrderResponse,
@@ -12,18 +15,22 @@ import {
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
+import {
+  IPerpExchangeAdapter,
+  ExchangeError,
+  FundingPayment,
+} from '../../../domain/ports/IPerpExchangeAdapter';
 import { ExtendedSigningService } from './ExtendedSigningService';
 
 /**
  * ExtendedExchangeAdapter - Implements IPerpExchangeAdapter for Extended exchange
- * 
+ *
  * Extended is a Starknet-based perpetual exchange that uses:
  * - SNIP12/EIP712 signing for orders
  * - Vault-based account system (l2Vault = position ID)
  * - Bridge deposits/withdrawals via Rhino.fi (Arbitrum, Base, etc.)
  * - REST API at https://api.starknet.extended.exchange
- * 
+ *
  * API Docs: https://api.docs.extended.exchange/
  */
 @Injectable()
@@ -36,7 +43,7 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
   private readonly starkPublicKey: string;
   private readonly vaultNumber: number; // This is l2Vault/collateralPosition in API
   private readonly isTestnet: boolean;
-  
+
   // Arbitrum configuration for deposits/withdrawals
   private readonly ARBITRUM_CHAIN_ID = 42161;
   private readonly ARBITRUM_RPC_URL: string;
@@ -49,15 +56,22 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
 
   constructor(private readonly configService: ConfigService) {
     // Extended Starknet instance base URL
-    const baseUrl = this.configService.get<string>('EXTENDED_API_BASE_URL') || 
-                    'https://api.starknet.extended.exchange';
+    const baseUrl =
+      this.configService.get<string>('EXTENDED_API_BASE_URL') ||
+      'https://api.starknet.extended.exchange';
     const apiKey = this.configService.get<string>('EXTENDED_API_KEY');
     // Support both EXTENDED_STARK_KEY and EXTENDED_STARK_PRIVATE_KEY
-    const starkPrivateKey = this.configService.get<string>('EXTENDED_STARK_PRIVATE_KEY') ||
-                            this.configService.get<string>('EXTENDED_STARK_KEY');
-    const starkPublicKey = this.configService.get<string>('EXTENDED_STARK_PUBLIC_KEY');
-    const vaultNumber = parseInt(this.configService.get<string>('EXTENDED_VAULT_NUMBER') || '0');
-    const isTestnet = this.configService.get<string>('EXTENDED_TESTNET') === 'true';
+    const starkPrivateKey =
+      this.configService.get<string>('EXTENDED_STARK_PRIVATE_KEY') ||
+      this.configService.get<string>('EXTENDED_STARK_KEY');
+    const starkPublicKey = this.configService.get<string>(
+      'EXTENDED_STARK_PUBLIC_KEY',
+    );
+    const vaultNumber = parseInt(
+      this.configService.get<string>('EXTENDED_VAULT_NUMBER') || '0',
+    );
+    const isTestnet =
+      this.configService.get<string>('EXTENDED_TESTNET') === 'true';
 
     if (!apiKey) {
       throw new Error('Extended exchange requires EXTENDED_API_KEY');
@@ -66,29 +80,42 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       throw new Error('Extended exchange requires EXTENDED_STARK_PRIVATE_KEY');
     }
     if (!starkPublicKey) {
-      throw new Error('Extended exchange requires EXTENDED_STARK_PUBLIC_KEY (l2Key from API management page)');
+      throw new Error(
+        'Extended exchange requires EXTENDED_STARK_PUBLIC_KEY (l2Key from API management page)',
+      );
     }
     if (vaultNumber === 0) {
-      throw new Error('Extended exchange requires EXTENDED_VAULT_NUMBER (l2Vault from API management page)');
+      throw new Error(
+        'Extended exchange requires EXTENDED_VAULT_NUMBER (l2Vault from API management page)',
+      );
     }
 
     this.apiKey = apiKey;
-    this.starkPublicKey = starkPublicKey.startsWith('0x') ? starkPublicKey : `0x${starkPublicKey}`;
+    this.starkPublicKey = starkPublicKey.startsWith('0x')
+      ? starkPublicKey
+      : `0x${starkPublicKey}`;
     this.vaultNumber = vaultNumber;
     this.isTestnet = isTestnet;
 
     // Initialize signing service with Starknet domain
-    this.signingService = new ExtendedSigningService(starkPrivateKey, isTestnet);
+    this.signingService = new ExtendedSigningService(
+      starkPrivateKey,
+      isTestnet,
+    );
 
     // Initialize Arbitrum wallet for bridge deposits/withdrawals
-    const privateKey = this.configService.get<string>('PRIVATE_KEY') || 
-                      this.configService.get<string>('EXTENDED_PRIVATE_KEY');
-    this.ARBITRUM_RPC_URL = this.configService.get<string>('ARBITRUM_RPC_URL') ||
-                            this.configService.get<string>('ARB_RPC_URL') ||
-                            'https://arb1.arbitrum.io/rpc';
+    const privateKey =
+      this.configService.get<string>('PRIVATE_KEY') ||
+      this.configService.get<string>('EXTENDED_PRIVATE_KEY');
+    this.ARBITRUM_RPC_URL =
+      this.configService.get<string>('ARBITRUM_RPC_URL') ||
+      this.configService.get<string>('ARB_RPC_URL') ||
+      'https://arb1.arbitrum.io/rpc';
 
     if (privateKey) {
-      const normalizedPrivateKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      const normalizedPrivateKey = privateKey.startsWith('0x')
+        ? privateKey
+        : `0x${privateKey}`;
       const provider = new ethers.JsonRpcProvider(this.ARBITRUM_RPC_URL);
       this.arbitrumWallet = new ethers.Wallet(normalizedPrivateKey, provider);
     } else {
@@ -116,13 +143,15 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       baseURL: baseUrl,
       timeout: this.config.getTimeout(),
       headers: {
-        'X-Api-Key': this.apiKey,  // Note: lowercase 'pi' per API docs
+        'X-Api-Key': this.apiKey, // Note: lowercase 'pi' per API docs
         'Content-Type': 'application/json',
-        'User-Agent': 'Bloom-Vault-Bot/1.0',  // Required header per API docs
+        'User-Agent': 'Bloom-Vault-Bot/1.0', // Required header per API docs
       },
     });
 
-    this.logger.log(`Extended adapter initialized for vault: ${vaultNumber} (testnet: ${isTestnet})`);
+    this.logger.log(
+      `Extended adapter initialized for vault: ${vaultNumber} (testnet: ${isTestnet})`,
+    );
   }
 
   getConfig(): ExchangeConfig {
@@ -140,7 +169,10 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
    */
   private async refreshMarketCache(): Promise<void> {
     const now = Date.now();
-    if (this.marketInfoCache.size > 0 && (now - this.marketCacheTimestamp) < this.MARKET_CACHE_TTL) {
+    if (
+      this.marketInfoCache.size > 0 &&
+      now - this.marketCacheTimestamp < this.MARKET_CACHE_TTL
+    ) {
       return;
     }
 
@@ -160,7 +192,9 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
           }
         }
         this.marketCacheTimestamp = now;
-        this.logger.debug(`Cached ${this.marketInfoCache.size} markets from Extended API`);
+        this.logger.debug(
+          `Cached ${this.marketInfoCache.size} markets from Extended API`,
+        );
       }
     } catch (error: any) {
       this.logger.warn(`Failed to refresh market cache: ${error.message}`);
@@ -174,25 +208,26 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
    */
   private async getMarketName(symbol: string): Promise<string> {
     await this.refreshMarketCache();
-    
+
     // Normalize: remove common suffixes and convert to Extended format
-    let normalized = symbol.toUpperCase()
+    const normalized = symbol
+      .toUpperCase()
       .replace('USDC', '')
       .replace('USDT', '')
       .replace('-PERP', '')
       .replace('-USD', '');
-    
+
     // Try direct match first
     if (this.marketInfoCache.has(`${normalized}-USD`)) {
       return `${normalized}-USD`;
     }
-    
+
     // Try as asset name
     const market = this.marketInfoCache.get(normalized);
     if (market?.name) {
       return market.name;
     }
-    
+
     // Default: assume it's the base asset and append -USD
     return `${normalized}-USD`;
   }
@@ -216,7 +251,7 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Place an order on Extended exchange
    * API: POST /api/v1/user/order
-   * 
+   *
    * Extended order format requires:
    * - id: Order ID assigned by user (UUID or unique string)
    * - market: Market name like "BTC-USD"
@@ -234,27 +269,28 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       const marketName = await this.getMarketName(request.symbol);
       const side = request.side === OrderSide.LONG ? 'BUY' : 'SELL';
       const orderType = request.type === OrderType.MARKET ? 'MARKET' : 'LIMIT';
-      
+
       // Extended requires price even for market orders
       // For market orders: Buy = markPrice * 1.05, Sell = markPrice * 0.95
       let price = request.price;
       if (!price || request.type === OrderType.MARKET) {
         const markPrice = await this.getMarkPrice(request.symbol);
-        price = request.side === OrderSide.LONG 
-          ? markPrice * 1.05  // 5% above for market buy
-          : markPrice * 0.95; // 5% below for market sell
+        price =
+          request.side === OrderSide.LONG
+            ? markPrice * 1.05 // 5% above for market buy
+            : markPrice * 0.95; // 5% below for market sell
       }
-      
+
       // Expiration: max 90 days (mainnet) or 28 days (testnet)
       const maxDays = this.isTestnet ? 28 : 90;
-      const expiryEpochMillis = Date.now() + (maxDays * 24 * 60 * 60 * 1000);
-      
+      const expiryEpochMillis = Date.now() + maxDays * 24 * 60 * 60 * 1000;
+
       // Nonce for signing
       const nonce = this.generateNonce();
-      
+
       // Generate unique order ID
       const orderId = request.clientOrderId || `bloom-${Date.now()}-${nonce}`;
-      
+
       // Fee: Use taker fee (0.025% = 0.00025) for market/IOC orders
       const fee = '0.00025';
 
@@ -273,7 +309,8 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       };
 
       // Sign the order and get r,s signature components
-      const signatureResult = await this.signingService.signOrderWithComponents(orderData);
+      const signatureResult =
+        await this.signingService.signOrderWithComponents(orderData);
 
       // Build API request payload per Extended API docs
       const payload: any = {
@@ -304,10 +341,13 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       const response = await this.client.post('/api/v1/user/order', payload);
 
       if (response.data?.status === 'OK' && response.data.data) {
-        const resultOrderId = response.data.data.id?.toString() || response.data.data.externalId || orderId;
-        
+        const resultOrderId =
+          response.data.data.id?.toString() ||
+          response.data.data.externalId ||
+          orderId;
+
         this.logger.log(
-          `✅ Order placed on Extended: ${resultOrderId} - ${side} ${request.size} ${marketName} @ ${price}`
+          `✅ Order placed on Extended: ${resultOrderId} - ${side} ${request.size} ${marketName} @ ${price}`,
         );
 
         return new PerpOrderResponse(
@@ -326,9 +366,11 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
         throw new Error(`Order rejected: ${errorMsg}`);
       }
     } catch (error: any) {
-      const errorMsg = error.response?.data?.error?.message || 
-                       error.response?.data?.message || 
-                       error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message ||
+        error.response?.data?.message ||
+        error.message ||
+        String(error);
       this.logger.error(`Failed to place order on Extended: ${errorMsg}`);
       throw new ExchangeError(
         `Failed to place order: ${errorMsg}`,
@@ -343,11 +385,14 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
     try {
       const marketName = await this.getMarketName(symbol);
       const positions = await this.getPositions();
-      return positions.find(p => 
-        p.symbol === symbol || 
-        p.symbol === marketName ||
-        p.symbol.replace('-USD', '') === symbol.toUpperCase()
-      ) || null;
+      return (
+        positions.find(
+          (p) =>
+            p.symbol === symbol ||
+            p.symbol === marketName ||
+            p.symbol.replace('-USD', '') === symbol.toUpperCase(),
+        ) || null
+      );
     } catch (error: any) {
       throw new ExchangeError(
         `Failed to get position: ${error.message}`,
@@ -366,7 +411,10 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
     try {
       const response = await this.client.get('/api/v1/user/positions');
 
-      if (response.data?.status !== 'OK' || !Array.isArray(response.data.data)) {
+      if (
+        response.data?.status !== 'OK' ||
+        !Array.isArray(response.data.data)
+      ) {
         return [];
       }
 
@@ -374,25 +422,28 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       for (const pos of response.data.data) {
         const size = parseFloat(pos.size || '0');
         if (size !== 0) {
-          positions.push(new PerpPosition(
-            ExchangeType.EXTENDED,
-            pos.market,  // Extended uses "market" field with format "BTC-USD"
-            pos.side === 'LONG' ? OrderSide.LONG : OrderSide.SHORT,
-            Math.abs(size),
-            parseFloat(pos.openPrice || '0'),  // Entry price
-            parseFloat(pos.markPrice || '0'),
-            parseFloat(pos.unrealisedPnl || '0'),
-            parseFloat(pos.leverage || '1'),
-            parseFloat(pos.liquidationPrice || '0'),
-            undefined,
-            pos.updatedTime ? new Date(pos.updatedTime) : new Date(),
-          ));
+          positions.push(
+            new PerpPosition(
+              ExchangeType.EXTENDED,
+              pos.market, // Extended uses "market" field with format "BTC-USD"
+              pos.side === 'LONG' ? OrderSide.LONG : OrderSide.SHORT,
+              Math.abs(size),
+              parseFloat(pos.openPrice || '0'), // Entry price
+              parseFloat(pos.markPrice || '0'),
+              parseFloat(pos.unrealisedPnl || '0'),
+              parseFloat(pos.leverage || '1'),
+              parseFloat(pos.liquidationPrice || '0'),
+              undefined,
+              pos.updatedTime ? new Date(pos.updatedTime) : new Date(),
+            ),
+          );
         }
       }
 
       return positions;
     } catch (error: any) {
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       this.logger.error(`Failed to get positions from Extended: ${errorMsg}`);
       throw new ExchangeError(
         `Failed to get positions: ${errorMsg}`,
@@ -409,15 +460,18 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
    */
   async cancelOrder(orderId: string, symbol?: string): Promise<boolean> {
     try {
-      const response = await this.client.delete(`/api/v1/user/order/${orderId}`);
-      
+      const response = await this.client.delete(
+        `/api/v1/user/order/${orderId}`,
+      );
+
       if (response.data?.status === 'OK') {
         this.logger.log(`✅ Order cancelled on Extended: ${orderId}`);
         return true;
       }
       return false;
     } catch (error: any) {
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       this.logger.error(`Failed to cancel order on Extended: ${errorMsg}`);
       throw new ExchangeError(
         `Failed to cancel order: ${errorMsg}`,
@@ -435,19 +489,22 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
   async cancelAllOrders(symbol: string): Promise<number> {
     try {
       const marketName = await this.getMarketName(symbol);
-      
+
       const response = await this.client.post('/api/v1/user/order/massCancel', {
         markets: [marketName],
       });
-      
+
       // Extended mass cancel is async, returns status
       if (response.data?.status === 'OK') {
-        this.logger.log(`✅ Mass cancel initiated on Extended for ${marketName}`);
+        this.logger.log(
+          `✅ Mass cancel initiated on Extended for ${marketName}`,
+        );
         return 1; // Async - we don't know exact count
       }
       return 0;
     } catch (error: any) {
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       this.logger.error(`Failed to cancel all orders on Extended: ${errorMsg}`);
       throw new ExchangeError(
         `Failed to cancel all orders: ${errorMsg}`,
@@ -462,7 +519,10 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
    * Get order status by ID
    * API: GET /api/v1/user/orders/{id}
    */
-  async getOrderStatus(orderId: string, symbol?: string): Promise<PerpOrderResponse> {
+  async getOrderStatus(
+    orderId: string,
+    symbol?: string,
+  ): Promise<PerpOrderResponse> {
     try {
       const response = await this.client.get(`/api/v1/user/orders/${orderId}`);
 
@@ -472,14 +532,14 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
 
       const order = response.data.data;
       const statusMap: Record<string, OrderStatus> = {
-        'NEW': OrderStatus.SUBMITTED,
-        'PARTIALLY_FILLED': OrderStatus.SUBMITTED,
-        'FILLED': OrderStatus.FILLED,
-        'CANCELLED': OrderStatus.CANCELLED,
-        'REJECTED': OrderStatus.REJECTED,
-        'EXPIRED': OrderStatus.EXPIRED,
-        'UNTRIGGERED': OrderStatus.SUBMITTED,
-        'TRIGGERED': OrderStatus.SUBMITTED,
+        NEW: OrderStatus.SUBMITTED,
+        PARTIALLY_FILLED: OrderStatus.SUBMITTED,
+        FILLED: OrderStatus.FILLED,
+        CANCELLED: OrderStatus.CANCELLED,
+        REJECTED: OrderStatus.REJECTED,
+        EXPIRED: OrderStatus.EXPIRED,
+        UNTRIGGERED: OrderStatus.SUBMITTED,
+        TRIGGERED: OrderStatus.SUBMITTED,
       };
 
       return new PerpOrderResponse(
@@ -494,7 +554,8 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
         order.updatedTime ? new Date(order.updatedTime) : new Date(),
       );
     } catch (error: any) {
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       throw new ExchangeError(
         `Failed to get order status: ${errorMsg}`,
         ExchangeType.EXTENDED,
@@ -512,14 +573,17 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
   async getMarkPrice(symbol: string): Promise<number> {
     try {
       const marketName = await this.getMarketName(symbol);
-      const response = await this.client.get(`/api/v1/info/markets/${marketName}/stats`);
-      
+      const response = await this.client.get(
+        `/api/v1/info/markets/${marketName}/stats`,
+      );
+
       if (response.data?.status === 'OK' && response.data.data?.markPrice) {
         return parseFloat(response.data.data.markPrice);
       }
       throw new Error(`Mark price not found for ${symbol}`);
     } catch (error: any) {
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       throw new ExchangeError(
         `Failed to get mark price: ${errorMsg}`,
         ExchangeType.EXTENDED,
@@ -548,7 +612,8 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       if (error.response?.status === 404) {
         return 0;
       }
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       throw new ExchangeError(
         `Failed to get balance: ${errorMsg}`,
         ExchangeType.EXTENDED,
@@ -576,7 +641,8 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       if (error.response?.status === 404) {
         return 0;
       }
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       throw new ExchangeError(
         `Failed to get equity: ${errorMsg}`,
         ExchangeType.EXTENDED,
@@ -601,7 +667,9 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
    */
   async testConnection(): Promise<void> {
     try {
-      const response = await this.client.get('/api/v1/info/markets', { timeout: 5000 });
+      const response = await this.client.get('/api/v1/info/markets', {
+        timeout: 5000,
+      });
       if (response.data?.status !== 'ok') {
         throw new Error('Invalid response from Extended API');
       }
@@ -637,7 +705,8 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       }
       throw new Error(`Transfer failed: ${JSON.stringify(response.data)}`);
     } catch (error: any) {
-      const errorMsg = error.response?.data?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.message || error.message || String(error);
       throw new ExchangeError(
         `Failed to transfer: ${errorMsg}`,
         ExchangeType.EXTENDED,
@@ -647,7 +716,11 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 
-  async depositExternal(amount: number, asset: string, destination?: string): Promise<string> {
+  async depositExternal(
+    amount: number,
+    asset: string,
+    destination?: string,
+  ): Promise<string> {
     // Extended deposits from Arbitrum
     if (!this.arbitrumWallet) {
       throw new ExchangeError(
@@ -682,7 +755,11 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
         'function decimals() external view returns (uint8)',
       ];
 
-      const usdcContract = new ethers.Contract(usdcContractAddress, erc20Abi, this.arbitrumWallet);
+      const usdcContract = new ethers.Contract(
+        usdcContractAddress,
+        erc20Abi,
+        this.arbitrumWallet,
+      );
       const decimals = await usdcContract.decimals();
       const amountWei = ethers.parseUnits(amount.toString(), decimals);
 
@@ -692,7 +769,9 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       await approveTx.wait();
 
       // Transfer USDC to Extended bridge
-      this.logger.log(`Depositing ${amount} ${asset} to Extended via Arbitrum bridge...`);
+      this.logger.log(
+        `Depositing ${amount} ${asset} to Extended via Arbitrum bridge...`,
+      );
       const transferTx = await usdcContract.transfer(depositAddress, amountWei);
       const receipt = await transferTx.wait();
 
@@ -714,7 +793,11 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 
-  async withdrawExternal(amount: number, asset: string, destination: string): Promise<string> {
+  async withdrawExternal(
+    amount: number,
+    asset: string,
+    destination: string,
+  ): Promise<string> {
     // Extended withdrawals to Arbitrum
     if (!this.arbitrumWallet) {
       throw new ExchangeError(
@@ -748,7 +831,8 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
         expiration: Math.floor(Date.now() / 1000) + 14 * 24 * 3600, // 14 days
       };
 
-      const signature = await this.signingService.signWithdrawal(withdrawalData);
+      const signature =
+        await this.signingService.signWithdrawal(withdrawalData);
 
       // Submit withdrawal request
       const response = await this.client.post('/api/v1/user/withdrawal', {
@@ -760,14 +844,15 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       if (response.data && response.data.withdrawalId) {
         const withdrawalId = response.data.withdrawalId.toString();
         this.logger.log(
-          `✅ Withdrawal initiated on Extended: ${withdrawalId} - ${amount} ${asset} to ${destination} (Arbitrum)`
+          `✅ Withdrawal initiated on Extended: ${withdrawalId} - ${amount} ${asset} to ${destination} (Arbitrum)`,
         );
         return withdrawalId;
       } else {
         throw new Error(`Withdrawal failed: ${JSON.stringify(response.data)}`);
       }
     } catch (error: any) {
-      const errorMsg = error.response?.data?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.message || error.message || String(error);
       this.logger.error(`Failed to withdraw from Extended: ${errorMsg}`);
       throw new ExchangeError(
         `Failed to withdraw: ${errorMsg}`,
@@ -781,15 +866,18 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Get historical funding payments for the account
    * API: GET /api/v1/user/funding/history?market={market}&fromTime={fromTime}
-   * 
+   *
    * @param startTime Optional start time in milliseconds (default: 7 days ago)
    * @param endTime Optional end time in milliseconds (default: now)
    * @returns Array of funding payments
    */
-  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+  async getFundingPayments(
+    startTime?: number,
+    endTime?: number,
+  ): Promise<FundingPayment[]> {
     try {
       const now = Date.now();
-      const fromTime = startTime || now - (7 * 24 * 60 * 60 * 1000);
+      const fromTime = startTime || now - 7 * 24 * 60 * 60 * 1000;
 
       // Extended requires fromTime parameter
       const response = await this.client.get('/api/v1/user/funding/history', {
@@ -819,7 +907,9 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       return [];
     } catch (error: any) {
       // Don't throw - just return empty if endpoint doesn't exist or fails
-      this.logger.debug(`Extended funding history not available: ${error.message}`);
+      this.logger.debug(
+        `Extended funding history not available: ${error.message}`,
+      );
       return [];
     }
   }
@@ -842,7 +932,8 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
       }
       return [];
     } catch (error: any) {
-      const errorMsg = error.response?.data?.error?.message || error.message || String(error);
+      const errorMsg =
+        error.response?.data?.error?.message || error.message || String(error);
       this.logger.error(`Failed to get open orders from Extended: ${errorMsg}`);
       throw new ExchangeError(
         `Failed to get open orders: ${errorMsg}`,
@@ -853,4 +944,3 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 }
-

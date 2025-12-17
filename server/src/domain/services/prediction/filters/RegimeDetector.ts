@@ -115,9 +115,7 @@ export class RegimeDetector {
     const recentVolatility = this.calculateVolatility(recentRates);
     const baselineVolatility = this.calculateVolatility(baselineRates);
     const volatilityRatio =
-      baselineVolatility > 1e-8
-        ? recentVolatility / baselineVolatility
-        : 1;
+      baselineVolatility > 1e-8 ? recentVolatility / baselineVolatility : 1;
 
     // Calculate trend strength using linear regression
     const trendStrength = this.calculateTrendStrength(recentRates);
@@ -149,8 +147,12 @@ export class RegimeDetector {
     meanReversionScore: number;
     dislocationLevel: number;
   }): Record<MarketRegime, number> {
-    const { volatilityRatio, trendStrength, meanReversionScore, dislocationLevel } =
-      metrics;
+    const {
+      volatilityRatio,
+      trendStrength,
+      meanReversionScore,
+      dislocationLevel,
+    } = metrics;
 
     // Calculate membership scores for each regime
     const extremeScore = this.sigmoidMembership(
@@ -181,7 +183,8 @@ export class RegimeDetector {
     const rawProbabilities = {
       [MarketRegime.EXTREME_DISLOCATION]: extremeScore,
       [MarketRegime.HIGH_VOLATILITY]: highVolScore * (1 - extremeScore),
-      [MarketRegime.TRENDING]: trendingScore * (1 - extremeScore) * (1 - highVolScore),
+      [MarketRegime.TRENDING]:
+        trendingScore * (1 - extremeScore) * (1 - highVolScore),
       [MarketRegime.MEAN_REVERTING]:
         meanRevertingScore *
         (1 - extremeScore) *
@@ -191,7 +194,10 @@ export class RegimeDetector {
 
     // Normalize to sum to 1
     const total = Object.values(rawProbabilities).reduce((a, b) => a + b, 0);
-    const normalized: Record<MarketRegime, number> = {} as Record<MarketRegime, number>;
+    const normalized: Record<MarketRegime, number> = {} as Record<
+      MarketRegime,
+      number
+    >;
 
     for (const regime of Object.values(MarketRegime)) {
       normalized[regime] = total > 0 ? rawProbabilities[regime] / total : 0.25;
@@ -373,4 +379,3 @@ export class RegimeDetector {
     this.regimeStates.clear();
   }
 }
-

@@ -1,6 +1,16 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Contract, JsonRpcProvider, WebSocketProvider, formatUnits } from 'ethers';
+import {
+  Contract,
+  JsonRpcProvider,
+  WebSocketProvider,
+  formatUnits,
+} from 'ethers';
 import { EventEmitter } from 'events';
 
 /**
@@ -15,8 +25,8 @@ export interface CapitalDeployedEvent {
 }
 
 export interface WithdrawalRequestedEvent {
-  requestId: bigint;          // Strategy's request ID
-  vaultRequestId?: bigint;    // Vault's request ID (for marking fulfilled)
+  requestId: bigint; // Strategy's request ID
+  vaultRequestId?: bigint; // Vault's request ID (for marking fulfilled)
   amount: bigint;
   deadline: bigint;
   timestamp: bigint;
@@ -62,16 +72,18 @@ export const KEEPER_STRATEGY_EVENTS = {
 
 /**
  * KeeperStrategyEventListener - Listens to on-chain events from KeeperStrategyManager
- * 
+ *
  * Monitors:
  * - CapitalDeployed: New funds deposited, keeper should bridge to exchanges
  * - WithdrawalRequested: User wants to withdraw, keeper should unwind positions
  * - EmergencyRecall: Emergency mode, keeper should return ALL funds ASAP
  */
 @Injectable()
-export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestroy {
+export class KeeperStrategyEventListener
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(KeeperStrategyEventListener.name);
-  
+
   private provider: JsonRpcProvider | WebSocketProvider | null = null;
   private contract: Contract | null = null;
   private vaultContract: Contract | null = null;
@@ -82,7 +94,7 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
 
   // Internal event emitter for notifying other services
   public readonly events = new EventEmitter();
-  
+
   // Map transaction hash -> vault request ID for correlating strategy and vault events
   private txToVaultRequestId = new Map<string, bigint>();
 
@@ -116,18 +128,27 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
   private readonly rpcUrl: string;
   private readonly wsUrl: string | undefined;
 
-  constructor(
-    private readonly configService: ConfigService,
-  ) {
-    this.strategyAddress = this.configService.get<string>('KEEPER_STRATEGY_ADDRESS', '');
-    this.vaultAddress = this.configService.get<string>('BLOOM_VAULT_ADDRESS', '');
-    this.rpcUrl = this.configService.get<string>('ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc');
+  constructor(private readonly configService: ConfigService) {
+    this.strategyAddress = this.configService.get<string>(
+      'KEEPER_STRATEGY_ADDRESS',
+      '',
+    );
+    this.vaultAddress = this.configService.get<string>(
+      'BLOOM_VAULT_ADDRESS',
+      '',
+    );
+    this.rpcUrl = this.configService.get<string>(
+      'ARBITRUM_RPC_URL',
+      'https://arb1.arbitrum.io/rpc',
+    );
     this.wsUrl = this.configService.get<string>('ARBITRUM_WS_URL');
   }
 
   async onModuleInit() {
     if (!this.strategyAddress) {
-      this.logger.warn('KEEPER_STRATEGY_ADDRESS not configured, event listener disabled');
+      this.logger.warn(
+        'KEEPER_STRATEGY_ADDRESS not configured, event listener disabled',
+      );
       return;
     }
 
@@ -152,11 +173,19 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
         this.provider = new JsonRpcProvider(this.rpcUrl);
       }
 
-      this.contract = new Contract(this.strategyAddress, this.CONTRACT_ABI, this.provider);
-      
+      this.contract = new Contract(
+        this.strategyAddress,
+        this.CONTRACT_ABI,
+        this.provider,
+      );
+
       // Set up vault contract if address is configured
       if (this.vaultAddress) {
-        this.vaultContract = new Contract(this.vaultAddress, this.VAULT_ABI, this.provider);
+        this.vaultContract = new Contract(
+          this.vaultAddress,
+          this.VAULT_ABI,
+          this.provider,
+        );
         this.logger.log(`Vault contract connected at ${this.vaultAddress}`);
       }
 
@@ -165,7 +194,9 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
 
       this.isListening = true;
       this.reconnectAttempts = 0;
-      this.logger.log(`Event listener started for KeeperStrategyManager at ${this.strategyAddress}`);
+      this.logger.log(
+        `Event listener started for KeeperStrategyManager at ${this.strategyAddress}`,
+      );
     } catch (error: any) {
       this.logger.error(`Failed to connect: ${error.message}`);
       await this.handleReconnect();
@@ -182,7 +213,7 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
       await this.contract.removeAllListeners();
       this.contract = null;
     }
-    
+
     if (this.vaultContract) {
       await this.vaultContract.removeAllListeners();
       this.vaultContract = null;
@@ -194,7 +225,7 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
       }
       this.provider = null;
     }
-    
+
     this.txToVaultRequestId.clear();
     this.logger.log('Event listener disconnected');
   }
@@ -206,144 +237,178 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
     if (!this.contract) return;
 
     // CapitalDeployed event
-    this.contract.on('CapitalDeployed', async (deploymentId, amount, timestamp, event) => {
-      try {
-        const eventData: CapitalDeployedEvent = {
-          deploymentId,
-          amount,
-          timestamp,
-          blockNumber: event.log.blockNumber,
-          transactionHash: event.log.transactionHash,
-        };
-
-        this.logger.log(
-          `📥 CapitalDeployed: ${formatUnits(amount, 6)} USDC (ID: ${deploymentId})`,
-        );
-
-        // Emit internal event for other services to handle
-        this.events.emit(KEEPER_STRATEGY_EVENTS.CAPITAL_DEPLOYED, eventData);
-      } catch (error: any) {
-        this.logger.error(`Error processing CapitalDeployed event: ${error.message}`);
-      }
-    });
-
-    // WithdrawalRequested event (from strategy)
-    this.contract.on('WithdrawalRequested', async (requestId, amount, deadline, timestamp, event) => {
-      try {
-        const txHash = event.log.transactionHash;
-        
-        // Look up the correlated vault request ID from the same transaction
-        const vaultRequestId = this.txToVaultRequestId.get(txHash);
-        
-        const eventData: WithdrawalRequestedEvent = {
-          requestId,
-          vaultRequestId,  // Will be undefined if vault event wasn't received first
-          amount,
-          deadline,
-          timestamp,
-          blockNumber: event.log.blockNumber,
-          transactionHash: txHash,
-        };
-
-        const deadlineDate = new Date(Number(deadline) * 1000);
-        this.logger.warn(
-          `📤 WithdrawalRequested: ${formatUnits(amount, 6)} USDC (strategyID: ${requestId}, vaultID: ${vaultRequestId ?? 'unknown'}, deadline: ${deadlineDate.toISOString()})`,
-        );
-
-        // Clean up the mapping now that we've used it
-        if (vaultRequestId !== undefined) {
-          this.txToVaultRequestId.delete(txHash);
-        }
-
-        // Emit internal event for withdrawal fulfiller to handle
-        this.events.emit(KEEPER_STRATEGY_EVENTS.WITHDRAWAL_REQUESTED, eventData);
-      } catch (error: any) {
-        this.logger.error(`Error processing WithdrawalRequested event: ${error.message}`);
-      }
-    });
-
-    // ImmediateWithdrawal event - Strategy had idle funds and fulfilled immediately
-    this.contract.on('ImmediateWithdrawal', async (amount, timestamp, event) => {
-      try {
-        const eventData: ImmediateWithdrawalEvent = {
-          amount,
-          timestamp,
-          blockNumber: event.log.blockNumber,
-          transactionHash: event.log.transactionHash,
-        };
-
-        this.logger.log(
-          `⚡ ImmediateWithdrawal: ${formatUnits(amount, 6)} USDC fulfilled immediately`,
-        );
-
-        // Emit internal event for withdrawal fulfiller to mark vault requests as fulfilled
-        this.events.emit(KEEPER_STRATEGY_EVENTS.IMMEDIATE_WITHDRAWAL, eventData);
-      } catch (error: any) {
-        this.logger.error(`Error processing ImmediateWithdrawal event: ${error.message}`);
-      }
-    });
-
-    // EmergencyRecall event
-    this.contract.on('EmergencyRecall', async (totalDeployed, deadline, timestamp, event) => {
-      try {
-        const eventData: EmergencyRecallEvent = {
-          totalDeployed,
-          deadline,
-          timestamp,
-          blockNumber: event.log.blockNumber,
-          transactionHash: event.log.transactionHash,
-        };
-
-        const deadlineDate = new Date(Number(deadline) * 1000);
-        this.logger.error(
-          `🚨 EMERGENCY RECALL: Return ${formatUnits(totalDeployed, 6)} USDC by ${deadlineDate.toISOString()}`,
-        );
-
-        // Emit internal event for emergency handling
-        this.events.emit(KEEPER_STRATEGY_EVENTS.EMERGENCY_RECALL, eventData);
-      } catch (error: any) {
-        this.logger.error(`Error processing EmergencyRecall event: ${error.message}`);
-      }
-    });
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // VAULT CONTRACT EVENTS - for correlating vault request IDs
-    // ═══════════════════════════════════════════════════════════════════════════
-    
-    if (this.vaultContract) {
-      // Vault WithdrawalRequested event - happens BEFORE strategy's event in same tx
-      this.vaultContract.on('WithdrawalRequested', async (requestId, user, assets, shares, timestamp, event) => {
+    this.contract.on(
+      'CapitalDeployed',
+      async (deploymentId, amount, timestamp, event) => {
         try {
-          const txHash = event.log.transactionHash;
-          
-          // Store mapping for correlation with strategy event
-          this.txToVaultRequestId.set(txHash, requestId);
-          
+          const eventData: CapitalDeployedEvent = {
+            deploymentId,
+            amount,
+            timestamp,
+            blockNumber: event.log.blockNumber,
+            transactionHash: event.log.transactionHash,
+          };
+
           this.logger.log(
-            `🏦 Vault WithdrawalRequested: ID=${requestId}, user=${user}, assets=${formatUnits(assets, 6)} USDC`,
+            `📥 CapitalDeployed: ${formatUnits(amount, 6)} USDC (ID: ${deploymentId})`,
           );
 
-          const eventData: VaultWithdrawalRequestedEvent = {
-            vaultRequestId: requestId,
-            user,
-            assets,
-            shares,
+          // Emit internal event for other services to handle
+          this.events.emit(KEEPER_STRATEGY_EVENTS.CAPITAL_DEPLOYED, eventData);
+        } catch (error: any) {
+          this.logger.error(
+            `Error processing CapitalDeployed event: ${error.message}`,
+          );
+        }
+      },
+    );
+
+    // WithdrawalRequested event (from strategy)
+    this.contract.on(
+      'WithdrawalRequested',
+      async (requestId, amount, deadline, timestamp, event) => {
+        try {
+          const txHash = event.log.transactionHash;
+
+          // Look up the correlated vault request ID from the same transaction
+          const vaultRequestId = this.txToVaultRequestId.get(txHash);
+
+          const eventData: WithdrawalRequestedEvent = {
+            requestId,
+            vaultRequestId, // Will be undefined if vault event wasn't received first
+            amount,
+            deadline,
             timestamp,
             blockNumber: event.log.blockNumber,
             transactionHash: txHash,
           };
 
-          // Emit vault event for tracking
-          this.events.emit(KEEPER_STRATEGY_EVENTS.VAULT_WITHDRAWAL_REQUESTED, eventData);
-          
-          // Clean up old mappings after 1 minute (in case strategy event never comes)
-          setTimeout(() => {
+          const deadlineDate = new Date(Number(deadline) * 1000);
+          this.logger.warn(
+            `📤 WithdrawalRequested: ${formatUnits(amount, 6)} USDC (strategyID: ${requestId}, vaultID: ${vaultRequestId ?? 'unknown'}, deadline: ${deadlineDate.toISOString()})`,
+          );
+
+          // Clean up the mapping now that we've used it
+          if (vaultRequestId !== undefined) {
             this.txToVaultRequestId.delete(txHash);
-          }, 60000);
+          }
+
+          // Emit internal event for withdrawal fulfiller to handle
+          this.events.emit(
+            KEEPER_STRATEGY_EVENTS.WITHDRAWAL_REQUESTED,
+            eventData,
+          );
         } catch (error: any) {
-          this.logger.error(`Error processing Vault WithdrawalRequested event: ${error.message}`);
+          this.logger.error(
+            `Error processing WithdrawalRequested event: ${error.message}`,
+          );
         }
-      });
+      },
+    );
+
+    // ImmediateWithdrawal event - Strategy had idle funds and fulfilled immediately
+    this.contract.on(
+      'ImmediateWithdrawal',
+      async (amount, timestamp, event) => {
+        try {
+          const eventData: ImmediateWithdrawalEvent = {
+            amount,
+            timestamp,
+            blockNumber: event.log.blockNumber,
+            transactionHash: event.log.transactionHash,
+          };
+
+          this.logger.log(
+            `⚡ ImmediateWithdrawal: ${formatUnits(amount, 6)} USDC fulfilled immediately`,
+          );
+
+          // Emit internal event for withdrawal fulfiller to mark vault requests as fulfilled
+          this.events.emit(
+            KEEPER_STRATEGY_EVENTS.IMMEDIATE_WITHDRAWAL,
+            eventData,
+          );
+        } catch (error: any) {
+          this.logger.error(
+            `Error processing ImmediateWithdrawal event: ${error.message}`,
+          );
+        }
+      },
+    );
+
+    // EmergencyRecall event
+    this.contract.on(
+      'EmergencyRecall',
+      async (totalDeployed, deadline, timestamp, event) => {
+        try {
+          const eventData: EmergencyRecallEvent = {
+            totalDeployed,
+            deadline,
+            timestamp,
+            blockNumber: event.log.blockNumber,
+            transactionHash: event.log.transactionHash,
+          };
+
+          const deadlineDate = new Date(Number(deadline) * 1000);
+          this.logger.error(
+            `🚨 EMERGENCY RECALL: Return ${formatUnits(totalDeployed, 6)} USDC by ${deadlineDate.toISOString()}`,
+          );
+
+          // Emit internal event for emergency handling
+          this.events.emit(KEEPER_STRATEGY_EVENTS.EMERGENCY_RECALL, eventData);
+        } catch (error: any) {
+          this.logger.error(
+            `Error processing EmergencyRecall event: ${error.message}`,
+          );
+        }
+      },
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VAULT CONTRACT EVENTS - for correlating vault request IDs
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    if (this.vaultContract) {
+      // Vault WithdrawalRequested event - happens BEFORE strategy's event in same tx
+      this.vaultContract.on(
+        'WithdrawalRequested',
+        async (requestId, user, assets, shares, timestamp, event) => {
+          try {
+            const txHash = event.log.transactionHash;
+
+            // Store mapping for correlation with strategy event
+            this.txToVaultRequestId.set(txHash, requestId);
+
+            this.logger.log(
+              `🏦 Vault WithdrawalRequested: ID=${requestId}, user=${user}, assets=${formatUnits(assets, 6)} USDC`,
+            );
+
+            const eventData: VaultWithdrawalRequestedEvent = {
+              vaultRequestId: requestId,
+              user,
+              assets,
+              shares,
+              timestamp,
+              blockNumber: event.log.blockNumber,
+              transactionHash: txHash,
+            };
+
+            // Emit vault event for tracking
+            this.events.emit(
+              KEEPER_STRATEGY_EVENTS.VAULT_WITHDRAWAL_REQUESTED,
+              eventData,
+            );
+
+            // Clean up old mappings after 1 minute (in case strategy event never comes)
+            setTimeout(() => {
+              this.txToVaultRequestId.delete(txHash);
+            }, 60000);
+          } catch (error: any) {
+            this.logger.error(
+              `Error processing Vault WithdrawalRequested event: ${error.message}`,
+            );
+          }
+        },
+      );
     }
 
     // Handle provider errors for reconnection
@@ -362,17 +427,22 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
    */
   private async handleReconnect(): Promise<void> {
     if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
-      this.logger.error(`Max reconnection attempts (${this.MAX_RECONNECT_ATTEMPTS}) reached`);
+      this.logger.error(
+        `Max reconnection attempts (${this.MAX_RECONNECT_ATTEMPTS}) reached`,
+      );
       return;
     }
 
     this.reconnectAttempts++;
-    const delay = this.RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1);
-    
-    this.logger.log(`Reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS})`);
+    const delay =
+      this.RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1);
+
+    this.logger.log(
+      `Reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS})`,
+    );
 
     await this.disconnect();
-    await new Promise(resolve => setTimeout(resolve, delay));
+    await new Promise((resolve) => setTimeout(resolve, delay));
     await this.connect();
   }
 
@@ -383,14 +453,16 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
   /**
    * Get pending withdrawal requests from contract
    */
-  async getPendingWithdrawals(): Promise<Array<{
-    id: bigint;
-    amount: bigint;
-    requestedAt: bigint;
-    deadline: bigint;
-    fulfilled: boolean;
-    cancelled: boolean;
-  }>> {
+  async getPendingWithdrawals(): Promise<
+    Array<{
+      id: bigint;
+      amount: bigint;
+      requestedAt: bigint;
+      deadline: bigint;
+      fulfilled: boolean;
+      cancelled: boolean;
+    }>
+  > {
     if (!this.contract) {
       throw new Error('Contract not connected');
     }
@@ -426,9 +498,14 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
     }
 
     try {
-      const [deployedCapital, lastReportedNAV, pendingWithdrawals, idleBalance, pnl] = 
-        await this.contract.getStrategySummary();
-      
+      const [
+        deployedCapital,
+        lastReportedNAV,
+        pendingWithdrawals,
+        idleBalance,
+        pnl,
+      ] = await this.contract.getStrategySummary();
+
       return {
         deployedCapital,
         lastReportedNAV,
@@ -456,4 +533,3 @@ export class KeeperStrategyEventListener implements OnModuleInit, OnModuleDestro
     return this.strategyAddress;
   }
 }
-

@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
-import { ArbitrageOpportunity, FundingRateAggregator } from '../FundingRateAggregator';
+import {
+  ArbitrageOpportunity,
+  FundingRateAggregator,
+} from '../FundingRateAggregator';
 import { ArbitrageExecutionPlan } from '../FundingArbitrageStrategy';
 import { PerpSpotExecutionPlan } from './PerpSpotExecutionPlanBuilder';
 import { PerpPosition } from '../../entities/PerpPosition';
@@ -18,7 +21,7 @@ export interface OpportunityWithPlan {
 
 /**
  * PerformanceMetricsLogger - Logs comprehensive performance metrics
- * 
+ *
  * Generates detailed reports on:
  * - Position details (long/short pairs)
  * - Break-even analysis
@@ -83,7 +86,12 @@ export class PerformanceMetricsLogger {
     );
 
     // Log portfolio summary
-    this.logPortfolioSummary(totals, positionsBySymbol.size, allPositions.length, leverage);
+    this.logPortfolioSummary(
+      totals,
+      positionsBySymbol.size,
+      allPositions.length,
+      leverage,
+    );
   }
 
   /**
@@ -99,7 +107,9 @@ export class PerformanceMetricsLogger {
         const positions = await adapter.getPositions();
         allPositions.push(...positions);
       } catch (error: any) {
-        this.logger.debug(`Failed to get positions from ${exchange}: ${error.message}`);
+        this.logger.debug(
+          `Failed to get positions from ${exchange}: ${error.message}`,
+        );
       }
     }
 
@@ -123,7 +133,9 @@ export class PerformanceMetricsLogger {
         });
         allFundingRates.set(symbol, rateMap);
       } catch (error: any) {
-        this.logger.debug(`Failed to get funding rates for ${symbol}: ${error.message}`);
+        this.logger.debug(
+          `Failed to get funding rates for ${symbol}: ${error.message}`,
+        );
       }
     }
 
@@ -136,7 +148,10 @@ export class PerformanceMetricsLogger {
   private groupPositionsBySymbol(
     positions: PerpPosition[],
   ): Map<string, { long?: PerpPosition; short?: PerpPosition }> {
-    const positionsBySymbol = new Map<string, { long?: PerpPosition; short?: PerpPosition }>();
+    const positionsBySymbol = new Map<
+      string,
+      { long?: PerpPosition; short?: PerpPosition }
+    >();
 
     for (const position of positions) {
       if (!positionsBySymbol.has(position.symbol)) {
@@ -157,7 +172,10 @@ export class PerformanceMetricsLogger {
    * Calculate and log metrics for each position pair
    */
   private async calculateAndLogPositionMetrics(
-    positionsBySymbol: Map<string, { long?: PerpPosition; short?: PerpPosition }>,
+    positionsBySymbol: Map<
+      string,
+      { long?: PerpPosition; short?: PerpPosition }
+    >,
     opportunities: OpportunityWithPlan[],
     allFundingRates: Map<string, Map<ExchangeType, number>>,
     leverage: number,
@@ -201,14 +219,23 @@ export class PerformanceMetricsLogger {
       totalPositionValue += metrics.totalPairValue;
       totalEntryCosts += metrics.totalEntryCost;
       totalExpectedHourlyReturn += metrics.hourlyReturn;
-      totalEstimatedAPY += metrics.estimatedAPY * (metrics.totalPairValue / (totalPositionValue || 1));
+      totalEstimatedAPY +=
+        metrics.estimatedAPY *
+        (metrics.totalPairValue / (totalPositionValue || 1));
       totalUnrealizedPnl += metrics.currentPnl;
 
       if (metrics.combinedBreakEvenHours !== Infinity) {
         totalBreakEvenHours += metrics.combinedBreakEvenHours;
       }
 
-      this.logPositionPairMetrics(positionIndex, symbol, longPosition, shortPosition, metrics, opportunities);
+      this.logPositionPairMetrics(
+        positionIndex,
+        symbol,
+        longPosition,
+        shortPosition,
+        metrics,
+        opportunities,
+      );
     }
 
     return {
@@ -248,7 +275,9 @@ export class PerformanceMetricsLogger {
     const totalPairValue = longValue + shortValue;
 
     // Get funding rates
-    const opportunity = opportunities.find((item) => item.opportunity.symbol === symbol);
+    const opportunity = opportunities.find(
+      (item) => item.opportunity.symbol === symbol,
+    );
     let longRate = 0;
     let shortRate = 0;
 
@@ -271,7 +300,7 @@ export class PerformanceMetricsLogger {
     if (opportunity) {
       const oppSpread = Math.abs(
         (opportunity.opportunity.longRate?.toDecimal() || 0) -
-        (opportunity.opportunity.shortRate?.toDecimal() || 0),
+          (opportunity.opportunity.shortRate?.toDecimal() || 0),
       );
       hourlyReturn = (oppSpread * totalPairValue) / periodsPerYear;
     } else {
@@ -356,7 +385,9 @@ export class PerformanceMetricsLogger {
     const periodsPerYear = 24 * 365;
 
     // Format break-even time
-    const breakEvenStr = this.formatBreakEvenTime(metrics.combinedBreakEvenHours);
+    const breakEvenStr = this.formatBreakEvenTime(
+      metrics.combinedBreakEvenHours,
+    );
 
     // Status indicator
     const status =
@@ -369,7 +400,9 @@ export class PerformanceMetricsLogger {
             : '🟠 IN PROGRESS';
 
     this.logger.log(`Position Pair ${index}: ${symbol}`);
-    this.logger.log(`   ───────────────────────────────────────────────────────────────────────────`);
+    this.logger.log(
+      `   ───────────────────────────────────────────────────────────────────────────`,
+    );
     this.logger.log(
       `   LONG: ${longPosition.exchangeType} | Size: $${longValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
     );
@@ -381,32 +414,47 @@ export class PerformanceMetricsLogger {
     );
     this.logger.log(`   Status: ${status}`);
 
-    this.logger.log(`   💰 CURRENT REAL APY: ${metrics.estimatedAPY.toFixed(2)}%`);
+    this.logger.log(
+      `   💰 CURRENT REAL APY: ${metrics.estimatedAPY.toFixed(2)}%`,
+    );
     this.logger.log(`      Hourly Return: $${metrics.hourlyReturn.toFixed(4)}`);
-    this.logger.log(`      Daily Return: $${(metrics.hourlyReturn * 24).toFixed(2)}`);
-    this.logger.log(`      Annual Return: $${(metrics.hourlyReturn * periodsPerYear).toFixed(2)}`);
+    this.logger.log(
+      `      Daily Return: $${(metrics.hourlyReturn * 24).toFixed(2)}`,
+    );
+    this.logger.log(
+      `      Annual Return: $${(metrics.hourlyReturn * periodsPerYear).toFixed(2)}`,
+    );
 
     this.logger.log(`   ⏱️  BREAK-EVEN ANALYSIS:`);
     this.logger.log(`      Time Until Break-Even: ${breakEvenStr}`);
-    this.logger.log(`      Fees Earned So Far: $${metrics.feesEarnedSoFar.toFixed(4)}`);
+    this.logger.log(
+      `      Fees Earned So Far: $${metrics.feesEarnedSoFar.toFixed(4)}`,
+    );
 
     this.logger.log(`   💸 COST BREAKDOWN:`);
-    this.logger.log(`      Total Entry Cost: $${metrics.totalEntryCost.toFixed(4)}`);
+    this.logger.log(
+      `      Total Entry Cost: $${metrics.totalEntryCost.toFixed(4)}`,
+    );
 
     this.logger.log(`   📈 PROFIT/LOSS:`);
-    this.logger.log(`      Fees Earned: $${metrics.feesEarnedSoFar.toFixed(4)}`);
+    this.logger.log(
+      `      Fees Earned: $${metrics.feesEarnedSoFar.toFixed(4)}`,
+    );
     this.logger.log(
       `      Current P&L: $${metrics.currentPnl.toFixed(4)} ${metrics.currentPnl >= 0 ? '✅' : '❌'}`,
     );
 
     // Allocation info
-    const opportunity = opportunities.find((item) => item.opportunity.symbol === symbol);
+    const opportunity = opportunities.find(
+      (item) => item.opportunity.symbol === symbol,
+    );
     if (opportunity && opportunity.maxPortfolioFor35APY) {
       this.logger.log(`   🎯 ALLOCATION:`);
       this.logger.log(
         `      Max Portfolio (35% APY): $${opportunity.maxPortfolioFor35APY.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       );
-      const allocationPercent = (metrics.totalPairValue / opportunity.maxPortfolioFor35APY) * 100;
+      const allocationPercent =
+        (metrics.totalPairValue / opportunity.maxPortfolioFor35APY) * 100;
       this.logger.log(`      Allocation %: ${allocationPercent.toFixed(1)}%`);
     }
 
@@ -442,18 +490,29 @@ export class PerformanceMetricsLogger {
     this.logger.log(
       `   Total Position Value: $${totals.totalPositionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
     );
-    this.logger.log(`   Total Entry Costs: $${totals.totalEntryCosts.toFixed(4)}`);
+    this.logger.log(
+      `   Total Entry Costs: $${totals.totalEntryCosts.toFixed(4)}`,
+    );
 
     this.logger.log(`   💰 EXPECTED RETURNS:`);
-    this.logger.log(`      Weighted Avg APY: ${totals.totalEstimatedAPY.toFixed(2)}%`);
-    this.logger.log(`      Total Hourly Return: $${totals.totalExpectedHourlyReturn.toFixed(4)}`);
-    this.logger.log(`      Total Daily Return: $${(totals.totalExpectedHourlyReturn * 24).toFixed(2)}`);
+    this.logger.log(
+      `      Weighted Avg APY: ${totals.totalEstimatedAPY.toFixed(2)}%`,
+    );
+    this.logger.log(
+      `      Total Hourly Return: $${totals.totalExpectedHourlyReturn.toFixed(4)}`,
+    );
+    this.logger.log(
+      `      Total Daily Return: $${(totals.totalExpectedHourlyReturn * 24).toFixed(2)}`,
+    );
     this.logger.log(
       `      Total Annual Return: $${(totals.totalExpectedHourlyReturn * 8760).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
     );
 
     this.logger.log(`   ⏱️  BREAK-EVEN:`);
-    const avgBreakEvenHours = positionPairsCount > 0 ? totals.totalBreakEvenHours / positionPairsCount : 0;
+    const avgBreakEvenHours =
+      positionPairsCount > 0
+        ? totals.totalBreakEvenHours / positionPairsCount
+        : 0;
     const avgBreakEvenStr = this.formatBreakEvenTime(avgBreakEvenHours);
     this.logger.log(`      Average Time to Break-Even: ${avgBreakEvenStr}`);
 
@@ -474,7 +533,9 @@ export class PerformanceMetricsLogger {
     this.logger.log(
       `      Capital Deployed: $${totalCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
     );
-    this.logger.log(`      Capital Efficiency: ${capitalEfficiency.toFixed(2)}% APY`);
+    this.logger.log(
+      `      Capital Efficiency: ${capitalEfficiency.toFixed(2)}% APY`,
+    );
     this.logger.log(`      Leverage: ${leverage}x`);
 
     this.logger.log(
@@ -498,4 +559,3 @@ export class PerformanceMetricsLogger {
     return `${(hours / 24).toFixed(1)} days (${hours.toFixed(1)}h)`;
   }
 }
-

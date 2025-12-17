@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import WebSocket from 'ws';
 
 interface WsActiveAssetCtx {
@@ -21,27 +26,29 @@ interface WsMessage {
 
 /**
  * HyperLiquidWebSocketProvider - WebSocket-based funding rate provider
- * 
+ *
  * Subscribes to activeAssetCtx for real-time funding rate updates
  * This eliminates rate limit issues by using streaming data instead of REST polling
- * 
+ *
  * Docs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions
  */
 @Injectable()
-export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestroy {
+export class HyperLiquidWebSocketProvider
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(HyperLiquidWebSocketProvider.name);
   private readonly WS_URL = 'wss://api.hyperliquid.xyz/ws';
-  
+
   private ws: WebSocket | null = null;
   private isConnected = false;
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT_ATTEMPTS = 10;
   private readonly RECONNECT_DELAY = 5000; // 5 seconds
-  
+
   // Cache for asset context data (key: coin symbol, value: asset context)
   private assetCtxCache: Map<string, WsActiveAssetCtx['ctx']> = new Map();
   private subscribedAssets: Set<string> = new Set();
-  
+
   // Track if we've received initial data for each asset
   private hasInitialData: Set<string> = new Set();
 
@@ -66,7 +73,7 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
           this.isConnected = true;
           this.reconnectAttempts = 0;
           // Removed WebSocket connection log - only execution logs shown
-          
+
           // Subscribe to all assets we're tracking
           this.resubscribeAll();
           resolve();
@@ -77,7 +84,9 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
             const message: WsMessage = JSON.parse(data.toString());
             this.handleMessage(message);
           } catch (error: any) {
-            this.logger.error(`Failed to parse WebSocket message: ${error.message}`);
+            this.logger.error(
+              `Failed to parse WebSocket message: ${error.message}`,
+            );
           }
         });
 
@@ -101,21 +110,27 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
         this.ws.on('close', () => {
           this.isConnected = false;
           // Removed WebSocket connection log - only execution logs shown
-          
+
           // Attempt to reconnect (silently - only log on repeated failures)
           if (this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS) {
             this.reconnectAttempts++;
             // Only log on 3rd+ attempt to reduce noise
             if (this.reconnectAttempts >= 3) {
-              this.logger.warn(`WebSocket reconnect attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS}...`);
+              this.logger.warn(
+                `WebSocket reconnect attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS}...`,
+              );
             }
             setTimeout(() => this.connect(), this.RECONNECT_DELAY);
           } else {
-            this.logger.error('Max reconnection attempts reached. WebSocket will not reconnect.');
+            this.logger.error(
+              'Max reconnection attempts reached. WebSocket will not reconnect.',
+            );
           }
         });
       } catch (error: any) {
-        this.logger.error(`Failed to create WebSocket connection: ${error.message}`);
+        this.logger.error(
+          `Failed to create WebSocket connection: ${error.message}`,
+        );
         reject(error);
       }
     });
@@ -145,11 +160,11 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
     if (message.channel === 'activeAssetCtx' && message.data) {
       const assetCtx: WsActiveAssetCtx = message.data;
       const coin = assetCtx.coin.toUpperCase();
-      
+
       // Cache the asset context
       this.assetCtxCache.set(coin, assetCtx.ctx);
       this.hasInitialData.add(coin);
-      
+
       // Debug logs removed - only log errors
     }
   }
@@ -159,7 +174,7 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
    */
   subscribeToAsset(coin: string): void {
     const normalizedCoin = coin.toUpperCase();
-    
+
     if (this.subscribedAssets.has(normalizedCoin)) {
       return; // Already subscribed
     }
@@ -207,7 +222,7 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
   getFundingRate(asset: string): number | null {
     const normalizedAsset = asset.toUpperCase();
     const ctx = this.assetCtxCache.get(normalizedAsset);
-    
+
     if (!ctx) {
       // Auto-subscribe if not already subscribed
       if (!this.subscribedAssets.has(normalizedAsset)) {
@@ -225,7 +240,7 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
   getMarkPrice(asset: string): number | null {
     const normalizedAsset = asset.toUpperCase();
     const ctx = this.assetCtxCache.get(normalizedAsset);
-    
+
     if (!ctx) {
       if (!this.subscribedAssets.has(normalizedAsset)) {
         this.subscribeToAsset(normalizedAsset);
@@ -242,7 +257,7 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
   getOpenInterest(asset: string): number | null {
     const normalizedAsset = asset.toUpperCase();
     const ctx = this.assetCtxCache.get(normalizedAsset);
-    
+
     if (!ctx) {
       if (!this.subscribedAssets.has(normalizedAsset)) {
         this.subscribeToAsset(normalizedAsset);
@@ -262,7 +277,7 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
   getPremium(asset: string): number | null {
     const normalizedAsset = asset.toUpperCase();
     const ctx = this.assetCtxCache.get(normalizedAsset);
-    
+
     if (!ctx) {
       return null;
     }
@@ -287,4 +302,3 @@ export class HyperLiquidWebSocketProvider implements OnModuleInit, OnModuleDestr
     return this.isConnected;
   }
 }
-

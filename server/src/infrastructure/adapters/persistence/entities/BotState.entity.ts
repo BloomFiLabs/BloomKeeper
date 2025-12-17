@@ -26,4 +26,3 @@ export class BotStateEntity {
   @Column({ default: true })
   isActive: boolean;
 }
-

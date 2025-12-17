@@ -1,8 +1,8 @@
 /**
  * Integration test runner
- * 
+ *
  * Run with: npx ts-node src/test/integration/run-tests.ts
- * 
+ *
  * This uses ts-node directly instead of Jest to avoid ESM module issues
  * with the @nktkas/hyperliquid and @noble packages.
  */
@@ -15,8 +15,11 @@ import { ConfigService } from '@nestjs/config';
 
 // Create a mock ConfigService for testing
 class MockConfigService {
-  private env: Record<string, string | undefined> = process.env as Record<string, string | undefined>;
-  
+  private env: Record<string, string | undefined> = process.env as Record<
+    string,
+    string | undefined
+  >;
+
   get<T = string>(key: string): T | undefined {
     return this.env[key] as T | undefined;
   }
@@ -57,20 +60,36 @@ async function runTests() {
   log('='.repeat(60));
 
   log('\n=== Environment ===');
-  log(`Hyperliquid Testnet: ${process.env.HYPERLIQUID_TESTNET === 'true' ? 'YES' : 'NO'}`);
-  log(`Extended Testnet: ${process.env.EXTENDED_TESTNET === 'true' ? 'YES' : 'NO'}`);
+  log(
+    `Hyperliquid Testnet: ${process.env.HYPERLIQUID_TESTNET === 'true' ? 'YES' : 'NO'}`,
+  );
+  log(
+    `Extended Testnet: ${process.env.EXTENDED_TESTNET === 'true' ? 'YES' : 'NO'}`,
+  );
   log(`Lighter configured: ${process.env.LIGHTER_API_KEY ? 'YES' : 'NO'}`);
   log(`Aster configured: ${process.env.ASTER_API_KEY ? 'YES' : 'NO'}`);
 
   // ==================== HYPERLIQUID TESTS ====================
   if (process.env.HYPERLIQUID_PRIVATE_KEY || process.env.PRIVATE_KEY) {
     await describe('Hyperliquid Adapter', async () => {
-      const { HyperliquidExchangeAdapter } = await import('../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter.js');
-      const { HyperLiquidDataProvider } = await import('../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider.js');
-      const { HyperLiquidWebSocketProvider } = await import('../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider.js');
+      const { HyperliquidExchangeAdapter } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter.js'
+      );
+      const { HyperLiquidDataProvider } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider.js'
+      );
+      const { HyperLiquidWebSocketProvider } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider.js'
+      );
       const wsProvider = new HyperLiquidWebSocketProvider();
-      const dataProvider = new HyperLiquidDataProvider(configService, wsProvider);
-      const adapter = new HyperliquidExchangeAdapter(configService, dataProvider);
+      const dataProvider = new HyperLiquidDataProvider(
+        configService,
+        wsProvider,
+      );
+      const adapter = new HyperliquidExchangeAdapter(
+        configService,
+        dataProvider,
+      );
 
       await test('should connect', async () => {
         await adapter.testConnection();
@@ -107,7 +126,9 @@ async function runTests() {
   // ==================== LIGHTER TESTS ====================
   if (process.env.LIGHTER_API_KEY) {
     await describe('Lighter Adapter', async () => {
-      const { LighterExchangeAdapter } = await import('../../infrastructure/adapters/lighter/LighterExchangeAdapter.js');
+      const { LighterExchangeAdapter } = await import(
+        '../../infrastructure/adapters/lighter/LighterExchangeAdapter.js'
+      );
       const adapter = new LighterExchangeAdapter(configService);
 
       await test('should connect', async () => {
@@ -128,7 +149,7 @@ async function runTests() {
       await test('should get open orders', async () => {
         const orders = await adapter.getOpenOrders();
         log(`    Open orders: ${orders.length}`);
-        
+
         if (orders.length > 0) {
           // Check for duplicates
           const grouped: Record<string, number> = {};
@@ -136,7 +157,7 @@ async function runTests() {
             const key = `${o.symbol}-${o.side}`;
             grouped[key] = (grouped[key] || 0) + 1;
           }
-          
+
           for (const [key, count] of Object.entries(grouped)) {
             if (count > 1) {
               log(`    ⚠️ DUPLICATE: ${key} has ${count} orders`);
@@ -160,7 +181,9 @@ async function runTests() {
   // ==================== ASTER TESTS ====================
   if (process.env.ASTER_API_KEY) {
     await describe('Aster Adapter', async () => {
-      const { AsterExchangeAdapter } = await import('../../infrastructure/adapters/aster/AsterExchangeAdapter.js');
+      const { AsterExchangeAdapter } = await import(
+        '../../infrastructure/adapters/aster/AsterExchangeAdapter.js'
+      );
       const adapter = new AsterExchangeAdapter(configService);
 
       await test('should connect', async () => {
@@ -188,7 +211,9 @@ async function runTests() {
   // Hyperliquid Spot Adapter
   if (process.env.HYPERLIQUID_PRIVATE_KEY || process.env.PRIVATE_KEY) {
     await describe('Hyperliquid Spot Adapter', async () => {
-      const { HyperliquidSpotAdapter } = await import('../../infrastructure/adapters/hyperliquid/HyperliquidSpotAdapter.js');
+      const { HyperliquidSpotAdapter } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperliquidSpotAdapter.js'
+      );
       const adapter = new HyperliquidSpotAdapter(configService);
 
       await test('should connect', async () => {
@@ -221,7 +246,9 @@ async function runTests() {
   // Aster Spot Adapter
   if (process.env.ASTER_API_KEY || process.env.ASTER_PRIVATE_KEY) {
     await describe('Aster Spot Adapter', async () => {
-      const { AsterSpotAdapter } = await import('../../infrastructure/adapters/aster/AsterSpotAdapter.js');
+      const { AsterSpotAdapter } = await import(
+        '../../infrastructure/adapters/aster/AsterSpotAdapter.js'
+      );
       const adapter = new AsterSpotAdapter(configService);
 
       await test('should connect', async () => {
@@ -254,7 +281,9 @@ async function runTests() {
   // Extended Spot Adapter
   if (process.env.EXTENDED_API_KEY) {
     await describe('Extended Spot Adapter', async () => {
-      const { ExtendedSpotAdapter } = await import('../../infrastructure/adapters/extended/ExtendedSpotAdapter.js');
+      const { ExtendedSpotAdapter } = await import(
+        '../../infrastructure/adapters/extended/ExtendedSpotAdapter.js'
+      );
       const adapter = new ExtendedSpotAdapter(configService);
 
       await test('should connect', async () => {
@@ -279,21 +308,47 @@ async function runTests() {
   // ==================== PERP-SPOT ARBITRAGE FLOW TESTS ====================
   log('\n=== Perp-Spot Arbitrage Flow Tests ===');
 
-  if ((process.env.HYPERLIQUID_PRIVATE_KEY || process.env.PRIVATE_KEY) && process.env.HYPERLIQUID_TESTNET === 'true') {
+  if (
+    (process.env.HYPERLIQUID_PRIVATE_KEY || process.env.PRIVATE_KEY) &&
+    process.env.HYPERLIQUID_TESTNET === 'true'
+  ) {
     await describe('Perp-Spot Arbitrage Flow (Hyperliquid Testnet)', async () => {
-      const { HyperliquidExchangeAdapter } = await import('../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter.js');
-      const { HyperliquidSpotAdapter } = await import('../../infrastructure/adapters/hyperliquid/HyperliquidSpotAdapter.js');
-      const { HyperLiquidDataProvider } = await import('../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider.js');
-      const { HyperLiquidWebSocketProvider } = await import('../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider.js');
-      const { FundingRateAggregator } = await import('../../domain/services/FundingRateAggregator.js');
-      const { PerpSpotBalanceManager } = await import('../../domain/services/strategy-rules/PerpSpotBalanceManager.js');
-      const { PerpSpotExecutionPlanBuilder } = await import('../../domain/services/strategy-rules/PerpSpotExecutionPlanBuilder.js');
+      const { HyperliquidExchangeAdapter } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter.js'
+      );
+      const { HyperliquidSpotAdapter } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperliquidSpotAdapter.js'
+      );
+      const { HyperLiquidDataProvider } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider.js'
+      );
+      const { HyperLiquidWebSocketProvider } = await import(
+        '../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider.js'
+      );
+      const { FundingRateAggregator } = await import(
+        '../../domain/services/FundingRateAggregator.js'
+      );
+      const { PerpSpotBalanceManager } = await import(
+        '../../domain/services/strategy-rules/PerpSpotBalanceManager.js'
+      );
+      const { PerpSpotExecutionPlanBuilder } = await import(
+        '../../domain/services/strategy-rules/PerpSpotExecutionPlanBuilder.js'
+      );
 
       const wsProvider = new HyperLiquidWebSocketProvider();
-      const dataProvider = new HyperLiquidDataProvider(configService, wsProvider);
-      const perpAdapter = new HyperliquidExchangeAdapter(configService, dataProvider);
+      const dataProvider = new HyperLiquidDataProvider(
+        configService,
+        wsProvider,
+      );
+      const perpAdapter = new HyperliquidExchangeAdapter(
+        configService,
+        dataProvider,
+      );
       const spotAdapter = new HyperliquidSpotAdapter(configService);
-      const balanceManager = new PerpSpotBalanceManager(perpAdapter, spotAdapter);
+      const balanceManager = new PerpSpotBalanceManager(
+        perpAdapter,
+        spotAdapter,
+      );
       const planBuilder = new PerpSpotExecutionPlanBuilder(balanceManager);
 
       await test('should detect perp-spot opportunities', async () => {
@@ -306,10 +361,16 @@ async function runTests() {
           null as any, // extendedProvider
         );
 
-        const opportunities = await aggregator.findPerpSpotOpportunities(['ETH'], 0.0001, false);
+        const opportunities = await aggregator.findPerpSpotOpportunities(
+          ['ETH'],
+          0.0001,
+          false,
+        );
         log(`    Found ${opportunities.length} perp-spot opportunities`);
         for (const opp of opportunities) {
-          log(`    - ${opp.symbol}: ${opp.strategyType} on ${opp.longExchange}, spread: ${opp.spread.value}%`);
+          log(
+            `    - ${opp.symbol}: ${opp.strategyType} on ${opp.longExchange}, spread: ${opp.spread.value}%`,
+          );
         }
       });
 
@@ -331,7 +392,7 @@ async function runTests() {
       await test('should build perp-spot execution plan', async () => {
         const perpBalance = await perpAdapter.getBalance();
         const spotBalance = await spotAdapter.getSpotBalance('USDC');
-        
+
         if (perpBalance > 10 && spotBalance > 10) {
           const plan = await planBuilder.buildPlan(
             {
@@ -351,18 +412,24 @@ async function runTests() {
           );
 
           if (plan) {
-            log(`    Plan created: perp size=${plan.perpOrder.size}, spot size=${plan.spotOrder.size}`);
+            log(
+              `    Plan created: perp size=${plan.perpOrder.size}, spot size=${plan.spotOrder.size}`,
+            );
             log(`    Expected return: ${plan.expectedReturn.value}%`);
           } else {
             log(`    No plan created (insufficient balance or unprofitable)`);
           }
         } else {
-          log(`    Skipping (insufficient balance: perp=$${perpBalance}, spot=$${spotBalance})`);
+          log(
+            `    Skipping (insufficient balance: perp=$${perpBalance}, spot=$${spotBalance})`,
+          );
         }
       });
     });
   } else {
-    log('\n⚠️ Skipping Perp-Spot Arbitrage Flow tests (requires Hyperliquid testnet credentials)');
+    log(
+      '\n⚠️ Skipping Perp-Spot Arbitrage Flow tests (requires Hyperliquid testnet credentials)',
+    );
   }
 
   // ==================== SUMMARY ====================
@@ -371,7 +438,7 @@ async function runTests() {
   log('='.repeat(60));
   log(`Passed: ${passed}`);
   log(`Failed: ${failed}`);
-  
+
   if (failures.length > 0) {
     log('\nFailures:');
     for (const f of failures) {
@@ -387,4 +454,3 @@ runTests().catch((err) => {
   console.error('Test runner error:', err);
   process.exit(1);
 });
-

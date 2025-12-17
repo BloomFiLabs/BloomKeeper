@@ -4,10 +4,10 @@ import { ExchangeType } from '../value-objects/ExchangeConfig';
  * Factors that contribute to leverage calculation
  */
 export interface LeverageFactors {
-  volatilityScore: number;      // 0-1 (lower vol = higher score)
+  volatilityScore: number; // 0-1 (lower vol = higher score)
   liquidationRiskScore: number; // 0-1 (farther from liq = higher score)
-  liquidityScore: number;       // 0-1 (more OI = higher score)
-  winRateScore: number;         // 0-1 (higher win rate = higher score)
+  liquidityScore: number; // 0-1 (more OI = higher score)
+  winRateScore: number; // 0-1 (higher win rate = higher score)
 }
 
 /**
@@ -20,7 +20,7 @@ export interface LeverageRecommendation {
   optimalLeverage: number;
   maxSafeLeverage: number;
   factors: LeverageFactors;
-  compositeScore: number;       // 0-1 weighted score
+  compositeScore: number; // 0-1 weighted score
   shouldAdjust: boolean;
   reason: string;
   timestamp: Date;
@@ -32,10 +32,10 @@ export interface LeverageRecommendation {
 export interface VolatilityMetrics {
   symbol: string;
   exchange: ExchangeType;
-  dailyVolatility: number;      // Standard deviation of daily returns
-  hourlyVolatility: number;     // Standard deviation of hourly returns
-  maxDrawdown24h: number;       // Maximum drawdown in last 24 hours
-  atr: number;                  // Average True Range
+  dailyVolatility: number; // Standard deviation of daily returns
+  hourlyVolatility: number; // Standard deviation of hourly returns
+  maxDrawdown24h: number; // Maximum drawdown in last 24 hours
+  atr: number; // Average True Range
   lookbackHours: number;
   dataPoints: number;
   timestamp: Date;
@@ -52,7 +52,7 @@ export interface LiquidationRisk {
   liquidationPrice: number;
   distanceToLiquidation: number; // Percentage distance
   leverage: number;
-  isAtRisk: boolean;            // True if distance < 10%
+  isAtRisk: boolean; // True if distance < 10%
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 }
 
@@ -66,8 +66,8 @@ export interface LiquidityAssessment {
   positionSizeUsd: number;
   positionAsPercentOfOI: number;
   estimatedSlippage: number;
-  maxRecommendedSize: number;   // Max size to keep slippage < 0.5%
-  liquidityScore: number;       // 0-1
+  maxRecommendedSize: number; // Max size to keep slippage < 0.5%
+  liquidityScore: number; // 0-1
 }
 
 /**
@@ -88,11 +88,11 @@ export interface LeverageAlert {
  * Configuration for leverage calculation
  */
 export interface LeverageConfig {
-  minLeverage: number;          // Floor (default: 1x)
-  maxLeverage: number;          // Ceiling (default: 10x)
+  minLeverage: number; // Floor (default: 1x)
+  maxLeverage: number; // Ceiling (default: 10x)
   volatilityLookbackHours: number;
   leverageOverrides: Map<string, number>; // Per-symbol overrides
-  volatilityWeight: number;     // Weight in composite score
+  volatilityWeight: number; // Weight in composite score
   liquidationWeight: number;
   liquidityWeight: number;
   winRateWeight: number;
@@ -163,7 +163,9 @@ export interface IOptimalLeverageService {
     symbol: string,
     exchange: ExchangeType,
     currentLeverage: number,
-  ): Promise<{ shouldAdjust: boolean; reason: string; recommendedLeverage: number }>;
+  ): Promise<{
+    shouldAdjust: boolean;
+    reason: string;
+    recommendedLeverage: number;
+  }>;
 }
-
-

@@ -1,13 +1,19 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, Interval } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
-import { 
-  StrategyOrchestrator, 
-  FundingRateStrategy, 
+import {
+  StrategyOrchestrator,
+  FundingRateStrategy,
   StrategyExecutionResult,
 } from '../../domain/strategies';
-import { DeltaNeutralFundingStrategy, DeltaNeutralFundingConfig } from '../../domain/strategies/DeltaNeutralFundingStrategy';
-import { HyperLiquidDataProvider, HyperLiquidExecutor } from '../../infrastructure/adapters/hyperliquid';
+import {
+  DeltaNeutralFundingStrategy,
+  DeltaNeutralFundingConfig,
+} from '../../domain/strategies/DeltaNeutralFundingStrategy';
+import {
+  HyperLiquidDataProvider,
+  HyperLiquidExecutor,
+} from '../../infrastructure/adapters/hyperliquid';
 import { ethers } from 'ethers';
 import type { IMarketDataProvider } from '../../domain/ports/IMarketDataProvider';
 import type { IBlockchainAdapter } from '../../domain/ports/IBlockchainAdapter';
@@ -55,7 +61,7 @@ interface StrategyConfig {
 
 /**
  * StrategyBotService - Unified bot service that runs all strategies
- * 
+ *
  * This service:
  * 1. Loads strategy configurations
  * 2. Initializes appropriate strategy instances
@@ -71,37 +77,45 @@ export class StrategyBotService implements OnModuleInit {
 
   constructor(
     private readonly configService: ConfigService,
-    @Inject('IMarketDataProvider') private readonly marketData: IMarketDataProvider,
-    @Inject('IBlockchainAdapter') private readonly blockchain: IBlockchainAdapter,
+    @Inject('IMarketDataProvider')
+    private readonly marketData: IMarketDataProvider,
+    @Inject('IBlockchainAdapter')
+    private readonly blockchain: IBlockchainAdapter,
   ) {
     this.orchestrator = new StrategyOrchestrator();
   }
 
   async onModuleInit() {
     this.logger.log('🚀 Strategy Bot Service initializing...');
-    
+
     // Initialize HyperLiquid adapters if configured
     await this.initializeHyperLiquidAdapters();
-    
+
     // Load and register strategies
     await this.loadStrategies();
-    
-    this.logger.log(`✅ Strategy Bot Service ready with ${this.orchestrator.getStrategies().length} strategies`);
+
+    this.logger.log(
+      `✅ Strategy Bot Service ready with ${this.orchestrator.getStrategies().length} strategies`,
+    );
   }
 
   private async initializeHyperLiquidAdapters() {
-    const hyperLiquidRpc = this.configService.get<string>('HYPERLIQUID_RPC_URL');
-    
+    const hyperLiquidRpc = this.configService.get<string>(
+      'HYPERLIQUID_RPC_URL',
+    );
+
     // StrategyBotService is disabled - this method should not be called
     // All HyperLiquid functionality is now handled by PerpKeeperService
-    this.logger.warn('StrategyBotService is disabled - HyperLiquid adapters not initialized');
+    this.logger.warn(
+      'StrategyBotService is disabled - HyperLiquid adapters not initialized',
+    );
     return;
   }
 
   private async loadStrategies() {
     // Load from config file or environment
     const strategies = this.getStrategyConfigs();
-    
+
     for (const config of strategies) {
       try {
         if (config.type === 'funding') {
@@ -111,7 +125,9 @@ export class StrategyBotService implements OnModuleInit {
         }
         // LP strategies removed - not viable
       } catch (error) {
-        this.logger.error(`Failed to register strategy ${config.name}: ${error.message}`);
+        this.logger.error(
+          `Failed to register strategy ${config.name}: ${error.message}`,
+        );
       }
     }
   }
@@ -144,7 +160,9 @@ export class StrategyBotService implements OnModuleInit {
     const strategies: StrategyConfig[] = [];
 
     // HyperEVM Funding Strategy (if configured)
-    const fundingStrategyAddress = this.configService.get<string>('HYPEREVM_FUNDING_STRATEGY');
+    const fundingStrategyAddress = this.configService.get<string>(
+      'HYPEREVM_FUNDING_STRATEGY',
+    );
     if (fundingStrategyAddress && this.hyperLiquidDataProvider) {
       strategies.push({
         type: 'funding',
@@ -164,10 +182,11 @@ export class StrategyBotService implements OnModuleInit {
     return strategies;
   }
 
-
   private async registerFundingStrategy(config: StrategyConfig) {
     if (!this.hyperLiquidDataProvider || !this.hyperLiquidExecutor) {
-      this.logger.warn(`Cannot register ${config.name}: HyperLiquid adapters not available`);
+      this.logger.warn(
+        `Cannot register ${config.name}: HyperLiquid adapters not available`,
+      );
       return;
     }
 
@@ -189,17 +208,23 @@ export class StrategyBotService implements OnModuleInit {
     this.orchestrator.registerStrategy(strategy);
   }
 
-
   private async registerDeltaNeutralFundingStrategy(config: StrategyConfig) {
-    const hyperLiquidRpc = this.configService.get<string>('HYPERLIQUID_RPC_URL');
+    const hyperLiquidRpc = this.configService.get<string>(
+      'HYPERLIQUID_RPC_URL',
+    );
     const privateKey = this.configService.get<string>('PRIVATE_KEY');
-    
+
     if (!hyperLiquidRpc || !privateKey) {
-      this.logger.warn(`Cannot register ${config.name}: HyperEVM not configured (missing RPC or PRIVATE_KEY)`);
+      this.logger.warn(
+        `Cannot register ${config.name}: HyperEVM not configured (missing RPC or PRIVATE_KEY)`,
+      );
       return;
     }
 
-    if (!config.contractAddress || config.contractAddress === '0x0000000000000000000000000000000000000000') {
+    if (
+      !config.contractAddress ||
+      config.contractAddress === '0x0000000000000000000000000000000000000000'
+    ) {
       this.logger.warn(`Cannot register ${config.name}: Contract not deployed`);
       return;
     }
@@ -238,10 +263,16 @@ export class StrategyBotService implements OnModuleInit {
       },
     };
 
-    const strategy = new DeltaNeutralFundingStrategy(strategyConfig, provider, wallet);
+    const strategy = new DeltaNeutralFundingStrategy(
+      strategyConfig,
+      provider,
+      wallet,
+    );
     this.orchestrator.registerStrategy(strategy);
-    
-    this.logger.log(`✅ Registered Delta-Neutral Funding Strategy: ${config.name}`);
+
+    this.logger.log(
+      `✅ Registered Delta-Neutral Funding Strategy: ${config.name}`,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -251,23 +282,25 @@ export class StrategyBotService implements OnModuleInit {
   @Cron('*/30 * * * * *') // Every 30 seconds
   async executeStrategies() {
     const results = await this.orchestrator.executeAll();
-    
+
     // Log summary
-    const executed = results.filter(r => r.executed).length;
-    const errors = results.filter(r => r.error).length;
-    
+    const executed = results.filter((r) => r.executed).length;
+    const errors = results.filter((r) => r.error).length;
+
     if (executed > 0 || errors > 0) {
-      this.logger.log(`📊 Execution complete: ${executed} actions, ${errors} errors`);
+      this.logger.log(
+        `📊 Execution complete: ${executed} actions, ${errors} errors`,
+      );
     }
   }
 
   @Interval(60000) // Every minute
   async logMetrics() {
     const metrics = await this.orchestrator.getAllMetrics();
-    
+
     this.logger.log('');
     this.logger.log('📊 ─── Strategy Metrics ───');
-    
+
     for (const [name, data] of Object.entries(metrics)) {
       if (data.error) {
         this.logger.warn(`  ${name}: Error - ${data.error}`);
@@ -275,12 +308,12 @@ export class StrategyBotService implements OnModuleInit {
         const fundingRate = data.currentFundingRatePct || data.fundingRate;
         const apy = data.estimatedAPYPct || data.estimatedNetApyPct;
         const position = data.positionSide || data.positionInRangePct;
-        
+
         this.logger.log(
           `  ${name}: ` +
-          (fundingRate ? `Funding=${fundingRate} ` : '') +
-          (apy ? `APY=${apy} ` : '') +
-          (position ? `Position=${position}` : '')
+            (fundingRate ? `Funding=${fundingRate} ` : '') +
+            (apy ? `APY=${apy} ` : '') +
+            (position ? `Position=${position}` : ''),
         );
       }
     }
@@ -295,7 +328,7 @@ export class StrategyBotService implements OnModuleInit {
    * Get all registered strategies
    */
   getStrategies() {
-    return this.orchestrator.getStrategies().map(s => ({
+    return this.orchestrator.getStrategies().map((s) => ({
       name: s.name,
       chainId: s.chainId,
       contractAddress: s.contractAddress,
@@ -333,6 +366,3 @@ export class StrategyBotService implements OnModuleInit {
     return this.orchestrator.executeAll();
   }
 }
-
-
-

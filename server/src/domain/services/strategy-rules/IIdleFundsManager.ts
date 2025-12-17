@@ -42,7 +42,10 @@ export interface IIdleFundsManager {
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
     currentPositions: PerpPosition[],
     openOrders: Map<ExchangeType, string[]>,
-    failedOrders: Map<ExchangeType, Array<{ orderId: string; symbol: string; timestamp: Date }>>,
+    failedOrders: Map<
+      ExchangeType,
+      Array<{ orderId: string; symbol: string; timestamp: Date }>
+    >,
   ): Promise<Result<IdleFundsInfo[], DomainException>>;
 
   /**
@@ -80,8 +83,7 @@ export interface IIdleFundsManager {
   executeAllocations(
     allocations: IdleFundsAllocation[],
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
-  ): Promise<Result<{ allocated: number; allocations: number }, DomainException>>;
+  ): Promise<
+    Result<{ allocated: number; allocations: number }, DomainException>
+  >;
 }
-
-
-

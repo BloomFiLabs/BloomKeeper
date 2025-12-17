@@ -1,9 +1,9 @@
 /**
  * Integration tests for exchange adapters
- * 
+ *
  * These tests run against REAL APIs (testnets where available)
  * to validate adapter functionality with actual network conditions.
- * 
+ *
  * Run: pnpm run test:integration
  */
 
@@ -13,7 +13,11 @@ import { HyperliquidExchangeAdapter } from '../../infrastructure/adapters/hyperl
 import { LighterExchangeAdapter } from '../../infrastructure/adapters/lighter/LighterExchangeAdapter';
 import { ExtendedExchangeAdapter } from '../../infrastructure/adapters/extended/ExtendedExchangeAdapter';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
-import { OrderSide, OrderType, TimeInForce } from '../../domain/value-objects/PerpOrder';
+import {
+  OrderSide,
+  OrderType,
+  TimeInForce,
+} from '../../domain/value-objects/PerpOrder';
 import { PerpOrderRequest } from '../../domain/value-objects/PerpOrder';
 
 // Skip tests if credentials are not configured
@@ -77,7 +81,9 @@ describe('Exchange Adapter Integration Tests', () => {
       it('should fetch funding rate for ETH', async () => {
         const rate = await adapter.getFundingRate('ETH');
         expect(typeof rate).toBe('number');
-        console.log(`Hyperliquid ETH funding rate: ${(rate * 100).toFixed(4)}%`);
+        console.log(
+          `Hyperliquid ETH funding rate: ${(rate * 100).toFixed(4)}%`,
+        );
       });
 
       it('should get balance', async () => {
@@ -135,11 +141,11 @@ describe('Exchange Adapter Integration Tests', () => {
 
         // Verify it appears in open orders
         const openOrders = await adapter.getOpenOrders();
-        const ourOrder = openOrders.find(o => o.orderId === orderId);
+        const ourOrder = openOrders.find((o) => o.orderId === orderId);
         expect(ourOrder).toBeDefined();
 
         // Cancel it
-        const cancelled = await adapter.cancelOrder(orderId!, TEST_SYMBOL);
+        const cancelled = await adapter.cancelOrder(orderId, TEST_SYMBOL);
         expect(cancelled).toBe(true);
         orderId = null;
       });
@@ -184,11 +190,14 @@ describe('Exchange Adapter Integration Tests', () => {
         const orders = await adapter.getOpenOrders();
         expect(Array.isArray(orders)).toBe(true);
         console.log(`Lighter open orders: ${orders.length}`);
-        
+
         if (orders.length > 0) {
-          console.log('Order details:', orders.map(o => 
-            `${o.symbol} ${o.side} ${o.size}@${o.price}`
-          ).join(', '));
+          console.log(
+            'Order details:',
+            orders
+              .map((o) => `${o.symbol} ${o.side} ${o.size}@${o.price}`)
+              .join(', '),
+          );
         }
       });
     });
@@ -263,7 +272,7 @@ describe('Order Deduplication Tests', () => {
     }).compile();
 
     configService = module.get<ConfigService>(ConfigService);
-    
+
     if (process.env.LIGHTER_API_KEY) {
       lighterAdapter = new LighterExchangeAdapter(configService);
     }
@@ -273,50 +282,52 @@ describe('Order Deduplication Tests', () => {
     await module?.close();
   });
 
-  skipIfNoCredentials('LIGHTER_API_KEY')('Lighter Open Orders Detection', () => {
-    it('should detect existing open orders', async () => {
-      const orders = await lighterAdapter.getOpenOrders();
-      
-      console.log(`\n=== Lighter Open Orders ===`);
-      console.log(`Total: ${orders.length}`);
-      
-      if (orders.length > 0) {
-        // Group by symbol and side
-        const grouped: Record<string, typeof orders> = {};
-        for (const o of orders) {
-          const key = `${o.symbol}-${o.side}`;
-          if (!grouped[key]) grouped[key] = [];
-          grouped[key].push(o);
-        }
+  skipIfNoCredentials('LIGHTER_API_KEY')(
+    'Lighter Open Orders Detection',
+    () => {
+      it('should detect existing open orders', async () => {
+        const orders = await lighterAdapter.getOpenOrders();
 
-        for (const [key, group] of Object.entries(grouped)) {
-          if (group.length > 1) {
-            console.log(`⚠️ DUPLICATE: ${key} has ${group.length} orders`);
-            for (const o of group) {
-              console.log(`   - ${o.size}@${o.price} (ID: ${o.orderId})`);
+        console.log(`\n=== Lighter Open Orders ===`);
+        console.log(`Total: ${orders.length}`);
+
+        if (orders.length > 0) {
+          // Group by symbol and side
+          const grouped: Record<string, typeof orders> = {};
+          for (const o of orders) {
+            const key = `${o.symbol}-${o.side}`;
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(o);
+          }
+
+          for (const [key, group] of Object.entries(grouped)) {
+            if (group.length > 1) {
+              console.log(`⚠️ DUPLICATE: ${key} has ${group.length} orders`);
+              for (const o of group) {
+                console.log(`   - ${o.size}@${o.price} (ID: ${o.orderId})`);
+              }
+            } else {
+              console.log(`✓ ${key}: 1 order`);
             }
-          } else {
-            console.log(`✓ ${key}: 1 order`);
           }
         }
-      }
 
-      expect(Array.isArray(orders)).toBe(true);
-    });
+        expect(Array.isArray(orders)).toBe(true);
+      });
 
-    it('should correctly parse order details', async () => {
-      const orders = await lighterAdapter.getOpenOrders();
-      
-      for (const order of orders) {
-        expect(order.orderId).toBeDefined();
-        expect(order.symbol).toBeDefined();
-        expect(['buy', 'sell']).toContain(order.side);
-        expect(order.price).toBeGreaterThan(0);
-        expect(order.size).toBeGreaterThan(0);
-        expect(order.filledSize).toBeGreaterThanOrEqual(0);
-        expect(order.timestamp).toBeInstanceOf(Date);
-      }
-    });
-  });
+      it('should correctly parse order details', async () => {
+        const orders = await lighterAdapter.getOpenOrders();
+
+        for (const order of orders) {
+          expect(order.orderId).toBeDefined();
+          expect(order.symbol).toBeDefined();
+          expect(['buy', 'sell']).toContain(order.side);
+          expect(order.price).toBeGreaterThan(0);
+          expect(order.size).toBeGreaterThan(0);
+          expect(order.filledSize).toBeGreaterThanOrEqual(0);
+          expect(order.timestamp).toBeInstanceOf(Date);
+        }
+      });
+    },
+  );
 });
-

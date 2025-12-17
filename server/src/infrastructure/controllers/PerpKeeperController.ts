@@ -1,4 +1,13 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, Optional } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Body,
+  Param,
+  Query,
+  Optional,
+} from '@nestjs/common';
 import { PerpKeeperOrchestrator } from '../../domain/services/PerpKeeperOrchestrator';
 import { FundingArbitrageStrategy } from '../../domain/services/FundingArbitrageStrategy';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
@@ -237,7 +246,7 @@ export class PerpKeeperController {
 
     // Get base diagnostics
     const diagnostics = this.diagnosticsService.getDiagnostics();
-    
+
     // Add execution lock diagnostics if available
     if (this.executionLockService) {
       const lockDiagnostics = this.executionLockService.getFullDiagnostics();
@@ -254,11 +263,11 @@ export class PerpKeeperController {
 
     return diagnostics;
   }
-  
+
   /**
    * Get execution lock status
    * GET /keeper/locks
-   * 
+   *
    * Returns the current state of all execution locks and active orders.
    * Useful for debugging race conditions and concurrent execution issues.
    */
@@ -270,7 +279,7 @@ export class PerpKeeperController {
         timestamp: new Date(),
       };
     }
-    
+
     return {
       ...this.executionLockService.getFullDiagnostics(),
       timestamp: new Date(),
@@ -280,7 +289,7 @@ export class PerpKeeperController {
   /**
    * Get market quality stats and blacklisted markets
    * GET /keeper/market-quality
-   * 
+   *
    * Returns market execution quality statistics and dynamically blacklisted markets.
    */
   @Get('market-quality')
@@ -302,18 +311,19 @@ export class PerpKeeperController {
    * Manually blacklist a market
    * POST /keeper/market-quality/blacklist
    * Body: { symbol: string, exchange?: string, reason?: string, durationMinutes?: number }
-   * 
+   *
    * Adds a market to the blacklist. If exchange is not provided, blacklists the symbol on all exchanges.
    * If durationMinutes is not provided, the blacklist is permanent.
    */
   @Post('market-quality/blacklist')
   async blacklistMarket(
-    @Body() body: { 
-      symbol: string; 
-      exchange?: string; 
-      reason?: string; 
+    @Body()
+    body: {
+      symbol: string;
+      exchange?: string;
+      reason?: string;
       durationMinutes?: number;
-    }
+    },
   ) {
     if (!this.marketQualityFilter) {
       return {
@@ -329,7 +339,9 @@ export class PerpKeeperController {
     }
 
     const exchangeType = exchange ? (exchange as ExchangeType) : undefined;
-    const durationMs = durationMinutes ? durationMinutes * 60 * 1000 : undefined;
+    const durationMs = durationMinutes
+      ? durationMinutes * 60 * 1000
+      : undefined;
 
     this.marketQualityFilter.addToBlacklist(
       symbol.toUpperCase(),
@@ -350,7 +362,7 @@ export class PerpKeeperController {
    * Remove a market from the blacklist
    * DELETE /keeper/market-quality/blacklist/:symbol
    * Query: exchange? - optional exchange to remove from specific exchange
-   * 
+   *
    * Removes a market from the blacklist.
    */
   @Delete('market-quality/blacklist/:symbol')
@@ -373,7 +385,7 @@ export class PerpKeeperController {
 
     return {
       success: removed,
-      message: removed 
+      message: removed
         ? `Removed ${symbol}${exchange ? ` on ${exchange}` : ''} from blacklist`
         : `${symbol}${exchange ? ` on ${exchange}` : ''} was not blacklisted`,
       timestamp: new Date(),
@@ -403,7 +415,10 @@ export class PerpKeeperController {
 
     return {
       ...stats,
-      isBlacklisted: this.marketQualityFilter.isBlacklisted(symbol.toUpperCase(), exchange as ExchangeType),
+      isBlacklisted: this.marketQualityFilter.isBlacklisted(
+        symbol.toUpperCase(),
+        exchange as ExchangeType,
+      ),
       timestamp: new Date(),
     };
   }

@@ -13,4 +13,3 @@ export class HurstExponent {
     return this.value < 0.45;
   }
 }
-

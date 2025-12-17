@@ -11,13 +11,8 @@ import {
   OrderType,
   TimeInForce,
 } from '../../value-objects/PerpOrder';
-import {
-  PerpOrderResponse,
-  OrderStatus,
-} from '../../value-objects/PerpOrder';
-import {
-  ArbitrageExecutionResult,
-} from '../FundingArbitrageStrategy';
+import { PerpOrderResponse, OrderStatus } from '../../value-objects/PerpOrder';
+import { ArbitrageExecutionResult } from '../FundingArbitrageStrategy';
 import { AsymmetricFill } from './IPositionManager';
 import { IOrderExecutor } from './IOrderExecutor';
 
@@ -31,9 +26,19 @@ describe('PositionManager', () => {
     config = StrategyConfig.withDefaults();
 
     mockOrderExecutor = {
-      waitForOrderFill: jest.fn().mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
-      ),
+      waitForOrderFill: jest
+        .fn()
+        .mockResolvedValue(
+          new PerpOrderResponse(
+            'order-1',
+            OrderStatus.FILLED,
+            'ETHUSDT',
+            OrderSide.LONG,
+            1.0,
+            1.0,
+            3000,
+          ),
+        ),
     } as any;
 
     // Create mock adapters
@@ -89,12 +94,12 @@ describe('PositionManager', () => {
         ),
       ];
 
-      mockAdapters.get(ExchangeType.ASTER)!.getPositions.mockResolvedValue(
-        asterPositions,
-      );
-      mockAdapters.get(ExchangeType.LIGHTER)!.getPositions.mockResolvedValue(
-        lighterPositions,
-      );
+      mockAdapters
+        .get(ExchangeType.ASTER)!
+        .getPositions.mockResolvedValue(asterPositions);
+      mockAdapters
+        .get(ExchangeType.LIGHTER)!
+        .getPositions.mockResolvedValue(lighterPositions);
 
       const result = await manager.getAllPositions(mockAdapters);
 
@@ -107,10 +112,12 @@ describe('PositionManager', () => {
     });
 
     it('should handle adapter errors gracefully', async () => {
-      mockAdapters.get(ExchangeType.ASTER)!.getPositions.mockRejectedValue(
-        new Error('API error'),
-      );
-      mockAdapters.get(ExchangeType.LIGHTER)!.getPositions.mockResolvedValue([]);
+      mockAdapters
+        .get(ExchangeType.ASTER)!
+        .getPositions.mockRejectedValue(new Error('API error'));
+      mockAdapters
+        .get(ExchangeType.LIGHTER)!
+        .getPositions.mockResolvedValue([]);
 
       const result = await manager.getAllPositions(mockAdapters);
 
@@ -123,7 +130,9 @@ describe('PositionManager', () => {
 
     it('should return empty array when no positions exist', async () => {
       mockAdapters.get(ExchangeType.ASTER)!.getPositions.mockResolvedValue([]);
-      mockAdapters.get(ExchangeType.LIGHTER)!.getPositions.mockResolvedValue([]);
+      mockAdapters
+        .get(ExchangeType.LIGHTER)!
+        .getPositions.mockResolvedValue([]);
 
       const result = await manager.getAllPositions(mockAdapters);
 
@@ -147,17 +156,38 @@ describe('PositionManager', () => {
     it('should close all positions successfully', async () => {
       const positions = [
         createMockPosition('ETHUSDT', ExchangeType.ASTER, OrderSide.LONG, 1.0),
-        createMockPosition('BTCUSDT', ExchangeType.LIGHTER, OrderSide.SHORT, 0.5),
+        createMockPosition(
+          'BTCUSDT',
+          ExchangeType.LIGHTER,
+          OrderSide.SHORT,
+          0.5,
+        ),
       ];
 
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       const lighterAdapter = mockAdapters.get(ExchangeType.LIGHTER)!;
 
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('close-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'close-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       lighterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('close-2', OrderStatus.FILLED, 'BTCUSDT', OrderSide.LONG, 0.5, 0.5, 50000),
+        new PerpOrderResponse(
+          'close-2',
+          OrderStatus.FILLED,
+          'BTCUSDT',
+          OrderSide.LONG,
+          0.5,
+          0.5,
+          50000,
+        ),
       );
 
       // Mock getPositions to return empty after close
@@ -199,7 +229,15 @@ describe('PositionManager', () => {
 
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('close-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'close-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       asterAdapter.getPositions.mockResolvedValue([]);
 
@@ -234,7 +272,16 @@ describe('PositionManager', () => {
 
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('close-1', OrderStatus.REJECTED, 'ETHUSDT', OrderSide.SHORT, undefined, undefined, undefined, 'Insufficient balance'),
+        new PerpOrderResponse(
+          'close-1',
+          OrderStatus.REJECTED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          undefined,
+          undefined,
+          undefined,
+          'Insufficient balance',
+        ),
       );
       asterAdapter.getPositions.mockResolvedValue([position]); // Position still exists
 
@@ -273,13 +320,26 @@ describe('PositionManager', () => {
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       // First close attempt fails
       asterAdapter.placeOrder.mockResolvedValueOnce(
-        new PerpOrderResponse('close-1', OrderStatus.SUBMITTED, 'ETHUSDT', OrderSide.SHORT),
+        new PerpOrderResponse(
+          'close-1',
+          OrderStatus.SUBMITTED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+        ),
       );
       // Position still exists after first attempt
       asterAdapter.getPositions.mockResolvedValueOnce([position]);
       // Final fallback succeeds
       asterAdapter.placeOrder.mockResolvedValueOnce(
-        new PerpOrderResponse('close-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'close-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       // Position closed after fallback
       asterAdapter.getPositions.mockResolvedValueOnce([]);
@@ -387,7 +447,15 @@ describe('PositionManager', () => {
 
       asterAdapter.cancelOrder.mockResolvedValue(undefined);
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('market-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'market-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
 
       const result: ArbitrageExecutionResult = {
@@ -400,11 +468,18 @@ describe('PositionManager', () => {
         timestamp: new Date(),
       };
 
-      const handleResult = await manager.handleAsymmetricFills(mockAdapters, fills, result);
+      const handleResult = await manager.handleAsymmetricFills(
+        mockAdapters,
+        fills,
+        result,
+      );
 
       expect(handleResult.isSuccess).toBe(true);
       // Should cancel GTC order and place market order
-      expect(asterAdapter.cancelOrder).toHaveBeenCalledWith('short-123', 'ETHUSDT');
+      expect(asterAdapter.cancelOrder).toHaveBeenCalledWith(
+        'short-123',
+        'ETHUSDT',
+      );
       expect(asterAdapter.placeOrder).toHaveBeenCalled();
     }, 10000);
 
@@ -418,7 +493,15 @@ describe('PositionManager', () => {
 
       asterAdapter.cancelOrder.mockResolvedValue(undefined);
       lighterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('close-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'close-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
 
       const result: ArbitrageExecutionResult = {
@@ -431,7 +514,11 @@ describe('PositionManager', () => {
         timestamp: new Date(),
       };
 
-      const handleResult = await manager.handleAsymmetricFills(mockAdapters, fills, result);
+      const handleResult = await manager.handleAsymmetricFills(
+        mockAdapters,
+        fills,
+        result,
+      );
 
       expect(handleResult.isSuccess).toBe(true);
       // Should cancel order and close position
@@ -453,7 +540,11 @@ describe('PositionManager', () => {
         timestamp: new Date(),
       };
 
-      const handleResult = await manager.handleAsymmetricFills(emptyAdapters, fills, result);
+      const handleResult = await manager.handleAsymmetricFills(
+        emptyAdapters,
+        fills,
+        result,
+      );
 
       expect(handleResult.isSuccess).toBe(true);
       // Should handle gracefully - errors are logged but Result is success
@@ -476,7 +567,11 @@ describe('PositionManager', () => {
         timestamp: new Date(),
       };
 
-      const handleResult = await manager.handleAsymmetricFills(mockAdapters, [recentFill], result);
+      const handleResult = await manager.handleAsymmetricFills(
+        mockAdapters,
+        [recentFill],
+        result,
+      );
 
       expect(handleResult.isSuccess).toBe(true);
       // Should not process fills within timeout
@@ -489,7 +584,15 @@ describe('PositionManager', () => {
     it('should close a filled position with market order', async () => {
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('close-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'close-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
 
       const result: ArbitrageExecutionResult = {
@@ -525,7 +628,16 @@ describe('PositionManager', () => {
     it('should handle order failures', async () => {
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('close-1', OrderStatus.REJECTED, 'ETHUSDT', OrderSide.SHORT, undefined, undefined, undefined, 'Insufficient balance'),
+        new PerpOrderResponse(
+          'close-1',
+          OrderStatus.REJECTED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          undefined,
+          undefined,
+          undefined,
+          'Insufficient balance',
+        ),
       );
 
       const result: ArbitrageExecutionResult = {

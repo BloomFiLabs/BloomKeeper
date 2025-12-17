@@ -2,7 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { AsterExchangeAdapter } from './AsterExchangeAdapter';
 import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
-import { PerpOrderRequest, OrderSide, OrderType } from '../../../domain/value-objects/PerpOrder';
+import {
+  PerpOrderRequest,
+  OrderSide,
+  OrderType,
+} from '../../../domain/value-objects/PerpOrder';
 import axios from 'axios';
 import * as ethers from 'ethers';
 
@@ -34,7 +38,9 @@ jest.mock('ethers', () => {
       },
       keccak256: jest.fn().mockReturnValue('0x' + '3'.repeat(64)),
       getBytes: jest.fn().mockImplementation((x: string) => new Uint8Array(32)),
-      toUtf8Bytes: jest.fn().mockImplementation((x: string) => new Uint8Array(x.length)),
+      toUtf8Bytes: jest
+        .fn()
+        .mockImplementation((x: string) => new Uint8Array(x.length)),
       concat: jest.fn().mockReturnValue(new Uint8Array(64)),
       Signature: {
         from: jest.fn().mockReturnValue({
@@ -57,7 +63,8 @@ describe('AsterExchangeAdapter', () => {
           ASTER_BASE_URL: 'https://fapi.asterdex.com',
           ASTER_USER: '0x1111111111111111111111111111111111111111',
           ASTER_SIGNER: '0x2222222222222222222222222222222222222222',
-          ASTER_PRIVATE_KEY: '0x1234567890123456789012345678901234567890123456789012345678901234',
+          ASTER_PRIVATE_KEY:
+            '0x1234567890123456789012345678901234567890123456789012345678901234',
         };
         return config[key];
       }),
@@ -104,7 +111,7 @@ describe('AsterExchangeAdapter', () => {
       (adapter as any).client = mockClient;
 
       const price = await adapter.getMarkPrice('ETHUSDT');
-      expect(price).toBe(3000.50);
+      expect(price).toBe(3000.5);
     });
   });
 
@@ -167,4 +174,3 @@ describe('AsterExchangeAdapter', () => {
     });
   });
 });
-

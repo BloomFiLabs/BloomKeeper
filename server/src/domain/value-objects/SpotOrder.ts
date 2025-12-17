@@ -95,7 +95,10 @@ export class SpotOrderResponse {
    * Returns true if the order is still pending
    */
   isPending(): boolean {
-    return this.status === OrderStatus.PENDING || this.status === OrderStatus.SUBMITTED;
+    return (
+      this.status === OrderStatus.PENDING ||
+      this.status === OrderStatus.SUBMITTED
+    );
   }
 
   /**
@@ -109,8 +112,3 @@ export class SpotOrderResponse {
     );
   }
 }
-
-
-
-
-

@@ -11,4 +11,3 @@ import { UniswapGraphAdapter } from './UniswapGraphAdapter';
   exports: ['IMarketDataProvider'],
 })
 export class GraphModule {}
-

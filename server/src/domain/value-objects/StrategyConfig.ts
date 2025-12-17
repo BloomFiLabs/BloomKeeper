@@ -43,19 +43,24 @@ export class StrategyConfig {
     // Perp-spot configuration
     public readonly enablePerpSpotHedging: boolean = true,
     public readonly perpSpotMaxPositionSizeUsd: number = 10000,
-    public readonly deltaNeutralityTolerance: Percentage = Percentage.fromDecimal(0.01), // 1% tolerance
+    public readonly deltaNeutralityTolerance: Percentage = Percentage.fromDecimal(
+      0.01,
+    ), // 1% tolerance
     public readonly preferPerpSpotOverPerpPerp: boolean = false, // Automatic selection
   ) {
     this._exchangeFeeRates = new Map(exchangeFeeRates);
     this._takerFeeRates = new Map(takerFeeRates);
     this._leverageOverrides = new Map(leverageOverrides);
-    
+
     // Validation
     if (minPositionSizeUsd <= 0) {
       throw new Error('minPositionSizeUsd must be greater than 0');
     }
 
-    if (balanceUsagePercent.toDecimal() <= 0 || balanceUsagePercent.toDecimal() > 1) {
+    if (
+      balanceUsagePercent.toDecimal() <= 0 ||
+      balanceUsagePercent.toDecimal() > 1
+    ) {
       throw new Error('balanceUsagePercent must be between 0 and 1');
     }
 
@@ -68,7 +73,9 @@ export class StrategyConfig {
     }
 
     if (maxLeverage < minLeverage) {
-      throw new Error('maxLeverage must be greater than or equal to minLeverage');
+      throw new Error(
+        'maxLeverage must be greater than or equal to minLeverage',
+      );
     }
 
     if (volatilityLookbackHours < 1) {
@@ -95,7 +102,10 @@ export class StrategyConfig {
       throw new Error('minFillBalance must be between 0 and 1');
     }
 
-    if (balanceUsagePercent.toDecimal() <= 0 || balanceUsagePercent.toDecimal() > 1) {
+    if (
+      balanceUsagePercent.toDecimal() <= 0 ||
+      balanceUsagePercent.toDecimal() > 1
+    ) {
       throw new Error('balanceUsagePercent must be between 0 and 1');
     }
   }
@@ -147,7 +157,11 @@ export class StrategyConfig {
    * Get leverage for a specific symbol (uses override if available)
    */
   getLeverageForSymbol(symbol: string): number {
-    const normalized = symbol.toUpperCase().replace('USDT', '').replace('USDC', '').replace('-PERP', '');
+    const normalized = symbol
+      .toUpperCase()
+      .replace('USDT', '')
+      .replace('USDC', '')
+      .replace('-PERP', '');
     return this._leverageOverrides.get(normalized) ?? this.leverage;
   }
 
@@ -159,14 +173,25 @@ export class StrategyConfig {
     const leverage = parseFloat(
       configService.get<string>('KEEPER_LEVERAGE') || '2.0',
     );
-    const useDynamicLeverage = configService.get<string>('USE_DYNAMIC_LEVERAGE') === 'true';
-    const minLeverage = parseFloat(configService.get<string>('LEVERAGE_MIN') || '1');
-    const maxLeverage = parseFloat(configService.get<string>('LEVERAGE_MAX') || '10');
-    const volatilityLookbackHours = parseInt(configService.get<string>('LEVERAGE_LOOKBACK_HOURS') || '24');
+    const useDynamicLeverage =
+      configService.get<string>('USE_DYNAMIC_LEVERAGE') === 'true';
+    const minLeverage = parseFloat(
+      configService.get<string>('LEVERAGE_MIN') || '1',
+    );
+    const maxLeverage = parseFloat(
+      configService.get<string>('LEVERAGE_MAX') || '10',
+    );
+    const volatilityLookbackHours = parseInt(
+      configService.get<string>('LEVERAGE_LOOKBACK_HOURS') || '24',
+    );
 
     // Volume-based liquidity filters (prevents trading illiquid pairs)
-    const min24hVolumeUsd = parseFloat(configService.get<string>('MIN_24H_VOLUME_USD') || '500000');
-    const maxPositionToVolumePercent = parseFloat(configService.get<string>('MAX_POSITION_TO_VOLUME_PERCENT') || '5');
+    const min24hVolumeUsd = parseFloat(
+      configService.get<string>('MIN_24H_VOLUME_USD') || '500000',
+    );
+    const maxPositionToVolumePercent = parseFloat(
+      configService.get<string>('MAX_POSITION_TO_VOLUME_PERCENT') || '5',
+    );
 
     // Parse leverage overrides from env (format: "BTC:5,ETH:3,DOGE:2")
     const leverageOverrides = new Map<string, number>();
@@ -181,12 +206,18 @@ export class StrategyConfig {
     }
 
     // Perp-spot configuration
-    const enablePerpSpotHedging = configService.get<string>('PERP_SPOT_ENABLED') !== 'false';
-    const perpSpotMaxPositionSizeUsd = parseFloat(configService.get<string>('PERP_SPOT_MAX_POSITION_SIZE_USD') || '10000');
-    const deltaNeutralityTolerance = Percentage.fromDecimal(
-      parseFloat(configService.get<string>('PERP_SPOT_DELTA_TOLERANCE') || '0.01')
+    const enablePerpSpotHedging =
+      configService.get<string>('PERP_SPOT_ENABLED') !== 'false';
+    const perpSpotMaxPositionSizeUsd = parseFloat(
+      configService.get<string>('PERP_SPOT_MAX_POSITION_SIZE_USD') || '10000',
     );
-    const preferPerpSpotOverPerpPerp = configService.get<string>('PREFER_PERP_SPOT_OVER_PERP_PERP') === 'true';
+    const deltaNeutralityTolerance = Percentage.fromDecimal(
+      parseFloat(
+        configService.get<string>('PERP_SPOT_DELTA_TOLERANCE') || '0.01',
+      ),
+    );
+    const preferPerpSpotOverPerpPerp =
+      configService.get<string>('PREFER_PERP_SPOT_OVER_PERP_PERP') === 'true';
 
     return StrategyConfig.withDefaults(
       leverage,
@@ -268,8 +299,3 @@ export class StrategyConfig {
     );
   }
 }
-
-
-
-
-

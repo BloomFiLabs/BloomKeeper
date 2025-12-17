@@ -33,7 +33,7 @@ export interface PositionFilterResult {
 
 /**
  * PositionStickinessManager - Prevents unnecessary position churn
- * 
+ *
  * Evaluates whether existing positions should be kept vs closed and replaced.
  * Considers:
  * - Current funding rate spread
@@ -119,7 +119,7 @@ export class PositionStickinessManager {
       if (!longRate || !shortRate) {
         this.logger.debug(
           `Cannot get current spread for ${symbol}: ` +
-          `longRate=${longRate?.currentRate ?? 'missing'}, shortRate=${shortRate?.currentRate ?? 'missing'}`,
+            `longRate=${longRate?.currentRate ?? 'missing'}, shortRate=${shortRate?.currentRate ?? 'missing'}`,
         );
         return null;
       }
@@ -161,8 +161,8 @@ export class PositionStickinessManager {
 
     this.logger.debug(
       `🔍 Evaluating position ${symbol} (${longExchange}/${shortExchange}): ` +
-      `spread=${currentSpread !== null ? (currentSpread * 100).toFixed(4) + '%' : 'unknown'}, ` +
-      `age=${positionAgeHours !== null ? positionAgeHours.toFixed(1) + 'h' : 'unknown'}`,
+        `spread=${currentSpread !== null ? (currentSpread * 100).toFixed(4) + '%' : 'unknown'}, ` +
+        `age=${positionAgeHours !== null ? positionAgeHours.toFixed(1) + 'h' : 'unknown'}`,
     );
 
     // Case 1: Can't get current spread - be conservative and keep
@@ -261,7 +261,9 @@ export class PositionStickinessManager {
 
       reasons.set(symbol, reason);
 
-      const positionsForSymbol = positionsToClose.filter((p) => p.symbol === symbol);
+      const positionsForSymbol = positionsToClose.filter(
+        (p) => p.symbol === symbol,
+      );
       if (shouldKeep) {
         toKeep.push(...positionsForSymbol);
         this.logger.log(`🔒 KEEPING position ${symbol}: ${reason}`);
@@ -285,4 +287,3 @@ export class PositionStickinessManager {
     return `${symbol}-${longExchange}-${shortExchange}`;
   }
 }
-

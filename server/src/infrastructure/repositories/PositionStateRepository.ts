@@ -7,7 +7,12 @@ import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 /**
  * Position state status
  */
-export type PositionStatus = 'PENDING' | 'COMPLETE' | 'SINGLE_LEG' | 'CLOSED' | 'ERROR';
+export type PositionStatus =
+  | 'PENDING'
+  | 'COMPLETE'
+  | 'SINGLE_LEG'
+  | 'CLOSED'
+  | 'ERROR';
 
 /**
  * Persisted position state
@@ -53,7 +58,7 @@ interface SerializedPositionState {
 
 /**
  * PositionStateRepository - Persists position state to file for recovery after restarts
- * 
+ *
  * This enables:
  * - Recovery of in-flight positions after service restart
  * - Detection of orphaned single-leg positions
@@ -68,8 +73,15 @@ export class PositionStateRepository implements OnModuleInit {
   private pendingSave = false;
 
   constructor(private readonly configService: ConfigService) {
-    const dataDir = this.configService.get<string>('POSITION_STATE_DIR', 'data');
-    this.dataFilePath = path.join(process.cwd(), dataDir, 'position-state.json');
+    const dataDir = this.configService.get<string>(
+      'POSITION_STATE_DIR',
+      'data',
+    );
+    this.dataFilePath = path.join(
+      process.cwd(),
+      dataDir,
+      'position-state.json',
+    );
   }
 
   async onModuleInit(): Promise<void> {
@@ -79,7 +91,11 @@ export class PositionStateRepository implements OnModuleInit {
   /**
    * Generate a unique position ID
    */
-  generateId(symbol: string, longExchange: ExchangeType, shortExchange: ExchangeType): string {
+  generateId(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+  ): string {
     return `${symbol}-${longExchange}-${shortExchange}-${Date.now()}`;
   }
 
@@ -90,14 +106,17 @@ export class PositionStateRepository implements OnModuleInit {
     state.updatedAt = new Date();
     this.positions.set(state.id, state);
     await this.persistToFile();
-    
+
     this.logger.debug(`Saved position state: ${state.id} (${state.status})`);
   }
 
   /**
    * Update an existing position state
    */
-  async update(id: string, updates: Partial<PersistedPositionState>): Promise<void> {
+  async update(
+    id: string,
+    updates: Partial<PersistedPositionState>,
+  ): Promise<void> {
     const existing = this.positions.get(id);
     if (!existing) {
       this.logger.warn(`Cannot update non-existent position: ${id}`);
@@ -111,7 +130,7 @@ export class PositionStateRepository implements OnModuleInit {
     };
     this.positions.set(id, updated);
     await this.persistToFile();
-    
+
     this.logger.debug(`Updated position state: ${id} -> ${updated.status}`);
   }
 
@@ -133,21 +152,21 @@ export class PositionStateRepository implements OnModuleInit {
    * Get positions by status
    */
   getByStatus(status: PositionStatus): PersistedPositionState[] {
-    return this.getAll().filter(p => p.status === status);
+    return this.getAll().filter((p) => p.status === status);
   }
 
   /**
    * Get positions for a specific symbol
    */
   getBySymbol(symbol: string): PersistedPositionState[] {
-    return this.getAll().filter(p => p.symbol === symbol);
+    return this.getAll().filter((p) => p.symbol === symbol);
   }
 
   /**
    * Get active (non-closed) positions
    */
   getActive(): PersistedPositionState[] {
-    return this.getAll().filter(p => p.status !== 'CLOSED');
+    return this.getAll().filter((p) => p.status !== 'CLOSED');
   }
 
   /**
@@ -177,7 +196,11 @@ export class PositionStateRepository implements OnModuleInit {
   /**
    * Mark a position as single-leg
    */
-  async markSingleLeg(id: string, longFilled: boolean, shortFilled: boolean): Promise<void> {
+  async markSingleLeg(
+    id: string,
+    longFilled: boolean,
+    shortFilled: boolean,
+  ): Promise<void> {
     await this.update(id, {
       status: 'SINGLE_LEG',
       longFilled,
@@ -264,7 +287,9 @@ export class PositionStateRepository implements OnModuleInit {
       }
 
       if (!fs.existsSync(this.dataFilePath)) {
-        this.logger.log('No existing position state file found, starting fresh');
+        this.logger.log(
+          'No existing position state file found, starting fresh',
+        );
         return;
       }
 
@@ -283,13 +308,15 @@ export class PositionStateRepository implements OnModuleInit {
         this.positions.set(position.id, position);
       }
 
-      this.logger.log(`Loaded ${this.positions.size} position states from file`);
-      
+      this.logger.log(
+        `Loaded ${this.positions.size} position states from file`,
+      );
+
       // Log summary
       const counts = this.getStatusCounts();
       this.logger.log(
         `Position status: PENDING=${counts.PENDING}, COMPLETE=${counts.COMPLETE}, ` +
-        `SINGLE_LEG=${counts.SINGLE_LEG}, CLOSED=${counts.CLOSED}, ERROR=${counts.ERROR}`
+          `SINGLE_LEG=${counts.SINGLE_LEG}, CLOSED=${counts.CLOSED}, ERROR=${counts.ERROR}`,
       );
     } catch (error: any) {
       this.logger.error(`Failed to load position state file: ${error.message}`);
@@ -317,7 +344,9 @@ export class PositionStateRepository implements OnModuleInit {
         fs.mkdirSync(dir, { recursive: true });
       }
 
-      const serialized: SerializedPositionState[] = Array.from(this.positions.values()).map(p => ({
+      const serialized: SerializedPositionState[] = Array.from(
+        this.positions.values(),
+      ).map((p) => ({
         ...p,
         longExchange: p.longExchange,
         shortExchange: p.shortExchange,
@@ -342,5 +371,3 @@ export class PositionStateRepository implements OnModuleInit {
     }
   }
 }
-
-

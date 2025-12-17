@@ -45,7 +45,10 @@ export interface IHistoricalFundingRateService {
   /**
    * Get historical funding rate data for a symbol/exchange pair
    */
-  getHistoricalData(symbol: string, exchange: ExchangeType): HistoricalFundingRate[];
+  getHistoricalData(
+    symbol: string,
+    exchange: ExchangeType,
+  ): HistoricalFundingRate[];
 
   /**
    * Get historical metrics for a symbol/exchange pair
@@ -76,13 +79,21 @@ export interface IHistoricalFundingRateService {
   /**
    * Get average rate for a specific time period
    */
-  getAverageRateForPeriod(symbol: string, exchange: ExchangeType, days: number): number | null;
+  getAverageRateForPeriod(
+    symbol: string,
+    exchange: ExchangeType,
+    days: number,
+  ): number | null;
 
   /**
    * Get weighted average rate using multiple time periods
    * Weighting: Monthly (40%) + Weekly (30%) + Daily (20%) + Current (10%)
    */
-  getWeightedAverageRate(symbol: string, exchange: ExchangeType, currentRate: number): number;
+  getWeightedAverageRate(
+    symbol: string,
+    exchange: ExchangeType,
+    currentRate: number,
+  ): number;
 
   /**
    * Get weighted average spread between two exchanges

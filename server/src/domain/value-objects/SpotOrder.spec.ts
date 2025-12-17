@@ -110,4 +110,3 @@ describe('SpotOrderResponse', () => {
     }).toThrow('Filled size cannot be negative');
   });
 });
-

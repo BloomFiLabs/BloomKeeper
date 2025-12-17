@@ -8,4 +8,3 @@ export class Candle {
     public readonly volume: number,
   ) {}
 }
-

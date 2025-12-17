@@ -7,7 +7,6 @@ export class DriftVelocity {
   // The previous 5.0 (500%) was causing the optimizer to choose absurdly wide ranges
   // Most crypto assets have <20% annual drift in practice
   get clampedValue(): number {
-    return Math.min(0.20, Math.abs(this.value)) * Math.sign(this.value); // Cap at 20% annual
+    return Math.min(0.2, Math.abs(this.value)) * Math.sign(this.value); // Cap at 20% annual
   }
 }
-

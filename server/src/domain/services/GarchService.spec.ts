@@ -14,7 +14,9 @@ describe('GarchService', () => {
 
   it('should throw error for insufficient data', () => {
     const returns = Array(20).fill(0.01); // Less than 30
-    expect(() => service.calculateVolatility(returns)).toThrow('Insufficient data for GARCH analysis');
+    expect(() => service.calculateVolatility(returns)).toThrow(
+      'Insufficient data for GARCH analysis',
+    );
   });
 
   it('should calculate volatility for sufficient data', () => {
@@ -54,4 +56,3 @@ describe('GarchService', () => {
     expect(result.value).toBeGreaterThanOrEqual(0);
   });
 });
-

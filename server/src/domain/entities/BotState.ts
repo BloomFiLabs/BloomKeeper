@@ -26,4 +26,3 @@ export class BotState {
     this.lastRebalanceAt = new Date();
   }
 }
-

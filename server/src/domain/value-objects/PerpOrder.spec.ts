@@ -1,4 +1,11 @@
-import { PerpOrderRequest, PerpOrderResponse, OrderSide, OrderType, OrderStatus, TimeInForce } from './PerpOrder';
+import {
+  PerpOrderRequest,
+  PerpOrderResponse,
+  OrderSide,
+  OrderType,
+  OrderStatus,
+  TimeInForce,
+} from './PerpOrder';
 
 describe('PerpOrderRequest', () => {
   it('should create a valid market order', () => {
@@ -120,5 +127,3 @@ describe('PerpOrderResponse', () => {
     expect(response.filledSize).toBe(0.5);
   });
 });
-
-

@@ -157,21 +157,13 @@ describe('CostCalculator', () => {
 
   describe('predictFundingRateImpact', () => {
     it('should return zero impact for zero OI', () => {
-      const impact = calculator.predictFundingRateImpact(
-        10000,
-        0,
-        0.0001,
-      );
+      const impact = calculator.predictFundingRateImpact(10000, 0, 0.0001);
 
       expect(impact).toBe(0);
     });
 
     it('should return zero impact for invalid funding rate', () => {
-      const impact1 = calculator.predictFundingRateImpact(
-        10000,
-        1000000,
-        NaN,
-      );
+      const impact1 = calculator.predictFundingRateImpact(10000, 1000000, NaN);
       const impact2 = calculator.predictFundingRateImpact(
         10000,
         1000000,
@@ -393,4 +385,3 @@ describe('CostCalculator', () => {
     });
   });
 });
-

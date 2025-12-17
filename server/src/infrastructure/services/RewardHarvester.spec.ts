@@ -1,7 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { RewardHarvester, HarvestResult } from './RewardHarvester';
-import { ProfitTracker, ProfitSummary, ExchangeProfitInfo } from './ProfitTracker';
+import {
+  ProfitTracker,
+  ProfitSummary,
+  ExchangeProfitInfo,
+} from './ProfitTracker';
 import { DiagnosticsService } from './DiagnosticsService';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 
@@ -27,27 +31,36 @@ describe('RewardHarvester', () => {
     totalDeployedCapital: 250,
     totalAccruedProfit: 50,
     byExchange: new Map<ExchangeType, ExchangeProfitInfo>([
-      [ExchangeType.HYPERLIQUID, {
-        exchange: ExchangeType.HYPERLIQUID,
-        currentBalance: 100,
-        deployedCapital: 83.33,
-        accruedProfit: 16.67,
-        deployableCapital: 83.33,
-      }],
-      [ExchangeType.LIGHTER, {
-        exchange: ExchangeType.LIGHTER,
-        currentBalance: 150,
-        deployedCapital: 125,
-        accruedProfit: 25,
-        deployableCapital: 125,
-      }],
-      [ExchangeType.ASTER, {
-        exchange: ExchangeType.ASTER,
-        currentBalance: 50,
-        deployedCapital: 41.67,
-        accruedProfit: 8.33,
-        deployableCapital: 41.67,
-      }],
+      [
+        ExchangeType.HYPERLIQUID,
+        {
+          exchange: ExchangeType.HYPERLIQUID,
+          currentBalance: 100,
+          deployedCapital: 83.33,
+          accruedProfit: 16.67,
+          deployableCapital: 83.33,
+        },
+      ],
+      [
+        ExchangeType.LIGHTER,
+        {
+          exchange: ExchangeType.LIGHTER,
+          currentBalance: 150,
+          deployedCapital: 125,
+          accruedProfit: 25,
+          deployableCapital: 125,
+        },
+      ],
+      [
+        ExchangeType.ASTER,
+        {
+          exchange: ExchangeType.ASTER,
+          currentBalance: 50,
+          deployedCapital: 41.67,
+          accruedProfit: 8.33,
+          deployableCapital: 41.67,
+        },
+      ],
     ]),
     lastSyncTimestamp: new Date(),
     lastHarvestTimestamp: null,
@@ -61,7 +74,8 @@ describe('RewardHarvester', () => {
           KEEPER_STRATEGY_ADDRESS: '0x1234567890123456789012345678901234567890',
           USDC_ADDRESS: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
           ARBITRUM_RPC_URL: 'https://arb1.arbitrum.io/rpc',
-          KEEPER_PRIVATE_KEY: '0x1234567890123456789012345678901234567890123456789012345678901234',
+          KEEPER_PRIVATE_KEY:
+            '0x1234567890123456789012345678901234567890123456789012345678901234',
           MIN_HARVEST_AMOUNT_USD: 10,
           HARVEST_INTERVAL_HOURS: 24,
         };
@@ -89,12 +103,13 @@ describe('RewardHarvester', () => {
       providers: [
         {
           provide: RewardHarvester,
-          useFactory: () => new RewardHarvester(
-            mockConfigService,
-            mockKeeperService,
-            mockProfitTracker,
-            mockDiagnosticsService,
-          ),
+          useFactory: () =>
+            new RewardHarvester(
+              mockConfigService,
+              mockKeeperService,
+              mockProfitTracker,
+              mockDiagnosticsService,
+            ),
         },
       ],
     }).compile();
@@ -145,7 +160,7 @@ describe('RewardHarvester', () => {
   describe('getTimeUntilNextHarvest', () => {
     it('should return milliseconds until next midnight UTC', () => {
       const timeUntil = rewardHarvester.getTimeUntilNextHarvest();
-      
+
       // Should be positive and less than 24 hours
       expect(timeUntil).toBeGreaterThan(0);
       expect(timeUntil).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
@@ -155,7 +170,7 @@ describe('RewardHarvester', () => {
   describe('getTimeUntilNextHarvestFormatted', () => {
     it('should return formatted time string', () => {
       const formatted = rewardHarvester.getTimeUntilNextHarvestFormatted();
-      
+
       // Should match pattern "Xh Ym"
       expect(formatted).toMatch(/^\d+h \d+m$/);
     });
@@ -208,7 +223,7 @@ describe('RewardHarvester', () => {
 
     it('should show next harvest time formatted', () => {
       const info = rewardHarvester.getDiagnosticInfo();
-      
+
       expect(info.nextHarvestIn).toMatch(/^\d+h \d+m$/);
     });
   });
@@ -232,7 +247,8 @@ describe('RewardHarvester', () => {
     it('should handle partial exchange failures gracefully', async () => {
       // Set up mock adapter that fails for one exchange
       const mockAdapter = {
-        withdrawExternal: jest.fn()
+        withdrawExternal: jest
+          .fn()
           .mockResolvedValueOnce('tx-hash-1') // HL succeeds
           .mockRejectedValueOnce(new Error('API error')) // LI fails
           .mockResolvedValueOnce('tx-hash-3'), // AS succeeds
@@ -249,7 +265,9 @@ describe('RewardHarvester', () => {
   describe('error handling', () => {
     it('should record errors to DiagnosticsService', async () => {
       // Force an error by making getProfitSummary throw
-      mockProfitTracker.getProfitSummary.mockRejectedValue(new Error('Test error'));
+      mockProfitTracker.getProfitSummary.mockRejectedValue(
+        new Error('Test error'),
+      );
 
       const result = await rewardHarvester.forceHarvest();
 
@@ -263,4 +281,3 @@ describe('RewardHarvester', () => {
     });
   });
 });
-

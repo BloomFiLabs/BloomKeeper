@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
-import { IFundingDataProvider, FundingRateData, FundingDataRequest } from '../../../domain/ports/IFundingDataProvider';
+import {
+  IFundingDataProvider,
+  FundingRateData,
+  FundingDataRequest,
+} from '../../../domain/ports/IFundingDataProvider';
 import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
 
 /**
  * AsterFundingDataProvider - Fetches funding rate data from Aster DEX
- * 
+ *
  * Note: Aster DEX API structure may vary - this is a basic implementation
  * that may need adjustment based on actual API endpoints
  */
@@ -18,7 +22,9 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
 
   constructor(private readonly configService: ConfigService) {
     // Remove trailing slash if present (causes 403 errors)
-    let baseUrl = this.configService.get<string>('ASTER_BASE_URL') || 'https://fapi.asterdex.com';
+    const baseUrl =
+      this.configService.get<string>('ASTER_BASE_URL') ||
+      'https://fapi.asterdex.com';
     this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
     this.client = axios.create({
       baseURL: this.baseUrl,
@@ -39,11 +45,15 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
       });
 
       // Aster may return funding rate in different format - adjust as needed
-      const fundingRate = parseFloat(response.data.lastFundingRate || response.data.fundingRate || '0');
-      
+      const fundingRate = parseFloat(
+        response.data.lastFundingRate || response.data.fundingRate || '0',
+      );
+
       return fundingRate;
     } catch (error: any) {
-      this.logger.error(`Failed to get funding rate for ${symbol}: ${error.message}`);
+      this.logger.error(
+        `Failed to get funding rate for ${symbol}: ${error.message}`,
+      );
       throw new Error(`Failed to get Aster funding rate: ${error.message}`);
     }
   }
@@ -58,8 +68,12 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
       // Use current funding rate as prediction (Aster may not provide prediction)
       return await this.getCurrentFundingRate(symbol);
     } catch (error: any) {
-      this.logger.error(`Failed to get predicted funding rate for ${symbol}: ${error.message}`);
-      throw new Error(`Failed to get Aster predicted funding rate: ${error.message}`);
+      this.logger.error(
+        `Failed to get predicted funding rate for ${symbol}: ${error.message}`,
+      );
+      throw new Error(
+        `Failed to get Aster predicted funding rate: ${error.message}`,
+      );
     }
   }
 
@@ -84,12 +98,16 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
 
       // Validate openInterest exists
       if (openInterestRaw === undefined || openInterestRaw === null) {
-        throw new Error(`Aster OI API error for ${symbol}: openInterest field missing. Response: ${JSON.stringify(response.data)}`);
+        throw new Error(
+          `Aster OI API error for ${symbol}: openInterest field missing. Response: ${JSON.stringify(response.data)}`,
+        );
       }
 
       const openInterest = parseFloat(openInterestRaw);
       if (isNaN(openInterest)) {
-        throw new Error(`Aster OI API error for ${symbol}: Failed to parse openInterest "${openInterestRaw}" as number`);
+        throw new Error(
+          `Aster OI API error for ${symbol}: Failed to parse openInterest "${openInterestRaw}" as number`,
+        );
       }
 
       // Get mark price (from response or fallback)
@@ -97,7 +115,9 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
       if (markPriceRaw !== undefined && markPriceRaw !== null) {
         markPrice = parseFloat(markPriceRaw);
         if (isNaN(markPrice) || markPrice <= 0) {
-          this.logger.warn(`Aster OI: Invalid markPrice in response (${markPriceRaw}), fetching separately...`);
+          this.logger.warn(
+            `Aster OI: Invalid markPrice in response (${markPriceRaw}), fetching separately...`,
+          );
           markPrice = await this.getMarkPrice(symbol);
         }
       } else {
@@ -105,15 +125,19 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
       }
 
       if (isNaN(markPrice) || markPrice <= 0) {
-        throw new Error(`Aster OI API error for ${symbol}: Invalid mark price: ${markPrice}`);
+        throw new Error(
+          `Aster OI API error for ${symbol}: Invalid mark price: ${markPrice}`,
+        );
       }
-      
+
       const oiUsd = openInterest * markPrice;
-      
+
       if (isNaN(oiUsd) || oiUsd < 0) {
-        throw new Error(`Aster OI API error for ${symbol}: Invalid calculated OI USD: ${oiUsd} (OI=${openInterest}, Price=${markPrice})`);
+        throw new Error(
+          `Aster OI API error for ${symbol}: Invalid calculated OI USD: ${oiUsd} (OI=${openInterest}, Price=${markPrice})`,
+        );
       }
-      
+
       return oiUsd; // Convert to USD value
     } catch (error: any) {
       // If it's already our error, re-throw it
@@ -121,17 +145,17 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
         this.logger.error(`Aster OI error for ${symbol}: ${error.message}`);
         throw error;
       }
-      
+
       // Otherwise, wrap it with context
-      const errorMsg = error.response 
+      const errorMsg = error.response
         ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
         : error.message || 'Unknown error';
-      
+
       this.logger.error(`Aster OI API error for ${symbol}: ${errorMsg}`);
       if (error.stack) {
         this.logger.error(`Full error: ${error.stack}`);
       }
-      
+
       throw new Error(`Aster OI API error for ${symbol}: ${errorMsg}`);
     }
   }
@@ -149,7 +173,9 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
 
       return parseFloat(response.data.price);
     } catch (error: any) {
-      this.logger.error(`Failed to get mark price for ${symbol}: ${error.message}`);
+      this.logger.error(
+        `Failed to get mark price for ${symbol}: ${error.message}`,
+      );
       throw new Error(`Failed to get Aster mark price: ${error.message}`);
     }
   }
@@ -161,7 +187,7 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
   async getAvailableSymbols(): Promise<string[]> {
     try {
       const response = await this.client.get('/fapi/v1/exchangeInfo');
-      
+
       if (!response.data || !response.data.symbols) {
         this.logger.warn('Aster exchangeInfo returned no symbols');
         return [];
@@ -169,13 +195,19 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
 
       // Filter for perpetual contracts (contractType: PERPETUAL)
       const symbols = response.data.symbols
-        .filter((s: any) => s.contractType === 'PERPETUAL' && s.status === 'TRADING')
+        .filter(
+          (s: any) => s.contractType === 'PERPETUAL' && s.status === 'TRADING',
+        )
         .map((s: any) => s.symbol);
 
-      this.logger.debug(`Found ${symbols.length} available perpetual symbols on Aster`);
+      this.logger.debug(
+        `Found ${symbols.length} available perpetual symbols on Aster`,
+      );
       return symbols;
     } catch (error: any) {
-      this.logger.error(`Failed to get available symbols from Aster: ${error.message}`);
+      this.logger.error(
+        `Failed to get available symbols from Aster: ${error.message}`,
+      );
       // Return empty array instead of throwing to allow system to continue
       return [];
     }
@@ -191,9 +223,11 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
    * Get all funding data for a symbol in a single optimized call
    * Fetches current rate, predicted rate, mark price, and OI together
    */
-  async getFundingData(request: FundingDataRequest): Promise<FundingRateData | null> {
+  async getFundingData(
+    request: FundingDataRequest,
+  ): Promise<FundingRateData | null> {
     const symbol = request.exchangeSymbol;
-    
+
     try {
       // Fetch all data in parallel for efficiency
       const [currentRate, markPrice, openInterest] = await Promise.all([
@@ -219,7 +253,9 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
         timestamp: new Date(),
       };
     } catch (error: any) {
-      this.logger.debug(`Failed to get Aster funding data for ${symbol}: ${error.message}`);
+      this.logger.debug(
+        `Failed to get Aster funding data for ${symbol}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -234,4 +270,3 @@ export class AsterFundingDataProvider implements IFundingDataProvider {
     return `${normalizedSymbol}USDT`;
   }
 }
-

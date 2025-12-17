@@ -12,4 +12,3 @@ import { InMemoryBotStateRepository } from './InMemoryBotStateRepository';
   exports: ['IBotStateRepository'],
 })
 export class MemoryPersistenceModule {}
-

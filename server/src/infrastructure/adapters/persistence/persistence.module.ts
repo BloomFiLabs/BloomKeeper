@@ -16,4 +16,3 @@ import { PrismaBotStateRepository } from './PrismaBotStateRepository';
   exports: ['IBotStateRepository', PrismaService],
 })
 export class PersistenceModule {}
-

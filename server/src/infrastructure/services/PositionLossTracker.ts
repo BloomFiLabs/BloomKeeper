@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import { PerpPosition } from '../../domain/entities/PerpPosition';
 import { IPositionLossTracker } from '../../domain/ports/IPositionLossTracker';
+import { createMutex, AsyncMutex } from './AsyncMutex';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -39,106 +40,126 @@ interface CurrentPosition {
 
 /**
  * PositionLossTracker - Tracks cumulative losses across all positions
- * 
+ *
  * Persists data to file to survive restarts.
  */
 @Injectable()
 export class PositionLossTracker implements IPositionLossTracker {
   private readonly logger = new Logger(PositionLossTracker.name);
-  
+
   // In-memory storage
   private entries: PositionEntry[] = [];
   private exits: PositionExit[] = [];
   private currentPositions: Map<string, CurrentPosition> = new Map(); // key = `${symbol}_${exchange}`
-  
+
   // File persistence
   private readonly dataDir = path.join(process.cwd(), 'data');
-  private readonly entriesFile = path.join(this.dataDir, 'position_entries.json');
+  private readonly entriesFile = path.join(
+    this.dataDir,
+    'position_entries.json',
+  );
   private readonly exitsFile = path.join(this.dataDir, 'position_exits.json');
+
+  // Mutex to protect concurrent access to in-memory state and file operations
+  private readonly mutex: AsyncMutex = createMutex(
+    'PositionLossTracker',
+    15000,
+  );
 
   constructor(
     @Inject(ConfigService) private readonly configService: ConfigService,
   ) {
     const testMode = this.configService.get<string>('TEST_MODE') === 'true';
-    
+
     if (testMode) {
       // Reset loss tracker in test mode - start fresh every run
       this.reset();
       this.logger.log('🧪 TEST MODE: Reset position loss tracker');
     } else {
-    this.loadFromFile();
+      this.loadFromFile();
     }
   }
 
   /**
    * Record a position entry
+   * Protected by mutex to prevent race conditions
    */
-  recordPositionEntry(
+  async recordPositionEntry(
     symbol: string,
     exchange: ExchangeType,
     entryCost: number,
     positionSizeUsd: number,
     timestamp?: Date,
-  ): void {
-    const entry: PositionEntry = {
-      symbol,
-      exchange,
-      entryCost,
-      timestamp: timestamp || new Date(),
-      positionSizeUsd,
-    };
+  ): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      const entry: PositionEntry = {
+        symbol,
+        exchange,
+        entryCost,
+        timestamp: timestamp || new Date(),
+        positionSizeUsd,
+      };
 
-    this.entries.push(entry);
-    
-    // Track as current position
-    const key = `${symbol}_${exchange}`;
-    this.currentPositions.set(key, {
-      entry,
-      startTime: entry.timestamp,
-    });
+      this.entries.push(entry);
 
-    this.saveToFile();
-    this.logger.debug(`Recorded position entry: ${symbol} on ${exchange}, cost: $${entryCost.toFixed(4)}`);
+      // Track as current position
+      const key = `${symbol}_${exchange}`;
+      this.currentPositions.set(key, {
+        entry,
+        startTime: entry.timestamp,
+      });
+
+      this.saveToFileSync();
+      this.logger.debug(
+        `Recorded position entry: ${symbol} on ${exchange}, cost: $${entryCost.toFixed(4)}`,
+      );
+    }, 'recordPositionEntry');
   }
 
   /**
    * Record a position exit
+   * Protected by mutex to prevent race conditions
    */
-  recordPositionExit(
+  async recordPositionExit(
     symbol: string,
     exchange: ExchangeType,
     exitCost: number,
     realizedLoss: number, // Negative if loss, positive if profit
     timestamp?: Date,
-  ): void {
-    const key = `${symbol}_${exchange}`;
-    const currentPos = this.currentPositions.get(key);
-    
-    if (!currentPos) {
-      this.logger.warn(`No current position found for ${symbol} on ${exchange}, cannot calculate time held`);
-      return;
-    }
+  ): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      const key = `${symbol}_${exchange}`;
+      const currentPos = this.currentPositions.get(key);
 
-    const timeHeldMs = (timestamp || new Date()).getTime() - currentPos.startTime.getTime();
-    const timeHeld = timeHeldMs / (1000 * 60 * 60); // Convert to hours
+      if (!currentPos) {
+        this.logger.warn(
+          `No current position found for ${symbol} on ${exchange}, cannot calculate time held`,
+        );
+        return;
+      }
 
-    const exit: PositionExit = {
-      symbol,
-      exchange,
-      exitCost,
-      realizedLoss,
-      timeHeld,
-      timestamp: timestamp || new Date(),
-    };
+      const timeHeldMs =
+        (timestamp || new Date()).getTime() - currentPos.startTime.getTime();
+      const timeHeld = timeHeldMs / (1000 * 60 * 60); // Convert to hours
 
-    this.exits.push(exit);
-    this.currentPositions.delete(key);
+      const exit: PositionExit = {
+        symbol,
+        exchange,
+        exitCost,
+        realizedLoss,
+        timeHeld,
+        timestamp: timestamp || new Date(),
+      };
 
-    this.saveToFile();
-    this.logger.debug(
-      `Recorded position exit: ${symbol} on ${exchange}, ` +
-      `cost: $${exitCost.toFixed(4)}, loss: $${realizedLoss.toFixed(4)}, held: ${timeHeld.toFixed(2)}h`
-    );
+      this.exits.push(exit);
+      this.currentPositions.delete(key);
+
+      this.saveToFileSync();
+      this.logger.debug(
+        `Recorded position exit: ${symbol} on ${exchange}, ` +
+          `cost: $${exitCost.toFixed(4)}, loss: $${realizedLoss.toFixed(4)}, held: ${timeHeld.toFixed(2)}h`,
+      );
+    }, 'recordPositionExit');
   }
 
   /**
@@ -146,10 +167,16 @@ export class PositionLossTracker implements IPositionLossTracker {
    * Includes entry costs, exit costs, and realized losses
    */
   getCumulativeLoss(): number {
-    const totalEntryCosts = this.entries.reduce((sum, e) => sum + e.entryCost, 0);
+    const totalEntryCosts = this.entries.reduce(
+      (sum, e) => sum + e.entryCost,
+      0,
+    );
     const totalExitCosts = this.exits.reduce((sum, e) => sum + e.exitCost, 0);
-    const totalRealizedLosses = this.exits.reduce((sum, e) => sum + e.realizedLoss, 0);
-    
+    const totalRealizedLosses = this.exits.reduce(
+      (sum, e) => sum + e.realizedLoss,
+      0,
+    );
+
     // Realized losses are negative if loss, positive if profit
     // So we add them (if negative, they increase cumulative loss)
     return totalEntryCosts + totalExitCosts + totalRealizedLosses;
@@ -162,7 +189,7 @@ export class PositionLossTracker implements IPositionLossTracker {
   getCurrentPositionLoss(position: PerpPosition): number {
     const key = `${position.symbol}_${position.exchangeType}`;
     const currentPos = this.currentPositions.get(key);
-    
+
     if (!currentPos) {
       return 0; // No tracked entry for this position
     }
@@ -188,8 +215,9 @@ export class PositionLossTracker implements IPositionLossTracker {
     }
 
     // Total costs = cumulative losses + new entry costs + new exit costs
-    const totalCosts = cumulativeLoss + newOpportunity.entryCosts + newOpportunity.exitCosts;
-    
+    const totalCosts =
+      cumulativeLoss + newOpportunity.entryCosts + newOpportunity.exitCosts;
+
     // Break-even hours = total costs / hourly return
     return totalCosts / newOpportunity.hourlyReturn;
   }
@@ -216,7 +244,7 @@ export class PositionLossTracker implements IPositionLossTracker {
     const valueUsd = positionValueUsd ?? position.getPositionValue();
     const key = `${position.symbol}_${position.exchangeType}`;
     const currentPos = this.currentPositions.get(key);
-    
+
     if (!currentPos) {
       return {
         remainingBreakEvenHours: Infinity,
@@ -318,17 +346,17 @@ export class PositionLossTracker implements IPositionLossTracker {
     const valueUsd = positionValueUsd ?? position.getPositionValue();
     const key = `${position.symbol}_${position.exchangeType}`;
     const currentPos = this.currentPositions.get(key);
-    
+
     if (!currentPos) {
       // No tracked entry, assume no switching costs (shouldn't happen in practice)
-    return {
-      exitCostCurrent: 0,
-      entryCostNew: newEntryCosts,
-      lostProgress: 0,
-      totalSwitchingCost: newEntryCosts,
-      feesEarnedSoFar: 0,
-      hoursHeld: 0,
-    };
+      return {
+        exitCostCurrent: 0,
+        entryCostNew: newEntryCosts,
+        lostProgress: 0,
+        totalSwitchingCost: newEntryCosts,
+        feesEarnedSoFar: 0,
+        hoursHeld: 0,
+      };
     }
 
     // Calculate hours held and fees earned
@@ -377,12 +405,19 @@ export class PositionLossTracker implements IPositionLossTracker {
     averageTimeHeld: number;
     currentPositions: number;
   } {
-    const totalEntryCosts = this.entries.reduce((sum, e) => sum + e.entryCost, 0);
+    const totalEntryCosts = this.entries.reduce(
+      (sum, e) => sum + e.entryCost,
+      0,
+    );
     const totalExitCosts = this.exits.reduce((sum, e) => sum + e.exitCost, 0);
-    const totalRealizedLosses = this.exits.reduce((sum, e) => sum + e.realizedLoss, 0);
-    const avgTimeHeld = this.exits.length > 0
-      ? this.exits.reduce((sum, e) => sum + e.timeHeld, 0) / this.exits.length
-      : 0;
+    const totalRealizedLosses = this.exits.reduce(
+      (sum, e) => sum + e.realizedLoss,
+      0,
+    );
+    const avgTimeHeld =
+      this.exits.length > 0
+        ? this.exits.reduce((sum, e) => sum + e.timeHeld, 0) / this.exits.length
+        : 0;
 
     return {
       totalPositions: this.exits.length,
@@ -398,29 +433,34 @@ export class PositionLossTracker implements IPositionLossTracker {
   /**
    * Reset all tracked losses (useful for testing)
    * Clears in-memory data and optionally deletes persistence files
+   * Protected by mutex to prevent race conditions
    */
-  reset(): void {
-    this.entries = [];
-    this.exits = [];
-    this.currentPositions.clear();
-    
-    // Delete persistence files in test mode to ensure clean state
-    const testMode = this.configService.get<string>('TEST_MODE') === 'true';
-    if (testMode) {
-      try {
-        if (fs.existsSync(this.entriesFile)) {
-          fs.unlinkSync(this.entriesFile);
+  async reset(): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      this.entries = [];
+      this.exits = [];
+      this.currentPositions.clear();
+
+      // Delete persistence files in test mode to ensure clean state
+      const testMode = this.configService.get<string>('TEST_MODE') === 'true';
+      if (testMode) {
+        try {
+          if (fs.existsSync(this.entriesFile)) {
+            fs.unlinkSync(this.entriesFile);
+          }
+          if (fs.existsSync(this.exitsFile)) {
+            fs.unlinkSync(this.exitsFile);
+          }
+          this.logger.log('Cleared position loss tracker files');
+        } catch (error: any) {
+          this.logger.warn(
+            `Failed to clear loss tracker files: ${error.message}`,
+          );
         }
-        if (fs.existsSync(this.exitsFile)) {
-          fs.unlinkSync(this.exitsFile);
-        }
-        this.logger.log('Cleared position loss tracker files');
-      } catch (error: any) {
-        this.logger.warn(`Failed to clear loss tracker files: ${error.message}`);
       }
-    }
-    
-    this.logger.log('Position loss tracker reset');
+
+      this.logger.log('Position loss tracker reset');
+    }, 'reset');
   }
 
   /**
@@ -455,31 +495,44 @@ export class PositionLossTracker implements IPositionLossTracker {
       }
 
       this.logger.log(
-        `Loaded position history: ${this.entries.length} entries, ${this.exits.length} exits`
+        `Loaded position history: ${this.entries.length} entries, ${this.exits.length} exits`,
       );
     } catch (error: any) {
-      this.logger.warn(`Failed to load position history from file: ${error.message}`);
+      this.logger.warn(
+        `Failed to load position history from file: ${error.message}`,
+      );
       // Continue with empty data
     }
   }
 
   /**
-   * Save data to file
+   * Save data to file (sync version, called within mutex)
+   * Uses atomic write pattern: write to temp then rename
    */
-  private saveToFile(): void {
+  private saveToFileSync(): void {
     try {
       // Ensure data directory exists
       if (!fs.existsSync(this.dataDir)) {
         fs.mkdirSync(this.dataDir, { recursive: true });
       }
 
-      // Save entries
-      fs.writeFileSync(this.entriesFile, JSON.stringify(this.entries, null, 2), 'utf-8');
+      // Atomic write for entries: temp file then rename
+      const entriesTmp = `${this.entriesFile}.tmp`;
+      fs.writeFileSync(
+        entriesTmp,
+        JSON.stringify(this.entries, null, 2),
+        'utf-8',
+      );
+      fs.renameSync(entriesTmp, this.entriesFile);
 
-      // Save exits
-      fs.writeFileSync(this.exitsFile, JSON.stringify(this.exits, null, 2), 'utf-8');
+      // Atomic write for exits: temp file then rename
+      const exitsTmp = `${this.exitsFile}.tmp`;
+      fs.writeFileSync(exitsTmp, JSON.stringify(this.exits, null, 2), 'utf-8');
+      fs.renameSync(exitsTmp, this.exitsFile);
     } catch (error: any) {
-      this.logger.warn(`Failed to save position history to file: ${error.message}`);
+      this.logger.warn(
+        `Failed to save position history to file: ${error.message}`,
+      );
       // Continue without saving (data remains in memory)
     }
   }

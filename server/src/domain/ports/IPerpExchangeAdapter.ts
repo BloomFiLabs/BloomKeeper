@@ -1,5 +1,8 @@
 import { ExchangeConfig } from '../value-objects/ExchangeConfig';
-import { PerpOrderRequest, PerpOrderResponse } from '../value-objects/PerpOrder';
+import {
+  PerpOrderRequest,
+  PerpOrderResponse,
+} from '../value-objects/PerpOrder';
 import { PerpPosition } from '../entities/PerpPosition';
 
 /**
@@ -37,7 +40,7 @@ export class ExchangeError extends Error {
 
 /**
  * IPerpExchangeAdapter - Interface for perpetual exchange adapters
- * 
+ *
  * This interface abstracts the operations needed to interact with perpetual exchanges
  * (Aster, Lighter, Hyperliquid). Each exchange will have its own implementation.
  */
@@ -127,7 +130,7 @@ export interface IPerpExchangeAdapter {
    * Get available margin for opening new positions
    * This accounts for margin already used by existing positions and applies safety buffers.
    * Use this instead of getBalance() when determining position sizing.
-   * 
+   *
    * @returns Available margin in USD for new positions
    * @throws ExchangeError if calculation fails
    */
@@ -162,7 +165,11 @@ export interface IPerpExchangeAdapter {
    * @returns Transaction hash or deposit ID
    * @throws ExchangeError if deposit fails
    */
-  depositExternal(amount: number, asset: string, destination?: string): Promise<string>;
+  depositExternal(
+    amount: number,
+    asset: string,
+    destination?: string,
+  ): Promise<string>;
 
   /**
    * Withdraw funds to external wallet address
@@ -172,7 +179,11 @@ export interface IPerpExchangeAdapter {
    * @returns Transaction hash or withdrawal ID
    * @throws ExchangeError if withdrawal fails
    */
-  withdrawExternal(amount: number, asset: string, destination: string): Promise<string>;
+  withdrawExternal(
+    amount: number,
+    asset: string,
+    destination: string,
+  ): Promise<string>;
 
   /**
    * Get historical funding payments for the account
@@ -181,7 +192,10 @@ export interface IPerpExchangeAdapter {
    * @returns Array of funding payments
    * @throws ExchangeError if fetch fails
    */
-  getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]>;
+  getFundingPayments(
+    startTime?: number,
+    endTime?: number,
+  ): Promise<FundingPayment[]>;
 
   /**
    * Get all open orders
@@ -210,5 +224,3 @@ export interface OpenOrder {
   filledSize: number;
   timestamp: Date;
 }
-
-

@@ -1,4 +1,11 @@
-import { Module, forwardRef, Logger, OnModuleInit, Inject, Optional } from '@nestjs/common';
+import {
+  Module,
+  forwardRef,
+  Logger,
+  OnModuleInit,
+  Inject,
+  Optional,
+} from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { PerpKeeperService } from '../../application/services/PerpKeeperService';
@@ -73,7 +80,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
 
 /**
  * PerpKeeperModule - Module for perpetual keeper functionality
- * 
+ *
  * Provides:
  * - Exchange adapters (Aster, Lighter, Hyperliquid, Extended)
  * - Funding data providers
@@ -91,7 +98,10 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     // Keep original adapters for backward compatibility (will be replaced in PerpKeeperService)
     {
       provide: AsterExchangeAdapter,
-      useFactory: (configService: ConfigService, diagnosticsService: DiagnosticsService) => {
+      useFactory: (
+        configService: ConfigService,
+        diagnosticsService: DiagnosticsService,
+      ) => {
         try {
           return new AsterExchangeAdapter(configService, diagnosticsService);
         } catch (error: any) {
@@ -105,7 +115,10 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     },
     {
       provide: 'ASTER_ADAPTER',
-      useFactory: (configService: ConfigService, diagnosticsService: DiagnosticsService) => {
+      useFactory: (
+        configService: ConfigService,
+        diagnosticsService: DiagnosticsService,
+      ) => {
         try {
           return new AsterExchangeAdapter(configService, diagnosticsService);
         } catch (error: any) {
@@ -116,7 +129,10 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     },
     {
       provide: LighterExchangeAdapter,
-      useFactory: (configService: ConfigService, diagnosticsService: DiagnosticsService) => {
+      useFactory: (
+        configService: ConfigService,
+        diagnosticsService: DiagnosticsService,
+      ) => {
         try {
           return new LighterExchangeAdapter(configService, diagnosticsService);
         } catch (error: any) {
@@ -130,7 +146,10 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     },
     {
       provide: 'LIGHTER_ADAPTER',
-      useFactory: (configService: ConfigService, diagnosticsService: DiagnosticsService) => {
+      useFactory: (
+        configService: ConfigService,
+        diagnosticsService: DiagnosticsService,
+      ) => {
         try {
           return new LighterExchangeAdapter(configService, diagnosticsService);
         } catch (error: any) {
@@ -141,9 +160,17 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     },
     {
       provide: HyperliquidExchangeAdapter,
-      useFactory: (configService: ConfigService, dataProvider: HyperLiquidDataProvider, diagnosticsService: DiagnosticsService) => {
+      useFactory: (
+        configService: ConfigService,
+        dataProvider: HyperLiquidDataProvider,
+        diagnosticsService: DiagnosticsService,
+      ) => {
         try {
-          return new HyperliquidExchangeAdapter(configService, dataProvider, diagnosticsService);
+          return new HyperliquidExchangeAdapter(
+            configService,
+            dataProvider,
+            diagnosticsService,
+          );
         } catch (error: any) {
           const logger = new Logger('PerpKeeperModule');
           logger.warn(`Failed to create Hyperliquid adapter: ${error.message}`);
@@ -155,9 +182,17 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     },
     {
       provide: 'HYPERLIQUID_ADAPTER',
-      useFactory: (configService: ConfigService, dataProvider: HyperLiquidDataProvider, diagnosticsService: DiagnosticsService) => {
+      useFactory: (
+        configService: ConfigService,
+        dataProvider: HyperLiquidDataProvider,
+        diagnosticsService: DiagnosticsService,
+      ) => {
         try {
-          return new HyperliquidExchangeAdapter(configService, dataProvider, diagnosticsService);
+          return new HyperliquidExchangeAdapter(
+            configService,
+            dataProvider,
+            diagnosticsService,
+          );
         } catch (error: any) {
           return null;
         }
@@ -189,7 +224,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       },
       inject: [ConfigService],
     },
-    
+
     // Spot exchange adapters
     {
       provide: HyperliquidSpotAdapter,
@@ -198,7 +233,9 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return new HyperliquidSpotAdapter(configService);
         } catch (error: any) {
           const logger = new Logger('PerpKeeperModule');
-          logger.warn(`Failed to create Hyperliquid spot adapter: ${error.message}`);
+          logger.warn(
+            `Failed to create Hyperliquid spot adapter: ${error.message}`,
+          );
           return null;
         }
       },
@@ -224,7 +261,9 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return new LighterSpotAdapter(configService);
         } catch (error: any) {
           const logger = new Logger('PerpKeeperModule');
-          logger.warn(`Failed to create Lighter spot adapter: ${error.message}`);
+          logger.warn(
+            `Failed to create Lighter spot adapter: ${error.message}`,
+          );
           return null;
         }
       },
@@ -237,13 +276,15 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return new ExtendedSpotAdapter(configService);
         } catch (error: any) {
           const logger = new Logger('PerpKeeperModule');
-          logger.warn(`Failed to create Extended spot adapter: ${error.message}`);
+          logger.warn(
+            `Failed to create Extended spot adapter: ${error.message}`,
+          );
           return null;
         }
       },
       inject: [ConfigService],
     },
-    
+
     // Funding data providers
     AsterFundingDataProvider,
     LighterWebSocketProvider, // WebSocket provider for Lighter (real-time OI data)
@@ -251,7 +292,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     HyperLiquidWebSocketProvider, // WebSocket provider for Hyperliquid (reduces rate limits)
     HyperLiquidDataProvider,
     ExtendedFundingDataProvider,
-    
+
     // Strategy configuration
     {
       provide: StrategyConfig,
@@ -260,7 +301,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       },
       inject: [ConfigService],
     },
-    
+
     // Strategy rule modules (order matters due to dependencies)
     CostCalculator,
     ExecutionPlanBuilder,
@@ -273,11 +314,15 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         historicalService: IHistoricalFundingRateService,
         config: StrategyConfig,
       ) => {
-        return new PortfolioOptimizer(costCalculator, historicalService, config);
+        return new PortfolioOptimizer(
+          costCalculator,
+          historicalService,
+          config,
+        );
       },
       inject: [CostCalculator, 'IHistoricalFundingRateService', StrategyConfig],
     },
-    
+
     // Position and Order management (circular dependency handled via forwardRef)
     PositionManager,
     {
@@ -289,7 +334,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       provide: 'IOrderExecutor',
       useExisting: OrderExecutor,
     },
-    
+
     // Balance and opportunity evaluation
     BalanceManager,
     {
@@ -342,7 +387,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         { token: PredictedBreakEvenCalculator, optional: true },
       ],
     },
-    
+
     // Idle funds manager - handles reallocation of unused capital
     {
       provide: IdleFundsManager,
@@ -351,7 +396,11 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         executionPlanBuilder: ExecutionPlanBuilder,
         costCalculator: CostCalculator,
       ) => {
-        return new IdleFundsManager(config, executionPlanBuilder, costCalculator);
+        return new IdleFundsManager(
+          config,
+          executionPlanBuilder,
+          costCalculator,
+        );
       },
       inject: [StrategyConfig, ExecutionPlanBuilder, CostCalculator],
     },
@@ -359,20 +408,20 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       provide: 'IIdleFundsManager',
       useExisting: IdleFundsManager,
     },
-    
+
     // Event bus
     {
       provide: 'IEventBus',
       useClass: SimpleEventBus,
     },
     SimpleEventBus, // Keep for backward compatibility
-    
+
     // Domain services
     FundingRateAggregator,
     FundingArbitrageStrategy,
     PerpKeeperOrchestrator,
     ExchangeBalanceRebalancer,
-    
+
     // Historical and loss tracking services - provide both interface and implementation
     {
       provide: 'IHistoricalFundingRateService',
@@ -384,7 +433,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       useClass: PositionLossTracker,
     },
     PositionLossTracker, // Keep for backward compatibility
-    
+
     // Prediction services - Ensemble funding rate prediction system
     KalmanFilterEstimator,
     {
@@ -418,7 +467,12 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           regimeDetector,
         );
       },
-      inject: [MeanReversionPredictor, PremiumIndexPredictor, OpenInterestPredictor, RegimeDetector],
+      inject: [
+        MeanReversionPredictor,
+        PremiumIndexPredictor,
+        OpenInterestPredictor,
+        RegimeDetector,
+      ],
     },
     {
       provide: FundingRatePredictionService,
@@ -480,20 +534,20 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         'IHistoricalFundingRateService',
       ],
     },
-    
+
     {
       provide: 'IPortfolioRiskAnalyzer',
       useClass: PortfolioRiskAnalyzer,
     },
     PortfolioRiskAnalyzer, // Keep for backward compatibility
-    
+
     // Application services
     PerpKeeperService,
     PerpKeeperScheduler,
-    
+
     // Real funding payments service
     RealFundingPaymentsService,
-    
+
     // Optimal leverage service
     {
       provide: OptimalLeverageService,
@@ -508,31 +562,35 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           historicalService,
         );
       },
-      inject: [ConfigService, RealFundingPaymentsService, 'IHistoricalFundingRateService'],
+      inject: [
+        ConfigService,
+        RealFundingPaymentsService,
+        'IHistoricalFundingRateService',
+      ],
     },
     {
       provide: 'IOptimalLeverageService',
       useExisting: OptimalLeverageService,
     },
-    
+
     // Diagnostics service (must be before PerformanceLogger due to dependency)
     DiagnosticsService,
-    
+
     // Market quality filter - tracks market execution quality and blacklists failing markets
     MarketQualityFilter,
-    
+
     // Circuit breaker for error rate protection
     CircuitBreakerService,
-    
+
     // Execution lock service for symbol-level locking
     ExecutionLockService,
-    
+
     // Position state persistence for recovery
     PositionStateRepository,
-    
+
     // Global rate limiter for exchange API calls
     RateLimiterService,
-    
+
     // Profit tracking and reward harvesting
     {
       provide: ProfitTracker,
@@ -541,7 +599,11 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         keeperService: PerpKeeperService,
         realFundingService: RealFundingPaymentsService,
       ) => {
-        return new ProfitTracker(configService, keeperService, realFundingService);
+        return new ProfitTracker(
+          configService,
+          keeperService,
+          realFundingService,
+        );
       },
       inject: [ConfigService, PerpKeeperService, RealFundingPaymentsService],
     },
@@ -553,24 +615,44 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         profitTracker: ProfitTracker,
         diagnosticsService: DiagnosticsService,
       ) => {
-        return new RewardHarvester(configService, keeperService, profitTracker, diagnosticsService);
+        return new RewardHarvester(
+          configService,
+          keeperService,
+          profitTracker,
+          diagnosticsService,
+        );
       },
-      inject: [ConfigService, PerpKeeperService, ProfitTracker, DiagnosticsService],
+      inject: [
+        ConfigService,
+        PerpKeeperService,
+        ProfitTracker,
+        DiagnosticsService,
+      ],
     },
-    
+
     // Keeper Strategy Integration (on-chain vault/strategy interaction)
     KeeperStrategyEventListener,
     {
       provide: WithdrawalFulfiller,
       useFactory: (
-        configService: ConfigService, 
+        configService: ConfigService,
         eventListener: KeeperStrategyEventListener,
         hyperliquidAdapter: HyperliquidExchangeAdapter,
         perpKeeperService: PerpKeeperService,
       ) => {
-        return new WithdrawalFulfiller(configService, eventListener, hyperliquidAdapter, perpKeeperService);
+        return new WithdrawalFulfiller(
+          configService,
+          eventListener,
+          hyperliquidAdapter,
+          perpKeeperService,
+        );
       },
-      inject: [ConfigService, KeeperStrategyEventListener, HyperliquidExchangeAdapter, PerpKeeperService],
+      inject: [
+        ConfigService,
+        KeeperStrategyEventListener,
+        HyperliquidExchangeAdapter,
+        PerpKeeperService,
+      ],
     },
     {
       provide: NAVReporter,
@@ -582,12 +664,18 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       },
       inject: [ConfigService, PerpKeeperService],
     },
-    
+
     // Performance logging
     {
       provide: PerpKeeperPerformanceLogger,
-      useFactory: (realFundingService: RealFundingPaymentsService, diagnosticsService: DiagnosticsService) => {
-        return new PerpKeeperPerformanceLogger(realFundingService, diagnosticsService);
+      useFactory: (
+        realFundingService: RealFundingPaymentsService,
+        diagnosticsService: DiagnosticsService,
+      ) => {
+        return new PerpKeeperPerformanceLogger(
+          realFundingService,
+          diagnosticsService,
+        );
       },
       inject: [RealFundingPaymentsService, DiagnosticsService],
     },
@@ -642,7 +730,9 @@ export class PerpKeeperModule implements OnModuleInit {
     // Wire ProfitTracker into BalanceManager for deployable capital calculations
     if (this.balanceManager && this.profitTracker) {
       this.balanceManager.setProfitTracker(this.profitTracker);
-      this.logger.log('Wired ProfitTracker into BalanceManager for profit-excluded position sizing');
+      this.logger.log(
+        'Wired ProfitTracker into BalanceManager for profit-excluded position sizing',
+      );
     }
 
     // Wire new services into DiagnosticsService for enhanced diagnostics
@@ -656,11 +746,17 @@ export class PerpKeeperModule implements OnModuleInit {
         this.logger.log('Wired RateLimiter into DiagnosticsService');
       }
       if (this.positionStateRepo) {
-        this.diagnosticsService.setPositionStateRepository(this.positionStateRepo);
-        this.logger.log('Wired PositionStateRepository into DiagnosticsService');
+        this.diagnosticsService.setPositionStateRepository(
+          this.positionStateRepo,
+        );
+        this.logger.log(
+          'Wired PositionStateRepository into DiagnosticsService',
+        );
       }
       if (this.marketQualityFilter) {
-        this.diagnosticsService.setMarketQualityFilter(this.marketQualityFilter);
+        this.diagnosticsService.setMarketQualityFilter(
+          this.marketQualityFilter,
+        );
         this.logger.log('Wired MarketQualityFilter into DiagnosticsService');
       }
     }

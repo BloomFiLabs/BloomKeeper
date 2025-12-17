@@ -147,7 +147,8 @@ export class MeanReversionPredictor implements IFundingRatePredictor {
     const kappa = this.clampKappa(-Math.log(Math.max(b, 0.01)) / deltaT);
 
     // a = θ(1-b) => θ = a/(1-b)
-    const theta = Math.abs(1 - b) > 1e-6 ? a / (1 - b) : this.calculateMean(rates);
+    const theta =
+      Math.abs(1 - b) > 1e-6 ? a / (1 - b) : this.calculateMean(rates);
 
     // Estimate sigma from residuals
     const sigma = this.estimateSigma(rates, a, b);
@@ -159,15 +160,19 @@ export class MeanReversionPredictor implements IFundingRatePredictor {
    * Estimate AR(1) parameters using OLS regression
    * Y(t) = a + b*Y(t-1) + ε
    */
-  private estimateAR1(rates: number[]): { a: number; b: number; rSquared: number } {
+  private estimateAR1(rates: number[]): {
+    a: number;
+    b: number;
+    rSquared: number;
+  } {
     const n = rates.length - 1;
     if (n < 2) {
       return { a: 0, b: 0.9, rSquared: 0 };
     }
 
     // Prepare lagged variables
-    const Y = rates.slice(1);        // Y(t)
-    const X = rates.slice(0, -1);    // Y(t-1)
+    const Y = rates.slice(1); // Y(t)
+    const X = rates.slice(0, -1); // Y(t-1)
 
     // Calculate means
     const meanY = this.calculateMean(Y);
@@ -223,7 +228,7 @@ export class MeanReversionPredictor implements IFundingRatePredictor {
       return params.sigma * params.sigma * h;
     }
     return (
-      (params.sigma * params.sigma / (2 * params.kappa)) *
+      ((params.sigma * params.sigma) / (2 * params.kappa)) *
       (1 - Math.exp(-2 * params.kappa * h))
     );
   }
@@ -240,7 +245,8 @@ export class MeanReversionPredictor implements IFundingRatePredictor {
 
     // Boost confidence when rate is far from mean (mean reversion more reliable)
     const distanceFromMean = Math.abs(currentRate - params.theta);
-    const normalizedDistance = distanceFromMean / (Math.abs(params.theta) + 1e-6);
+    const normalizedDistance =
+      distanceFromMean / (Math.abs(params.theta) + 1e-6);
     if (normalizedDistance > 1) {
       confidence += MR_CONFIG.DISTANCE_CONFIDENCE_BOOST;
     }
@@ -249,7 +255,10 @@ export class MeanReversionPredictor implements IFundingRatePredictor {
     confidence -= (1 - params.rSquared) * MR_CONFIG.R_SQUARED_PENALTY_FACTOR;
 
     // Penalize when kappa is at bounds (estimation may be unreliable)
-    if (params.kappa <= MR_CONFIG.MIN_KAPPA || params.kappa >= MR_CONFIG.MAX_KAPPA) {
+    if (
+      params.kappa <= MR_CONFIG.MIN_KAPPA ||
+      params.kappa >= MR_CONFIG.MAX_KAPPA
+    ) {
       confidence -= 0.1;
     }
 
@@ -338,4 +347,3 @@ export class MeanReversionPredictor implements IFundingRatePredictor {
     return `${symbol}_${String(exchange)}`;
   }
 }
-

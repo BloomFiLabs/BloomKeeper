@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { ProfitTracker, ExchangeProfitInfo, ProfitSummary } from './ProfitTracker';
+import {
+  ProfitTracker,
+  ExchangeProfitInfo,
+  ProfitSummary,
+} from './ProfitTracker';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 
 // Mock the PerpKeeperService to avoid ESM import issues
@@ -45,7 +49,7 @@ describe('ProfitTracker', () => {
       getBalance: jest.fn(),
       getExchangeAdapter: jest.fn(),
     } as any;
-    
+
     mockRealFundingService = {
       getCombinedSummary: jest.fn(),
       getTotalTradingCosts: jest.fn().mockReturnValue(0),
@@ -55,7 +59,12 @@ describe('ProfitTracker', () => {
       providers: [
         {
           provide: ProfitTracker,
-          useFactory: () => new ProfitTracker(mockConfigService, mockKeeperService, mockRealFundingService),
+          useFactory: () =>
+            new ProfitTracker(
+              mockConfigService,
+              mockKeeperService,
+              mockRealFundingService,
+            ),
         },
       ],
     }).compile();
@@ -75,7 +84,7 @@ describe('ProfitTracker', () => {
       mockKeeperService.getBalance
         .mockResolvedValueOnce(100) // HYPERLIQUID
         .mockResolvedValueOnce(150) // LIGHTER
-        .mockResolvedValueOnce(50);  // ASTER
+        .mockResolvedValueOnce(50); // ASTER
 
       const totalBalance = await profitTracker.getTotalBalance();
       expect(totalBalance).toBe(300);
@@ -85,7 +94,7 @@ describe('ProfitTracker', () => {
       mockKeeperService.getBalance
         .mockResolvedValueOnce(100) // HYPERLIQUID
         .mockRejectedValueOnce(new Error('API error')) // LIGHTER fails
-        .mockResolvedValueOnce(50);  // ASTER
+        .mockResolvedValueOnce(50); // ASTER
 
       const totalBalance = await profitTracker.getTotalBalance();
       // Should still return sum of successful calls
@@ -135,8 +144,10 @@ describe('ProfitTracker', () => {
 
       // With deployed capital = 0, all $400 is profit
       // HYPERLIQUID has 25% of total balance, so gets 25% of profits
-      const hlProfits = await profitTracker.getAccruedProfits(ExchangeType.HYPERLIQUID);
-      
+      const hlProfits = await profitTracker.getAccruedProfits(
+        ExchangeType.HYPERLIQUID,
+      );
+
       // Since deployed capital is 0, profits = balance
       // HL proportion = 100/400 = 0.25, profits = 400 * 0.25 = 100
       expect(hlProfits).toBeCloseTo(100, 0);
@@ -149,7 +160,9 @@ describe('ProfitTracker', () => {
         .mockResolvedValueOnce(0)
         .mockResolvedValueOnce(0);
 
-      const profits = await profitTracker.getAccruedProfits(ExchangeType.HYPERLIQUID);
+      const profits = await profitTracker.getAccruedProfits(
+        ExchangeType.HYPERLIQUID,
+      );
       expect(profits).toBe(0);
     });
   });
@@ -161,10 +174,12 @@ describe('ProfitTracker', () => {
         .mockResolvedValueOnce(100) // For getTotalBalance - HL
         .mockResolvedValueOnce(100) // For getTotalBalance - LI
         .mockResolvedValueOnce(100) // For getTotalBalance - AS
-        .mockResolvedValue(100);    // Any subsequent calls
+        .mockResolvedValue(100); // Any subsequent calls
 
-      const deployable = await profitTracker.getDeployableCapital(ExchangeType.HYPERLIQUID);
-      
+      const deployable = await profitTracker.getDeployableCapital(
+        ExchangeType.HYPERLIQUID,
+      );
+
       // With 0 deployed capital, all balance is profit, so deployable = 0
       // But max(0, balance - profit) = max(0, 100 - 100) = 0
       // Actually, when deployedCapital = 0, deployable = 0 for all exchanges
@@ -174,7 +189,9 @@ describe('ProfitTracker', () => {
     it('should never return negative deployable capital', async () => {
       mockKeeperService.getBalance.mockResolvedValue(50);
 
-      const deployable = await profitTracker.getDeployableCapital(ExchangeType.LIGHTER);
+      const deployable = await profitTracker.getDeployableCapital(
+        ExchangeType.LIGHTER,
+      );
       expect(deployable).toBeGreaterThanOrEqual(0);
     });
   });
@@ -183,7 +200,9 @@ describe('ProfitTracker', () => {
     it('should return complete profit info for an exchange', async () => {
       mockKeeperService.getBalance.mockResolvedValue(100);
 
-      const info = await profitTracker.getExchangeProfitInfo(ExchangeType.HYPERLIQUID);
+      const info = await profitTracker.getExchangeProfitInfo(
+        ExchangeType.HYPERLIQUID,
+      );
 
       expect(info).toHaveProperty('exchange', ExchangeType.HYPERLIQUID);
       expect(info).toHaveProperty('currentBalance');
@@ -214,7 +233,7 @@ describe('ProfitTracker', () => {
   describe('recordHarvest', () => {
     it('should record harvest and update totals', () => {
       profitTracker.recordHarvest(100);
-      
+
       expect(profitTracker.getTotalHarvestedAllTime()).toBe(100);
       expect(profitTracker.getLastHarvestTimestamp()).not.toBeNull();
     });
@@ -223,7 +242,7 @@ describe('ProfitTracker', () => {
       profitTracker.recordHarvest(100);
       profitTracker.recordHarvest(50);
       profitTracker.recordHarvest(25);
-      
+
       expect(profitTracker.getTotalHarvestedAllTime()).toBe(175);
     });
   });
@@ -235,7 +254,7 @@ describe('ProfitTracker', () => {
 
     it('should return hours since last harvest', () => {
       profitTracker.recordHarvest(100);
-      
+
       const hours = profitTracker.getHoursSinceLastHarvest();
       expect(hours).not.toBeNull();
       expect(hours).toBeGreaterThanOrEqual(0);
@@ -291,11 +310,12 @@ describe('ProfitTracker', () => {
           providers: [
             {
               provide: ProfitTracker,
-              useFactory: () => new ProfitTracker(
-                realizedMockConfigService,
-                mockKeeperService,
-                realizedMockFundingService,
-              ),
+              useFactory: () =>
+                new ProfitTracker(
+                  realizedMockConfigService,
+                  mockKeeperService,
+                  realizedMockFundingService,
+                ),
             },
           ],
         }).compile();
@@ -314,17 +334,23 @@ describe('ProfitTracker', () => {
       });
 
       it('should get per-exchange realized profits', async () => {
-        const hlProfits = await realizedModeTracker.getAccruedProfits(ExchangeType.HYPERLIQUID);
+        const hlProfits = await realizedModeTracker.getAccruedProfits(
+          ExchangeType.HYPERLIQUID,
+        );
         expect(hlProfits).toBe(5);
 
-        const lighterProfits = await realizedModeTracker.getAccruedProfits(ExchangeType.LIGHTER);
+        const lighterProfits = await realizedModeTracker.getAccruedProfits(
+          ExchangeType.LIGHTER,
+        );
         expect(lighterProfits).toBe(2);
       });
 
       it('should calculate deployable capital as balance minus realized profits', async () => {
         mockKeeperService.getBalance.mockResolvedValue(100);
-        
-        const deployable = await realizedModeTracker.getDeployableCapital(ExchangeType.HYPERLIQUID);
+
+        const deployable = await realizedModeTracker.getDeployableCapital(
+          ExchangeType.HYPERLIQUID,
+        );
         // Balance ($100) - realized profits ($5) = $95
         expect(deployable).toBe(95);
       });
@@ -349,7 +375,8 @@ describe('ProfitTracker', () => {
           providers: [
             {
               provide: ProfitTracker,
-              useFactory: () => new ProfitTracker(balanceMockConfigService, mockKeeperService),
+              useFactory: () =>
+                new ProfitTracker(balanceMockConfigService, mockKeeperService),
             },
           ],
         }).compile();
@@ -363,18 +390,19 @@ describe('ProfitTracker', () => {
 
       it('should return 0 profits in balance mode', async () => {
         mockKeeperService.getBalance.mockResolvedValue(100);
-        
+
         const profits = await balanceModeTracker.getTotalProfits();
         expect(profits).toBe(0);
       });
 
       it('should return full balance as deployable in balance mode', async () => {
         mockKeeperService.getBalance.mockResolvedValue(100);
-        
-        const deployable = await balanceModeTracker.getDeployableCapital(ExchangeType.HYPERLIQUID);
+
+        const deployable = await balanceModeTracker.getDeployableCapital(
+          ExchangeType.HYPERLIQUID,
+        );
         expect(deployable).toBe(100);
       });
     });
   });
 });
-

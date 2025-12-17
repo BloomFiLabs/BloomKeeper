@@ -3,10 +3,10 @@ import { ec, typedData, StarknetDomain } from 'starknet';
 
 /**
  * ExtendedSigningService - Handles Starknet SNIP12/EIP712 signing for Extended exchange
- * 
+ *
  * Extended uses SNIP12 standard (EIP712 for Starknet) for signing orders and withdrawals
  * Domain: { name: "Perpetuals", version: "v0", chainId: "SN_MAIN", revision: "1" }
- * 
+ *
  * API Docs: https://api.docs.extended.exchange/#order-management
  */
 @Injectable()
@@ -14,13 +14,18 @@ export class ExtendedSigningService {
   private readonly logger = new Logger(ExtendedSigningService.name);
   private readonly starkPrivateKey: string;
 
-  constructor(starkPrivateKey: string, private readonly isTestnet: boolean = false) {
+  constructor(
+    starkPrivateKey: string,
+    private readonly isTestnet: boolean = false,
+  ) {
     // Normalize private key (remove 0x if present)
-    this.starkPrivateKey = starkPrivateKey.startsWith('0x') 
-      ? starkPrivateKey.slice(2) 
+    this.starkPrivateKey = starkPrivateKey.startsWith('0x')
+      ? starkPrivateKey.slice(2)
       : starkPrivateKey;
-    
-    this.logger.debug(`ExtendedSigningService initialized (testnet: ${isTestnet})`);
+
+    this.logger.debug(
+      `ExtendedSigningService initialized (testnet: ${isTestnet})`,
+    );
   }
 
   /**
@@ -39,7 +44,7 @@ export class ExtendedSigningService {
   /**
    * Sign an order using SNIP12/EIP712 and return r,s components
    * Extended API requires signature as { r: "0x...", s: "0x..." } format
-   * 
+   *
    * @param orderData Order data to sign
    * @returns Signature with r and s components
    */
@@ -56,7 +61,7 @@ export class ExtendedSigningService {
     clientOrderId?: string;
   }): Promise<{ r: string; s: string }> {
     const domain = this.getDomain();
-    
+
     // Extended order types based on SDK reference implementation
     const types = {
       StarknetDomain: [
@@ -88,7 +93,9 @@ export class ExtendedSigningService {
       timeInForce: orderData.timeInForce || 'GTT',
       reduceOnly: orderData.reduceOnly || false,
       postOnly: orderData.postOnly || false,
-      expiration: (orderData.expiration || Math.floor(Date.now() / 1000) + 86400).toString(),
+      expiration: (
+        orderData.expiration || Math.floor(Date.now() / 1000) + 86400
+      ).toString(),
       clientOrderId: orderData.clientOrderId || '',
     };
 
@@ -100,16 +107,16 @@ export class ExtendedSigningService {
         primaryType: 'Order',
         message,
       };
-      
+
       // Get account address (public key) from private key
       const publicKey = ec.starkCurve.getStarkKey(this.starkPrivateKey);
-      
+
       // Get message hash
       const messageHash = typedData.getMessageHash(typedDataObj, publicKey);
-      
+
       // Sign the hash
       const signature = ec.starkCurve.sign(messageHash, this.starkPrivateKey);
-      
+
       // Return r,s as hex strings with 0x prefix
       return {
         r: `0x${signature.r.toString(16).padStart(64, '0')}`,
@@ -157,7 +164,7 @@ export class ExtendedSigningService {
     salt: number;
   }): Promise<{ r: string; s: string }> {
     const domain = this.getDomain();
-    
+
     const types = {
       StarknetDomain: [
         { name: 'name', type: 'shortstring' },
@@ -191,11 +198,11 @@ export class ExtendedSigningService {
         primaryType: 'Withdrawal',
         message,
       };
-      
+
       const publicKey = ec.starkCurve.getStarkKey(this.starkPrivateKey);
       const messageHash = typedData.getMessageHash(typedDataObj, publicKey);
       const signature = ec.starkCurve.sign(messageHash, this.starkPrivateKey);
-      
+
       return {
         r: `0x${signature.r.toString(16).padStart(64, '0')}`,
         s: `0x${signature.s.toString(16).padStart(64, '0')}`,
@@ -223,7 +230,9 @@ export class ExtendedSigningService {
       recipient: withdrawalData.destinationAddress,
       positionId: 0,
       collateralId: '0x1',
-      expiration: withdrawalData.expiration || Math.floor(Date.now() / 1000) + 14 * 24 * 3600,
+      expiration:
+        withdrawalData.expiration ||
+        Math.floor(Date.now() / 1000) + 14 * 24 * 3600,
       salt: Math.floor(Math.random() * 100000000),
     });
     return `${r}${s.slice(2)}`;
@@ -246,7 +255,7 @@ export class ExtendedSigningService {
     senderPublicKey: string;
   }): Promise<{ r: string; s: string }> {
     const domain = this.getDomain();
-    
+
     const types = {
       StarknetDomain: [
         { name: 'name', type: 'shortstring' },
@@ -284,11 +293,11 @@ export class ExtendedSigningService {
         primaryType: 'Transfer',
         message,
       };
-      
+
       const publicKey = ec.starkCurve.getStarkKey(this.starkPrivateKey);
       const messageHash = typedData.getMessageHash(typedDataObj, publicKey);
       const signature = ec.starkCurve.sign(messageHash, this.starkPrivateKey);
-      
+
       return {
         r: `0x${signature.r.toString(16).padStart(64, '0')}`,
         s: `0x${signature.s.toString(16).padStart(64, '0')}`,
@@ -329,4 +338,3 @@ export class ExtendedSigningService {
     return ec.starkCurve.getStarkKey(this.starkPrivateKey);
   }
 }
-

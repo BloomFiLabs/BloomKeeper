@@ -2,35 +2,35 @@ import { Logger } from '@nestjs/common';
 
 /**
  * MarketDataContext - Fetched ONCE per cycle, shared across ALL strategies
- * 
+ *
  * This prevents redundant API calls and ensures all strategies
  * see the same market snapshot for consistent decision-making.
  */
 
 export interface FundingData {
   asset: string;
-  currentRate: number;      // Current funding rate (per 8h)
-  predictedRate: number;    // Predicted next funding
-  markPrice: number;        // Current mark price
-  indexPrice: number;       // Index price
-  openInterest: number;     // Total open interest
-  fundingAPY: number;       // Annualized funding rate
+  currentRate: number; // Current funding rate (per 8h)
+  predictedRate: number; // Predicted next funding
+  markPrice: number; // Current mark price
+  indexPrice: number; // Index price
+  openInterest: number; // Total open interest
+  fundingAPY: number; // Annualized funding rate
 }
 
 export interface LendingData {
   asset: string;
-  supplyAPY: number;        // Supply APY
-  borrowAPY: number;        // Borrow APY  
-  utilization: number;      // Pool utilization
+  supplyAPY: number; // Supply APY
+  borrowAPY: number; // Borrow APY
+  utilization: number; // Pool utilization
   availableLiquidity: number;
 }
 
 export interface VolatilityData {
   asset: string;
-  impliedVol: number;       // IV from options (Deribit)
-  realizedVol: number;      // Historical realized vol
-  garchVol: number;         // GARCH forecast
-  hurst: number;            // Hurst exponent
+  impliedVol: number; // IV from options (Deribit)
+  realizedVol: number; // Historical realized vol
+  garchVol: number; // GARCH forecast
+  hurst: number; // Hurst exponent
 }
 
 export interface PriceData {
@@ -63,22 +63,22 @@ export interface PoolData {
  */
 export interface MarketDataContext {
   timestamp: number;
-  
+
   // Funding rates for perp strategies
   funding: Map<string, FundingData>;
-  
+
   // Lending rates for delta-neutral strategies
   lending: Map<string, LendingData>;
-  
+
   // Volatility metrics for all strategies
   volatility: Map<string, VolatilityData>;
-  
+
   // Current prices
   prices: Map<string, PriceData>;
-  
+
   // Gas costs per chain
   gas: Map<number, GasData>;
-  
+
   // Pool data for LP strategies
   pools: Map<string, PoolData>;
 }
@@ -103,7 +103,7 @@ export function createEmptyContext(): MarketDataContext {
  */
 export class MarketDataAggregator {
   private readonly logger = new Logger(MarketDataAggregator.name);
-  
+
   constructor(
     private readonly fundingProvider: IFundingProvider,
     private readonly lendingProvider: ILendingProvider,
@@ -117,14 +117,27 @@ export class MarketDataAggregator {
    * Fetch ALL market data in one call
    * This is called ONCE at the start of each execution cycle
    */
-  async fetchAll(assets: string[], chains: number[], pools: string[]): Promise<MarketDataContext> {
+  async fetchAll(
+    assets: string[],
+    chains: number[],
+    pools: string[],
+  ): Promise<MarketDataContext> {
     const startTime = Date.now();
     const context = createEmptyContext();
-    
-    this.logger.debug(`Fetching market data for ${assets.length} assets, ${chains.length} chains, ${pools.length} pools...`);
+
+    this.logger.debug(
+      `Fetching market data for ${assets.length} assets, ${chains.length} chains, ${pools.length} pools...`,
+    );
 
     // Fetch all data in parallel
-    const [fundingResults, lendingResults, volResults, priceResults, gasResults, poolResults] = await Promise.allSettled([
+    const [
+      fundingResults,
+      lendingResults,
+      volResults,
+      priceResults,
+      gasResults,
+      poolResults,
+    ] = await Promise.allSettled([
       this.fetchAllFunding(assets),
       this.fetchAllLending(assets),
       this.fetchAllVolatility(assets),
@@ -139,7 +152,9 @@ export class MarketDataAggregator {
         context.funding.set(data.asset, data);
       }
     } else {
-      this.logger.warn(`Failed to fetch funding data: ${fundingResults.reason}`);
+      this.logger.warn(
+        `Failed to fetch funding data: ${fundingResults.reason}`,
+      );
     }
 
     if (lendingResults.status === 'fulfilled') {
@@ -147,7 +162,9 @@ export class MarketDataAggregator {
         context.lending.set(data.asset, data);
       }
     } else {
-      this.logger.warn(`Failed to fetch lending data: ${lendingResults.reason}`);
+      this.logger.warn(
+        `Failed to fetch lending data: ${lendingResults.reason}`,
+      );
     }
 
     if (volResults.status === 'fulfilled') {
@@ -189,27 +206,41 @@ export class MarketDataAggregator {
   }
 
   private async fetchAllFunding(assets: string[]): Promise<FundingData[]> {
-    return Promise.all(assets.map(asset => this.fundingProvider.getFundingData(asset)));
+    return Promise.all(
+      assets.map((asset) => this.fundingProvider.getFundingData(asset)),
+    );
   }
 
   private async fetchAllLending(assets: string[]): Promise<LendingData[]> {
-    return Promise.all(assets.map(asset => this.lendingProvider.getLendingData(asset)));
+    return Promise.all(
+      assets.map((asset) => this.lendingProvider.getLendingData(asset)),
+    );
   }
 
-  private async fetchAllVolatility(assets: string[]): Promise<VolatilityData[]> {
-    return Promise.all(assets.map(asset => this.volatilityProvider.getVolatilityData(asset)));
+  private async fetchAllVolatility(
+    assets: string[],
+  ): Promise<VolatilityData[]> {
+    return Promise.all(
+      assets.map((asset) => this.volatilityProvider.getVolatilityData(asset)),
+    );
   }
 
   private async fetchAllPrices(assets: string[]): Promise<PriceData[]> {
-    return Promise.all(assets.map(asset => this.priceProvider.getPriceData(asset)));
+    return Promise.all(
+      assets.map((asset) => this.priceProvider.getPriceData(asset)),
+    );
   }
 
   private async fetchAllGas(chains: number[]): Promise<GasData[]> {
-    return Promise.all(chains.map(chainId => this.gasProvider.getGasData(chainId)));
+    return Promise.all(
+      chains.map((chainId) => this.gasProvider.getGasData(chainId)),
+    );
   }
 
   private async fetchAllPools(pools: string[]): Promise<PoolData[]> {
-    return Promise.all(pools.map(address => this.poolProvider.getPoolData(address)));
+    return Promise.all(
+      pools.map((address) => this.poolProvider.getPoolData(address)),
+    );
   }
 }
 
@@ -240,13 +271,3 @@ export interface IGasProvider {
 export interface IPoolProvider {
   getPoolData(address: string): Promise<PoolData>;
 }
-
-
-
-
-
-
-
-
-
-

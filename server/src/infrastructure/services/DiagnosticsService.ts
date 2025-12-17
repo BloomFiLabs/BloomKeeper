@@ -1,6 +1,15 @@
-import { Injectable, Logger, Optional, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
-import type { CircuitBreakerService, CircuitState } from './CircuitBreakerService';
+import type {
+  CircuitBreakerService,
+  CircuitState,
+} from './CircuitBreakerService';
 import type { RateLimiterService } from './RateLimiterService';
 import type { PositionStateRepository } from '../repositories/PositionStateRepository';
 
@@ -88,7 +97,13 @@ export interface SingleLegFailureEvent {
   failedExchange: ExchangeType;
   successfulExchange: ExchangeType;
   // Why did it fail?
-  failureReason: 'price_moved' | 'order_rejected' | 'timeout' | 'size_mismatch' | 'exchange_error' | 'unknown';
+  failureReason:
+    | 'price_moved'
+    | 'order_rejected'
+    | 'timeout'
+    | 'size_mismatch'
+    | 'exchange_error'
+    | 'unknown';
   failureMessage?: string;
   // Timing
   timeBetweenLegsMs: number;
@@ -205,14 +220,20 @@ interface HourlyBucket {
     cancelled: number;
     fillTimesMs: number[]; // For percentile calculation (capped at 100 samples)
   };
-  errors: Map<string, { count: number; lastMessage: string; lastTimestamp: Date }>;
+  errors: Map<
+    string,
+    { count: number; lastMessage: string; lastTimestamp: Date }
+  >;
   singleLegs: {
     started: number;
     resolved: number;
     resolutionTimesMin: number[]; // For avg calculation (capped at 50 samples)
   };
   liquidityFilters: Map<string, number>; // reason -> count
-  connections: Map<ExchangeType, { reconnects: number; errors: number; lastError?: string }>;
+  connections: Map<
+    ExchangeType,
+    { reconnects: number; errors: number; lastError?: string }
+  >;
 }
 
 /**
@@ -256,15 +277,25 @@ export interface DiagnosticsResponse {
     byExchange: Record<string, number>;
   };
   orders: {
-    last1h: { placed: number; filled: number; failed: number; fillRate: number };
-    last24h: { placed: number; filled: number; failed: number; fillRate: number };
+    last1h: {
+      placed: number;
+      filled: number;
+      failed: number;
+      fillRate: number;
+    };
+    last24h: {
+      placed: number;
+      filled: number;
+      failed: number;
+      fillRate: number;
+    };
     avgFillTimeMs: { p50: number; p95: number; p99: number };
   };
   singleLegs: {
     active: ActiveSingleLeg[];
-    stats: { 
-      last1h: number; 
-      last24h: number; 
+    stats: {
+      last1h: number;
+      last24h: number;
       avgResolutionMin: number;
       singleLegRate1h: number;
       singleLegRate24h: number;
@@ -290,7 +321,12 @@ export interface DiagnosticsResponse {
   errors: {
     total: { last1h: number; last24h: number };
     byType: Record<string, { count: number; last: string }>;
-    recent: Array<{ time: string; type: string; exchange?: string; msg: string }>;
+    recent: Array<{
+      time: string;
+      type: string;
+      exchange?: string;
+      msg: string;
+    }>;
     // NEW: Recent errors with full context snapshots
     recentWithContext: Array<{
       time: string;
@@ -309,7 +345,10 @@ export interface DiagnosticsResponse {
   liquidity: {
     pairsFiltered: { last24h: number; reasons: Record<string, number> };
   };
-  connectionStatus: Record<string, { status: string; reconnects24h: number; lastError?: string }>;
+  connectionStatus: Record<
+    string,
+    { status: string; reconnects24h: number; lastError?: string }
+  >;
   rewards: {
     accruedProfits: number;
     lastHarvestTime: Date | null;
@@ -324,13 +363,16 @@ export interface DiagnosticsResponse {
     cooldownRemainingMs: number | null;
   };
   rateLimiter?: {
-    byExchange: Record<string, { 
-      currentPerSecond: number; 
-      maxPerSecond: number;
-      currentPerMinute: number;
-      maxPerMinute: number;
-      queued: number;
-    }>;
+    byExchange: Record<
+      string,
+      {
+        currentPerSecond: number;
+        maxPerSecond: number;
+        currentPerMinute: number;
+        maxPerMinute: number;
+        queued: number;
+      }
+    >;
   };
   positionState?: {
     persisted: number;
@@ -363,12 +405,15 @@ export interface DiagnosticsResponse {
       avgAttempts: number;
       partialFillRate: number;
     };
-    byExchange: Record<string, {
-      orders: number;
-      fillRate: number;
-      avgSlippageBps: number;
-      avgFillTimeMs: number;
-    }>;
+    byExchange: Record<
+      string,
+      {
+        orders: number;
+        fillRate: number;
+        avgSlippageBps: number;
+        avgFillTimeMs: number;
+      }
+    >;
   };
 
   // ==================== NEW DIAGNOSTIC SECTIONS ====================
@@ -457,13 +502,16 @@ export interface DiagnosticsResponse {
 
   /** Capital utilization */
   capital?: {
-    byExchange: Record<string, {
-      total: number;
-      available: number;
-      marginUsed: number;
-      inOrders: number;
-      utilizationPercent: number;
-    }>;
+    byExchange: Record<
+      string,
+      {
+        total: number;
+        available: number;
+        marginUsed: number;
+        inOrders: number;
+        utilizationPercent: number;
+      }
+    >;
     summary: {
       totalCapital: number;
       deployed: number;
@@ -536,35 +584,35 @@ export interface DiagnosticsResponse {
 
 /**
  * DiagnosticsService - Tracks and aggregates diagnostic data for the keeper bot
- * 
+ *
  * Uses circular buffers (hourly buckets for 7 days) to keep memory bounded.
  * Provides condensed summaries suitable for API responses and AI context windows.
  */
 @Injectable()
 export class DiagnosticsService {
   private readonly logger = new Logger(DiagnosticsService.name);
-  
+
   // Start time for uptime calculation
   private readonly startTime: Date = new Date();
-  
+
   // Circular buffer of hourly buckets (168 hours = 7 days)
   private readonly MAX_HOURS = 168;
   private readonly hourlyBuckets: Map<number, HourlyBucket> = new Map();
-  
+
   // Active single-leg positions (key: id)
   private readonly activeSingleLegs: Map<string, SingleLegEvent> = new Map();
-  
+
   // Recent errors ring buffer (last 20)
   private readonly MAX_RECENT_ERRORS = 20;
   private readonly recentErrors: ErrorEvent[] = [];
-  
+
   // APY data (set externally by PerformanceLogger)
   private apyData: {
     estimated: number;
     realized: number;
     byExchange: Record<string, number>;
   } = { estimated: 0, realized: 0, byExchange: {} };
-  
+
   // Position data (set externally)
   private positionData: {
     count: number;
@@ -572,7 +620,7 @@ export class DiagnosticsService {
     unrealizedPnl: number;
     byExchange: Record<string, number>;
   } = { count: 0, totalValue: 0, unrealizedPnl: 0, byExchange: {} };
-  
+
   // Position time tracking for single-leg percentage calculation
   // Tracks cumulative time spent in positions (both full and single-leg)
   private totalPositionTimeMs: number = 0;
@@ -592,10 +640,10 @@ export class DiagnosticsService {
     lastHarvestAmount: number;
     nextHarvestIn: string;
     totalHarvested: number;
-  } = { 
-    accruedProfits: 0, 
-    lastHarvestTime: null, 
-    lastHarvestAmount: 0, 
+  } = {
+    accruedProfits: 0,
+    lastHarvestTime: null,
+    lastHarvestAmount: 0,
     nextHarvestIn: '24h 0m',
     totalHarvested: 0,
   };
@@ -638,12 +686,15 @@ export class DiagnosticsService {
 
   // Capital data (set externally)
   private capitalData: {
-    byExchange: Map<ExchangeType, {
-      total: number;
-      available: number;
-      marginUsed: number;
-      inOrders: number;
-    }>;
+    byExchange: Map<
+      ExchangeType,
+      {
+        total: number;
+        available: number;
+        marginUsed: number;
+        inOrders: number;
+      }
+    >;
   } = { byExchange: new Map() };
 
   // Prediction service reference
@@ -663,7 +714,7 @@ export class DiagnosticsService {
    */
   recordError(event: ErrorEvent): void {
     const bucket = this.getOrCreateCurrentBucket();
-    
+
     // Aggregate by type
     const existing = bucket.errors.get(event.type);
     if (existing) {
@@ -677,7 +728,7 @@ export class DiagnosticsService {
         lastTimestamp: event.timestamp,
       });
     }
-    
+
     // Add to recent errors (ring buffer)
     this.recentErrors.push(event);
     if (this.recentErrors.length > this.MAX_RECENT_ERRORS) {
@@ -713,10 +764,10 @@ export class DiagnosticsService {
       snapshot,
     };
     this.recordError(event);
-    
+
     this.logger.debug(
       `Recorded error with context: ${type} - ${message} ` +
-      `(snapshot: ${JSON.stringify(snapshot).substring(0, 200)}...)`,
+        `(snapshot: ${JSON.stringify(snapshot).substring(0, 200)}...)`,
     );
   }
 
@@ -767,7 +818,7 @@ export class DiagnosticsService {
    */
   recordOrder(event: OrderEvent): void {
     const bucket = this.getOrCreateCurrentBucket();
-    
+
     switch (event.status) {
       case 'PLACED':
         bucket.orders.placed++;
@@ -795,7 +846,7 @@ export class DiagnosticsService {
    */
   recordSingleLegStart(event: SingleLegEvent): void {
     this.activeSingleLegs.set(event.id, event);
-    
+
     const bucket = this.getOrCreateCurrentBucket();
     bucket.singleLegs.started++;
   }
@@ -803,22 +854,26 @@ export class DiagnosticsService {
   /**
    * Record resolution of a single-leg position
    */
-  recordSingleLegResolved(id: string, resolution: 'FILLED' | 'CLOSED' | 'TIMEOUT'): void {
+  recordSingleLegResolved(
+    id: string,
+    resolution: 'FILLED' | 'CLOSED' | 'TIMEOUT',
+  ): void {
     const singleLeg = this.activeSingleLegs.get(id);
     if (!singleLeg) return;
-    
+
     singleLeg.resolvedAt = new Date();
     singleLeg.resolution = resolution;
-    
+
     const bucket = this.getOrCreateCurrentBucket();
     bucket.singleLegs.resolved++;
-    
+
     // Calculate resolution time in minutes
-    const resolutionTimeMin = (singleLeg.resolvedAt.getTime() - singleLeg.startedAt.getTime()) / 60000;
+    const resolutionTimeMin =
+      (singleLeg.resolvedAt.getTime() - singleLeg.startedAt.getTime()) / 60000;
     if (bucket.singleLegs.resolutionTimesMin.length < 50) {
       bucket.singleLegs.resolutionTimesMin.push(resolutionTimeMin);
     }
-    
+
     // Remove from active
     this.activeSingleLegs.delete(id);
   }
@@ -845,8 +900,8 @@ export class DiagnosticsService {
 
     this.logger.warn(
       `Single-leg failure recorded: ${event.symbol} ` +
-      `${event.failedLeg} leg failed on ${event.failedExchange} ` +
-      `(reason: ${event.failureReason}, time between legs: ${event.timeBetweenLegsMs}ms)`,
+        `${event.failedLeg} leg failed on ${event.failedExchange} ` +
+        `(reason: ${event.failureReason}, time between legs: ${event.timeBetweenLegsMs}ms)`,
     );
   }
 
@@ -860,7 +915,7 @@ export class DiagnosticsService {
 
     const now = Date.now();
     const last24h = this.singleLegFailures.filter(
-      f => now - f.timestamp.getTime() < 24 * 60 * 60 * 1000
+      (f) => now - f.timestamp.getTime() < 24 * 60 * 60 * 1000,
     );
 
     // Count by leg
@@ -882,28 +937,44 @@ export class DiagnosticsService {
     }
 
     // Calculate averages
-    const timeBetween = last24h.map(f => f.timeBetweenLegsMs).filter(t => t > 0);
-    const avgTimeBetweenLegsMs = timeBetween.length > 0
-      ? Math.round(timeBetween.reduce((a, b) => a + b, 0) / timeBetween.length)
-      : 0;
+    const timeBetween = last24h
+      .map((f) => f.timeBetweenLegsMs)
+      .filter((t) => t > 0);
+    const avgTimeBetweenLegsMs =
+      timeBetween.length > 0
+        ? Math.round(
+            timeBetween.reduce((a, b) => a + b, 0) / timeBetween.length,
+          )
+        : 0;
 
-    const slippages = last24h.map(f => f.priceSlippageBps).filter((s): s is number => s !== undefined);
-    const avgPriceSlippageBps = slippages.length > 0
-      ? Math.round(slippages.reduce((a, b) => a + b, 0) / slippages.length * 10) / 10
-      : 0;
+    const slippages = last24h
+      .map((f) => f.priceSlippageBps)
+      .filter((s): s is number => s !== undefined);
+    const avgPriceSlippageBps =
+      slippages.length > 0
+        ? Math.round(
+            (slippages.reduce((a, b) => a + b, 0) / slippages.length) * 10,
+          ) / 10
+        : 0;
 
     // Recent failures
-    const recentFailures = last24h.slice(-10).reverse().map(f => {
-      const minutesAgo = Math.round((now - f.timestamp.getTime()) / 60000);
-      return {
-        symbol: f.symbol,
-        failedLeg: f.failedLeg,
-        failedExchange: f.failedExchange,
-        reason: f.failureReason,
-        message: f.failureMessage,
-        timeAgo: minutesAgo < 60 ? `${minutesAgo}min ago` : `${Math.round(minutesAgo / 60)}h ago`,
-      };
-    });
+    const recentFailures = last24h
+      .slice(-10)
+      .reverse()
+      .map((f) => {
+        const minutesAgo = Math.round((now - f.timestamp.getTime()) / 60000);
+        return {
+          symbol: f.symbol,
+          failedLeg: f.failedLeg,
+          failedExchange: f.failedExchange,
+          reason: f.failureReason,
+          message: f.failureMessage,
+          timeAgo:
+            minutesAgo < 60
+              ? `${minutesAgo}min ago`
+              : `${Math.round(minutesAgo / 60)}h ago`,
+        };
+      });
 
     return {
       byLeg,
@@ -929,13 +1000,13 @@ export class DiagnosticsService {
    */
   recordConnectionEvent(event: ConnectionEvent): void {
     const bucket = this.getOrCreateCurrentBucket();
-    
+
     let connStats = bucket.connections.get(event.exchange);
     if (!connStats) {
       connStats = { reconnects: 0, errors: 0 };
       bucket.connections.set(event.exchange, connStats);
     }
-    
+
     switch (event.event) {
       case 'RECONNECT':
         connStats.reconnects++;
@@ -950,7 +1021,11 @@ export class DiagnosticsService {
   /**
    * Update APY data (called by PerformanceLogger)
    */
-  updateApyData(data: { estimated: number; realized: number; byExchange: Record<string, number> }): void {
+  updateApyData(data: {
+    estimated: number;
+    realized: number;
+    byExchange: Record<string, number>;
+  }): void {
     this.apyData = data;
   }
 
@@ -965,18 +1040,18 @@ export class DiagnosticsService {
     byExchange: Record<string, number>;
   }): void {
     const now = new Date();
-    
+
     // Track time spent in positions
     if (this.lastPositionCheckTime && this.lastPositionCount > 0) {
       // We had positions since last check - accumulate that time
       const elapsedMs = now.getTime() - this.lastPositionCheckTime.getTime();
       this.totalPositionTimeMs += elapsedMs;
     }
-    
+
     // Update tracking state
     this.lastPositionCheckTime = now;
     this.lastPositionCount = data.count;
-    
+
     this.positionData = data;
   }
 
@@ -1045,14 +1120,18 @@ export class DiagnosticsService {
     this.lighterState = state;
     this.logger.debug(
       `Lighter state updated: nonce=${state.nonce.current}/${state.nonce.expected}, ` +
-      `positions=${state.positions.length}, balance=$${state.balances.available.toFixed(2)}`,
+        `positions=${state.positions.length}, balance=$${state.balances.available.toFixed(2)}`,
     );
   }
 
   /**
    * Update just the Lighter nonce info
    */
-  updateLighterNonce(current: number, expected: number, pendingIncrements: number = 0): void {
+  updateLighterNonce(
+    current: number,
+    expected: number,
+    pendingIncrements: number = 0,
+  ): void {
     if (!this.lighterState) {
       this.lighterState = {
         timestamp: new Date(),
@@ -1082,26 +1161,30 @@ export class DiagnosticsService {
 
     const now = Date.now();
     const lastSyncAgeMs = now - this.lighterState.nonce.lastSync.getTime();
-    
+
     // Determine nonce sync status
     let syncStatus: 'OK' | 'STALE' | 'MISMATCH' = 'OK';
     if (this.lighterState.nonce.current !== this.lighterState.nonce.expected) {
       syncStatus = 'MISMATCH';
-    } else if (lastSyncAgeMs > 5 * 60 * 1000) { // > 5 minutes
+    } else if (lastSyncAgeMs > 5 * 60 * 1000) {
+      // > 5 minutes
       syncStatus = 'STALE';
     }
 
     // Get recent Lighter-specific errors
     const lighterErrors = this.errorsWithContext
-      .filter(e => e.exchange === ExchangeType.LIGHTER)
+      .filter((e) => e.exchange === ExchangeType.LIGHTER)
       .slice(-5)
       .reverse()
-      .map(e => {
+      .map((e) => {
         const minutesAgo = Math.round((now - e.timestamp.getTime()) / 60000);
         return {
           type: e.type,
           message: e.message,
-          timeAgo: minutesAgo < 60 ? `${minutesAgo}min ago` : `${Math.round(minutesAgo / 60)}h ago`,
+          timeAgo:
+            minutesAgo < 60
+              ? `${minutesAgo}min ago`
+              : `${Math.round(minutesAgo / 60)}h ago`,
           context: e.snapshot?.exchangeState
             ? `nonce=${e.snapshot.exchangeState.nonce}, mode=${e.snapshot.exchangeState.marginMode}`
             : undefined,
@@ -1115,7 +1198,7 @@ export class DiagnosticsService {
         lastSync: this.formatTimeAgo(this.lighterState.nonce.lastSync),
         syncStatus,
       },
-      positions: this.lighterState.positions.map(p => ({
+      positions: this.lighterState.positions.map((p) => ({
         symbol: p.symbol,
         marginMode: p.marginMode,
         size: p.size,
@@ -1138,7 +1221,10 @@ export class DiagnosticsService {
   /**
    * Update an unfilled order (e.g., update market price deviation)
    */
-  updateUnfilledOrder(orderId: string, updates: Partial<UnfilledOrderInfo>): void {
+  updateUnfilledOrder(
+    orderId: string,
+    updates: Partial<UnfilledOrderInfo>,
+  ): void {
     const existing = this.unfilledOrders.get(orderId);
     if (existing) {
       Object.assign(existing, updates);
@@ -1177,33 +1263,38 @@ export class DiagnosticsService {
 
     const now = Date.now();
     const orders = Array.from(this.unfilledOrders.values());
-    
+
     // Count by exchange
     const byExchange: Record<string, number> = {};
     let totalValue = 0;
-    
-    const orderDetails = orders.map(o => {
-      byExchange[o.exchange] = (byExchange[o.exchange] || 0) + 1;
-      totalValue += o.size * o.orderPrice;
-      
-      return {
-        orderId: o.orderId.substring(0, 20) + (o.orderId.length > 20 ? '...' : ''),
-        symbol: o.symbol,
-        exchange: o.exchange,
-        side: o.side,
-        price: o.orderPrice,
-        size: o.size,
-        marketPrice: o.marketPrice,
-        deviationBps: Math.round(o.deviationBps * 10) / 10,
-        ageMinutes: Math.round(o.ageSeconds / 60),
-      };
-    }).sort((a, b) => b.ageMinutes - a.ageMinutes);
+
+    const orderDetails = orders
+      .map((o) => {
+        byExchange[o.exchange] = (byExchange[o.exchange] || 0) + 1;
+        totalValue += o.size * o.orderPrice;
+
+        return {
+          orderId:
+            o.orderId.substring(0, 20) + (o.orderId.length > 20 ? '...' : ''),
+          symbol: o.symbol,
+          exchange: o.exchange,
+          side: o.side,
+          price: o.orderPrice,
+          size: o.size,
+          marketPrice: o.marketPrice,
+          deviationBps: Math.round(o.deviationBps * 10) / 10,
+          ageMinutes: Math.round(o.ageSeconds / 60),
+        };
+      })
+      .sort((a, b) => b.ageMinutes - a.ageMinutes);
 
     // Generate recommendation
     let recommendation = '';
-    const staleCount = orders.filter(o => o.ageSeconds > 300).length; // > 5 min
-    const farFromMarket = orders.filter(o => Math.abs(o.deviationBps) > 50).length;
-    
+    const staleCount = orders.filter((o) => o.ageSeconds > 300).length; // > 5 min
+    const farFromMarket = orders.filter(
+      (o) => Math.abs(o.deviationBps) > 50,
+    ).length;
+
     if (staleCount > 0) {
       recommendation += `${staleCount} orders older than 5 minutes. `;
     }
@@ -1331,7 +1422,12 @@ export class DiagnosticsService {
    */
   updateCapitalData(
     exchange: ExchangeType,
-    data: { total: number; available: number; marginUsed: number; inOrders: number },
+    data: {
+      total: number;
+      available: number;
+      marginUsed: number;
+      inOrders: number;
+    },
   ): void {
     this.capitalData.byExchange.set(exchange, data);
   }
@@ -1344,22 +1440,26 @@ export class DiagnosticsService {
       return undefined;
     }
 
-    const byExchange: Record<string, {
-      total: number;
-      available: number;
-      marginUsed: number;
-      inOrders: number;
-      utilizationPercent: number;
-    }> = {};
+    const byExchange: Record<
+      string,
+      {
+        total: number;
+        available: number;
+        marginUsed: number;
+        inOrders: number;
+        utilizationPercent: number;
+      }
+    > = {};
 
     let totalCapital = 0;
     let totalDeployed = 0;
 
     for (const [exchange, data] of this.capitalData.byExchange) {
-      const utilization = data.total > 0
-        ? Math.round((data.marginUsed / data.total) * 1000) / 10
-        : 0;
-      
+      const utilization =
+        data.total > 0
+          ? Math.round((data.marginUsed / data.total) * 1000) / 10
+          : 0;
+
       byExchange[exchange] = {
         ...data,
         utilizationPercent: utilization,
@@ -1377,9 +1477,8 @@ export class DiagnosticsService {
         totalCapital: Math.round(totalCapital * 100) / 100,
         deployed: Math.round(totalDeployed * 100) / 100,
         idle: Math.round(idle * 100) / 100,
-        idlePercent: totalCapital > 0
-          ? Math.round((idle / totalCapital) * 1000) / 10
-          : 0,
+        idlePercent:
+          totalCapital > 0 ? Math.round((idle / totalCapital) * 1000) / 10 : 0,
       },
     };
   }
@@ -1397,18 +1496,21 @@ export class DiagnosticsService {
     try {
       // Try to get prediction stats if available
       const stats = this.predictionService.getAccuracyStats?.();
-      const currentPredictions = this.predictionService.getCurrentPredictions?.();
+      const currentPredictions =
+        this.predictionService.getCurrentPredictions?.();
 
       return {
         enabled: true,
-        accuracy: stats ? {
-          last24h: {
-            predictions: stats.total || 0,
-            directionallyCorrect: stats.correct || 0,
-            accuracyPercent: stats.accuracy || 0,
-            avgErrorBps: stats.avgError || 0,
-          },
-        } : undefined,
+        accuracy: stats
+          ? {
+              last24h: {
+                predictions: stats.total || 0,
+                directionallyCorrect: stats.correct || 0,
+                accuracyPercent: stats.accuracy || 0,
+                avgErrorBps: stats.avgError || 0,
+              },
+            }
+          : undefined,
         currentPredictions: currentPredictions?.slice(0, 10),
         cacheStats: this.predictionService.getCacheStats?.(),
       };
@@ -1438,17 +1540,17 @@ export class DiagnosticsService {
   getDiagnostics(): DiagnosticsResponse {
     const now = new Date();
     const uptimeHours = (now.getTime() - this.startTime.getTime()) / 3600000;
-    
+
     // Aggregate stats for different time periods
     const stats1h = this.aggregateStats(1);
     const stats24h = this.aggregateStats(24);
-    
+
     // Calculate health status
     const health = this.calculateHealthStatus(stats1h, stats24h);
-    
+
     // Get all fill times for percentile calculation
     const allFillTimes = this.getAllFillTimes();
-    
+
     return {
       timestamp: now,
       uptime: {
@@ -1462,17 +1564,23 @@ export class DiagnosticsService {
           placed: stats1h.orders.placed,
           filled: stats1h.orders.filled,
           failed: stats1h.orders.failed,
-          fillRate: stats1h.orders.placed > 0 
-            ? Math.round((stats1h.orders.filled / stats1h.orders.placed) * 1000) / 10 
-            : 100,
+          fillRate:
+            stats1h.orders.placed > 0
+              ? Math.round(
+                  (stats1h.orders.filled / stats1h.orders.placed) * 1000,
+                ) / 10
+              : 100,
         },
         last24h: {
           placed: stats24h.orders.placed,
           filled: stats24h.orders.filled,
           failed: stats24h.orders.failed,
-          fillRate: stats24h.orders.placed > 0 
-            ? Math.round((stats24h.orders.filled / stats24h.orders.placed) * 1000) / 10 
-            : 100,
+          fillRate:
+            stats24h.orders.placed > 0
+              ? Math.round(
+                  (stats24h.orders.filled / stats24h.orders.placed) * 1000,
+                ) / 10
+              : 100,
         },
         avgFillTimeMs: this.calculatePercentiles(allFillTimes),
       },
@@ -1545,24 +1653,27 @@ export class DiagnosticsService {
    */
   private getRecentErrorsWithContext(): DiagnosticsResponse['errors']['recentWithContext'] {
     const now = Date.now();
-    
-    return this.errorsWithContext.slice(-10).reverse().map(err => {
-      const minutesAgo = Math.round((now - err.timestamp.getTime()) / 60000);
-      let timeStr: string;
-      if (minutesAgo < 60) {
-        timeStr = `${minutesAgo}min ago`;
-      } else {
-        timeStr = `${Math.round(minutesAgo / 60)}h ago`;
-      }
-      
-      return {
-        time: timeStr,
-        type: err.type,
-        exchange: err.exchange,
-        msg: err.message.substring(0, 100),
-        snapshot: err.snapshot,
-      };
-    });
+
+    return this.errorsWithContext
+      .slice(-10)
+      .reverse()
+      .map((err) => {
+        const minutesAgo = Math.round((now - err.timestamp.getTime()) / 60000);
+        let timeStr: string;
+        if (minutesAgo < 60) {
+          timeStr = `${minutesAgo}min ago`;
+        } else {
+          timeStr = `${Math.round(minutesAgo / 60)}h ago`;
+        }
+
+        return {
+          time: timeStr,
+          type: err.type,
+          exchange: err.exchange,
+          msg: err.message.substring(0, 100),
+          snapshot: err.snapshot,
+        };
+      });
   }
 
   /**
@@ -1570,7 +1681,7 @@ export class DiagnosticsService {
    */
   private getExecutionLocksDiagnostics(): DiagnosticsResponse['executionLocks'] {
     const now = Date.now();
-    
+
     // Check if global lock is stale (held > 60s)
     const lockDurationMs = this.globalLockInfo.startedAt
       ? now - this.globalLockInfo.startedAt.getTime()
@@ -1624,13 +1735,16 @@ export class DiagnosticsService {
     }
 
     const allUsage = this.rateLimiter.getAllUsage();
-    const byExchange: Record<string, {
-      currentPerSecond: number;
-      maxPerSecond: number;
-      currentPerMinute: number;
-      maxPerMinute: number;
-      queued: number;
-    }> = {};
+    const byExchange: Record<
+      string,
+      {
+        currentPerSecond: number;
+        maxPerSecond: number;
+        currentPerMinute: number;
+        maxPerMinute: number;
+        queued: number;
+      }
+    > = {};
 
     for (const [exchange, usage] of allUsage) {
       byExchange[exchange] = {
@@ -1672,7 +1786,7 @@ export class DiagnosticsService {
 
     try {
       const stats = this.executionAnalytics.getDiagnosticsStats();
-      
+
       const formatStats = (s: any) => ({
         totalOrders: s.totalOrders || 0,
         successfulOrders: s.successfulOrders || 0,
@@ -1687,12 +1801,15 @@ export class DiagnosticsService {
       });
 
       // Convert byExchange Map to Record
-      const byExchange: Record<string, {
-        orders: number;
-        fillRate: number;
-        avgSlippageBps: number;
-        avgFillTimeMs: number;
-      }> = {};
+      const byExchange: Record<
+        string,
+        {
+          orders: number;
+          fillRate: number;
+          avgSlippageBps: number;
+          avgFillTimeMs: number;
+        }
+      > = {};
 
       if (stats.last24h?.byExchange) {
         for (const [exchange, data] of stats.last24h.byExchange) {
@@ -1724,28 +1841,34 @@ export class DiagnosticsService {
 
   private getOrCreateCurrentBucket(): HourlyBucket {
     const hourTs = this.getHourTimestamp();
-    
+
     let bucket = this.hourlyBuckets.get(hourTs);
     if (!bucket) {
       bucket = {
         hour: hourTs,
-        orders: { placed: 0, filled: 0, failed: 0, cancelled: 0, fillTimesMs: [] },
+        orders: {
+          placed: 0,
+          filled: 0,
+          failed: 0,
+          cancelled: 0,
+          fillTimesMs: [],
+        },
         errors: new Map(),
         singleLegs: { started: 0, resolved: 0, resolutionTimesMin: [] },
         liquidityFilters: new Map(),
         connections: new Map(),
       };
       this.hourlyBuckets.set(hourTs, bucket);
-      
+
       // Cleanup old buckets
       this.cleanupOldBuckets();
     }
-    
+
     return bucket;
   }
 
   private cleanupOldBuckets(): void {
-    const cutoff = this.getHourTimestamp() - (this.MAX_HOURS * 3600000);
+    const cutoff = this.getHourTimestamp() - this.MAX_HOURS * 3600000;
     for (const [hourTs] of this.hourlyBuckets) {
       if (hourTs < cutoff) {
         this.hourlyBuckets.delete(hourTs);
@@ -1757,18 +1880,24 @@ export class DiagnosticsService {
     orders: { placed: number; filled: number; failed: number };
     errorCount: number;
     singleLegs: { started: number; resolved: number };
-    errors: Map<string, { count: number; lastMessage: string; lastTimestamp: Date }>;
+    errors: Map<
+      string,
+      { count: number; lastMessage: string; lastTimestamp: Date }
+    >;
   } {
     const now = this.getHourTimestamp();
-    const cutoff = now - (hours * 3600000);
-    
+    const cutoff = now - hours * 3600000;
+
     const result = {
       orders: { placed: 0, filled: 0, failed: 0 },
       errorCount: 0,
       singleLegs: { started: 0, resolved: 0 },
-      errors: new Map<string, { count: number; lastMessage: string; lastTimestamp: Date }>(),
+      errors: new Map<
+        string,
+        { count: number; lastMessage: string; lastTimestamp: Date }
+      >(),
     };
-    
+
     for (const [hourTs, bucket] of this.hourlyBuckets) {
       if (hourTs >= cutoff) {
         result.orders.placed += bucket.orders.placed;
@@ -1776,7 +1905,7 @@ export class DiagnosticsService {
         result.orders.failed += bucket.orders.failed;
         result.singleLegs.started += bucket.singleLegs.started;
         result.singleLegs.resolved += bucket.singleLegs.resolved;
-        
+
         // Aggregate errors
         for (const [type, data] of bucket.errors) {
           result.errorCount += data.count;
@@ -1793,7 +1922,7 @@ export class DiagnosticsService {
         }
       }
     }
-    
+
     return result;
   }
 
@@ -1805,18 +1934,22 @@ export class DiagnosticsService {
     return allTimes;
   }
 
-  private calculatePercentiles(times: number[]): { p50: number; p95: number; p99: number } {
+  private calculatePercentiles(times: number[]): {
+    p50: number;
+    p95: number;
+    p99: number;
+  } {
     if (times.length === 0) {
       return { p50: 0, p95: 0, p99: 0 };
     }
-    
+
     const sorted = [...times].sort((a, b) => a - b);
-    
+
     const percentile = (p: number): number => {
       const index = Math.ceil((p / 100) * sorted.length) - 1;
       return sorted[Math.max(0, index)];
     };
-    
+
     return {
       p50: Math.round(percentile(50)),
       p95: Math.round(percentile(95)),
@@ -1824,9 +1957,12 @@ export class DiagnosticsService {
     };
   }
 
-  private calculateHealthStatus(stats1h: any, stats24h: any): { overall: 'OK' | 'DEGRADED' | 'CRITICAL'; issues: string[] } {
+  private calculateHealthStatus(
+    stats1h: any,
+    stats24h: any,
+  ): { overall: 'OK' | 'DEGRADED' | 'CRITICAL'; issues: string[] } {
     const issues: string[] = [];
-    
+
     // Check fill rate
     if (stats1h.orders.placed > 0) {
       const fillRate = stats1h.orders.filled / stats1h.orders.placed;
@@ -1834,42 +1970,45 @@ export class DiagnosticsService {
         issues.push(`Low fill rate: ${Math.round(fillRate * 100)}%`);
       }
     }
-    
+
     // Check active single-legs
     if (this.activeSingleLegs.size > 0) {
-      const oldSingleLegs = Array.from(this.activeSingleLegs.values())
-        .filter(sl => (Date.now() - sl.startedAt.getTime()) > 30 * 60000); // > 30 min
+      const oldSingleLegs = Array.from(this.activeSingleLegs.values()).filter(
+        (sl) => Date.now() - sl.startedAt.getTime() > 30 * 60000,
+      ); // > 30 min
       if (oldSingleLegs.length > 0) {
         issues.push(`${oldSingleLegs.length} stale single-leg position(s)`);
       }
     }
-    
+
     // Check error rate
     if (stats1h.errorCount > 10) {
       issues.push(`High error rate: ${stats1h.errorCount} errors/hour`);
     }
-    
+
     // Check connections
     const connStatus = this.getConnectionStatus();
     for (const [exchange, status] of Object.entries(connStatus)) {
       if (status.reconnects24h > 20) {
-        issues.push(`${exchange} connection unstable (${status.reconnects24h} reconnects)`);
+        issues.push(
+          `${exchange} connection unstable (${status.reconnects24h} reconnects)`,
+        );
       }
     }
-    
+
     let overall: 'OK' | 'DEGRADED' | 'CRITICAL' = 'OK';
     if (issues.length > 2) {
       overall = 'CRITICAL';
     } else if (issues.length > 0) {
       overall = 'DEGRADED';
     }
-    
+
     return { overall, issues };
   }
 
   private getActiveSingleLegs(): ActiveSingleLeg[] {
     const now = Date.now();
-    return Array.from(this.activeSingleLegs.values()).map(sl => ({
+    return Array.from(this.activeSingleLegs.values()).map((sl) => ({
       symbol: sl.symbol,
       exchange: sl.exchange,
       side: sl.side,
@@ -1883,21 +2022,27 @@ export class DiagnosticsService {
     for (const bucket of this.hourlyBuckets.values()) {
       allTimes.push(...bucket.singleLegs.resolutionTimesMin);
     }
-    
+
     if (allTimes.length === 0) return 0;
-    return Math.round((allTimes.reduce((a, b) => a + b, 0) / allTimes.length) * 10) / 10;
+    return (
+      Math.round((allTimes.reduce((a, b) => a + b, 0) / allTimes.length) * 10) /
+      10
+    );
   }
 
   /**
    * Calculate single-leg rate: percentage of executions that resulted in single-leg
    * A single-leg occurs when one side of a delta-neutral position fails to fill
    */
-  private calculateSingleLegRate(stats: { orders: { placed: number }; singleLegs: { started: number } }): number {
+  private calculateSingleLegRate(stats: {
+    orders: { placed: number };
+    singleLegs: { started: number };
+  }): number {
     // Each execution attempt places 2 orders (long + short)
     // So number of executions = placed / 2
     const executions = Math.floor(stats.orders.placed / 2);
     if (executions === 0) return 0;
-    
+
     // Single-leg rate = single-legs / executions
     const rate = stats.singleLegs.started / executions;
     return Math.round(rate * 1000) / 10; // Return as percentage with 1 decimal, e.g., 15.5%
@@ -1913,42 +2058,47 @@ export class DiagnosticsService {
     let totalSingleLegMs = 0;
     for (const bucket of this.hourlyBuckets.values()) {
       // Convert minutes to ms
-      totalSingleLegMs += bucket.singleLegs.resolutionTimesMin.reduce((a, b) => a + b, 0) * 60000;
+      totalSingleLegMs +=
+        bucket.singleLegs.resolutionTimesMin.reduce((a, b) => a + b, 0) * 60000;
     }
-    
+
     // Also count time for currently active single-legs
     const now = Date.now();
     for (const sl of this.activeSingleLegs.values()) {
       totalSingleLegMs += now - sl.startedAt.getTime();
     }
-    
+
     // Get total time spent in positions (tracked via updatePositionData calls)
     // Add current period if we have positions now
     let totalPositionMs = this.totalPositionTimeMs;
     if (this.lastPositionCheckTime && this.lastPositionCount > 0) {
       totalPositionMs += now - this.lastPositionCheckTime.getTime();
     }
-    
+
     // If no position time tracked yet but we have single-leg time,
     // single-leg time IS position time (can't be in single-leg without position)
     // Use the greater of tracked position time or single-leg time as denominator
     if (totalPositionMs < totalSingleLegMs) {
       totalPositionMs = totalSingleLegMs;
     }
-    
+
     // If still no position time, return 0
     if (totalPositionMs === 0) return 0;
-    
+
     // Cap at 100% (can't spend more than 100% of position time in single-leg)
     const percent = Math.min((totalSingleLegMs / totalPositionMs) * 100, 100);
     return Math.round(percent * 10) / 10; // Return as percentage with 1 decimal
   }
 
-  private getErrorsByType(stats: any): Record<string, { count: number; last: string }> {
+  private getErrorsByType(
+    stats: any,
+  ): Record<string, { count: number; last: string }> {
     const result: Record<string, { count: number; last: string }> = {};
-    
+
     for (const [type, data] of stats.errors) {
-      const minutesAgo = Math.round((Date.now() - data.lastTimestamp.getTime()) / 60000);
+      const minutesAgo = Math.round(
+        (Date.now() - data.lastTimestamp.getTime()) / 60000,
+      );
       let lastStr: string;
       if (minutesAgo < 60) {
         lastStr = `${minutesAgo}min ago`;
@@ -1957,38 +2107,46 @@ export class DiagnosticsService {
       } else {
         lastStr = `${Math.round(minutesAgo / 1440)}d ago`;
       }
-      
+
       result[type] = { count: data.count, last: lastStr };
     }
-    
+
     return result;
   }
 
-  private getRecentErrors(): Array<{ time: string; type: string; exchange?: string; msg: string }> {
+  private getRecentErrors(): Array<{
+    time: string;
+    type: string;
+    exchange?: string;
+    msg: string;
+  }> {
     const now = Date.now();
-    
-    return this.recentErrors.slice(-10).reverse().map(err => {
-      const minutesAgo = Math.round((now - err.timestamp.getTime()) / 60000);
-      let timeStr: string;
-      if (minutesAgo < 60) {
-        timeStr = `${minutesAgo}min ago`;
-      } else {
-        timeStr = `${Math.round(minutesAgo / 60)}h ago`;
-      }
-      
-      return {
-        time: timeStr,
-        type: err.type,
-        exchange: err.exchange,
-        msg: err.message.substring(0, 100), // Truncate for brevity
-      };
-    });
+
+    return this.recentErrors
+      .slice(-10)
+      .reverse()
+      .map((err) => {
+        const minutesAgo = Math.round((now - err.timestamp.getTime()) / 60000);
+        let timeStr: string;
+        if (minutesAgo < 60) {
+          timeStr = `${minutesAgo}min ago`;
+        } else {
+          timeStr = `${Math.round(minutesAgo / 60)}h ago`;
+        }
+
+        return {
+          time: timeStr,
+          type: err.type,
+          exchange: err.exchange,
+          msg: err.message.substring(0, 100), // Truncate for brevity
+        };
+      });
   }
 
   private getLiquidityFilterCount(hours: number): number {
     const now = this.getHourTimestamp();
-    const cutoff = now - (hours * 3600000);
-    
+    const cutoff = now - hours * 3600000;
+
     let count = 0;
     for (const [hourTs, bucket] of this.hourlyBuckets) {
       if (hourTs >= cutoff) {
@@ -1997,14 +2155,14 @@ export class DiagnosticsService {
         }
       }
     }
-    
+
     return count;
   }
 
   private getLiquidityFilterReasons(hours: number): Record<string, number> {
     const now = this.getHourTimestamp();
-    const cutoff = now - (hours * 3600000);
-    
+    const cutoff = now - hours * 3600000;
+
     const result: Record<string, number> = {};
     for (const [hourTs, bucket] of this.hourlyBuckets) {
       if (hourTs >= cutoff) {
@@ -2013,21 +2171,31 @@ export class DiagnosticsService {
         }
       }
     }
-    
+
     return result;
   }
 
-  private getConnectionStatus(): Record<string, { status: string; reconnects24h: number; lastError?: string }> {
+  private getConnectionStatus(): Record<
+    string,
+    { status: string; reconnects24h: number; lastError?: string }
+  > {
     const now = this.getHourTimestamp();
-    const cutoff = now - (24 * 3600000);
-    
-    const result: Record<string, { status: string; reconnects24h: number; lastError?: string }> = {};
-    
+    const cutoff = now - 24 * 3600000;
+
+    const result: Record<
+      string,
+      { status: string; reconnects24h: number; lastError?: string }
+    > = {};
+
     // Initialize for all exchanges
-    for (const exchange of [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER]) {
+    for (const exchange of [
+      ExchangeType.HYPERLIQUID,
+      ExchangeType.LIGHTER,
+      ExchangeType.ASTER,
+    ]) {
       result[exchange] = { status: 'OK', reconnects24h: 0 };
     }
-    
+
     // Aggregate from buckets
     for (const [hourTs, bucket] of this.hourlyBuckets) {
       if (hourTs >= cutoff) {
@@ -2042,7 +2210,7 @@ export class DiagnosticsService {
         }
       }
     }
-    
+
     // Determine status based on reconnect count
     for (const exchange of Object.keys(result)) {
       if (result[exchange].reconnects24h > 20) {
@@ -2051,7 +2219,7 @@ export class DiagnosticsService {
         result[exchange].status = 'CRITICAL';
       }
     }
-    
+
     return result;
   }
 
@@ -2063,7 +2231,12 @@ export class DiagnosticsService {
     this.activeSingleLegs.clear();
     this.recentErrors.length = 0;
     this.apyData = { estimated: 0, realized: 0, byExchange: {} };
-    this.positionData = { count: 0, totalValue: 0, unrealizedPnl: 0, byExchange: {} };
+    this.positionData = {
+      count: 0,
+      totalValue: 0,
+      unrealizedPnl: 0,
+      byExchange: {},
+    };
     this.totalPositionTimeMs = 0;
     this.lastPositionCheckTime = null;
     this.lastPositionCount = 0;
@@ -2084,31 +2257,43 @@ export class DiagnosticsService {
    */
   getSummary(): string {
     const diag = this.getDiagnostics();
-    
+
     const lines: string[] = [];
     lines.push(`Health: ${diag.health.overall}`);
-    
+
     if (diag.health.issues.length > 0) {
       lines.push(`Issues: ${diag.health.issues.join('; ')}`);
     }
 
-    lines.push(`Orders 1h: ${diag.orders.last1h.filled}/${diag.orders.last1h.placed} filled (${diag.orders.last1h.fillRate}%)`);
+    lines.push(
+      `Orders 1h: ${diag.orders.last1h.filled}/${diag.orders.last1h.placed} filled (${diag.orders.last1h.fillRate}%)`,
+    );
     lines.push(`Errors 1h: ${diag.errors.total.last1h}`);
-    
+
     if (diag.singleLegs.failureAnalysis) {
       const fa = diag.singleLegs.failureAnalysis;
-      lines.push(`Single-leg failures: long=${fa.byLeg.long}, short=${fa.byLeg.short}`);
+      lines.push(
+        `Single-leg failures: long=${fa.byLeg.long}, short=${fa.byLeg.short}`,
+      );
       if (Object.keys(fa.byReason).length > 0) {
-        lines.push(`Failure reasons: ${Object.entries(fa.byReason).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+        lines.push(
+          `Failure reasons: ${Object.entries(fa.byReason)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ')}`,
+        );
       }
     }
 
     if (diag.lighterState?.nonce.syncStatus !== 'OK') {
-      lines.push(`Lighter nonce: ${diag.lighterState.nonce.syncStatus} (${diag.lighterState.nonce.current}/${diag.lighterState.nonce.expected})`);
+      lines.push(
+        `Lighter nonce: ${diag.lighterState?.nonce.syncStatus} (${diag.lighterState?.nonce.current}/${diag.lighterState?.nonce.expected})`,
+      );
     }
 
     if (diag.staleOrders && diag.staleOrders.count > 0) {
-      lines.push(`Stale orders: ${diag.staleOrders.count} ($${diag.staleOrders.totalValue})`);
+      lines.push(
+        `Stale orders: ${diag.staleOrders.count} ($${diag.staleOrders.totalValue})`,
+      );
     }
 
     if (diag.executionLocks?.globalLock.isStale) {
@@ -2116,10 +2301,11 @@ export class DiagnosticsService {
     }
 
     if (diag.currentOperation) {
-      lines.push(`Current: ${diag.currentOperation.description} (${diag.currentOperation.stage})`);
+      lines.push(
+        `Current: ${diag.currentOperation.description} (${diag.currentOperation.stage})`,
+      );
     }
 
     return lines.join('\n');
   }
 }
-

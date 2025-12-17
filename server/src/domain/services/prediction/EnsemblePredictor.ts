@@ -18,28 +18,28 @@ import { RegimeDetector } from './filters/RegimeDetector';
  */
 const DEFAULT_WEIGHT_CONFIG: EnsembleWeightConfig = {
   baseWeights: {
-    MeanReversion: 0.40,
+    MeanReversion: 0.4,
     PremiumIndex: 0.35,
     OpenInterest: 0.25,
   },
   regimeAdjustments: {
     [MarketRegime.MEAN_REVERTING]: {
-      MeanReversion: 0.15,  // Boost mean reversion in mean-reverting regime
+      MeanReversion: 0.15, // Boost mean reversion in mean-reverting regime
       PremiumIndex: -0.05,
-      OpenInterest: -0.10,
+      OpenInterest: -0.1,
     },
     [MarketRegime.TRENDING]: {
-      MeanReversion: -0.15,  // Reduce mean reversion in trending regime
+      MeanReversion: -0.15, // Reduce mean reversion in trending regime
       PremiumIndex: 0.05,
-      OpenInterest: 0.10,   // OI more useful for trends
+      OpenInterest: 0.1, // OI more useful for trends
     },
     [MarketRegime.HIGH_VOLATILITY]: {
-      MeanReversion: -0.10,
+      MeanReversion: -0.1,
       PremiumIndex: 0.05,
       OpenInterest: 0.05,
     },
     [MarketRegime.EXTREME_DISLOCATION]: {
-      MeanReversion: 0.10,   // Mean reversion stronger in extremes
+      MeanReversion: 0.1, // Mean reversion stronger in extremes
       PremiumIndex: -0.05,
       OpenInterest: -0.05,
     },
@@ -107,13 +107,20 @@ export class EnsemblePredictor {
     const individualPredictions = this.collectPredictions(context);
 
     // Calculate regime-adjusted weights
-    const weights = this.calculateWeights(context, regime, individualPredictions);
+    const weights = this.calculateWeights(
+      context,
+      regime,
+      individualPredictions,
+    );
 
     // Combine predictions
     const combined = this.combinePredictions(individualPredictions, weights);
 
     // Calculate aggregate bounds
-    const bounds = this.calculateAggregateBounds(individualPredictions, weights);
+    const bounds = this.calculateAggregateBounds(
+      individualPredictions,
+      weights,
+    );
 
     return {
       predictedRate: combined.rate,
@@ -190,7 +197,8 @@ export class EnsemblePredictor {
       let weight = this.weightConfig.baseWeights[predictor.name] ?? 0.33;
 
       // Apply regime adjustment
-      const regimeAdj = this.weightConfig.regimeAdjustments[regime]?.[predictor.name] ?? 0;
+      const regimeAdj =
+        this.weightConfig.regimeAdjustments[regime]?.[predictor.name] ?? 0;
       weight += regimeAdj;
 
       // Apply confidence scaling
@@ -212,7 +220,9 @@ export class EnsemblePredictor {
     }
 
     // Normalize weights to sum to 1
-    return weights.map((w) => (totalWeight > 0 ? w / totalWeight : 1 / predictions.length));
+    return weights.map((w) =>
+      totalWeight > 0 ? w / totalWeight : 1 / predictions.length,
+    );
   }
 
   /**
@@ -268,7 +278,10 @@ export class EnsemblePredictor {
       const { prediction } = predictions[i];
       const weight = weights[i];
 
-      if (prediction.upperBound !== undefined && prediction.lowerBound !== undefined) {
+      if (
+        prediction.upperBound !== undefined &&
+        prediction.lowerBound !== undefined
+      ) {
         weightedUpper += prediction.upperBound * weight;
         weightedLower += prediction.lowerBound * weight;
         boundsCount++;
@@ -334,7 +347,8 @@ export class EnsemblePredictor {
       if (existing) {
         // Exponential moving average of errors
         const alpha = 0.2;
-        existing.cumulativeError = alpha * error + (1 - alpha) * existing.cumulativeError;
+        existing.cumulativeError =
+          alpha * error + (1 - alpha) * existing.cumulativeError;
         existing.predictionCount++;
         existing.lastPrediction = pred.prediction.predictedRate;
         existing.lastTimestamp = new Date();
@@ -370,4 +384,3 @@ export class EnsemblePredictor {
     this.errorStates.clear();
   }
 }
-

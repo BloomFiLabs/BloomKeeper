@@ -7,4 +7,3 @@ export interface IBotStateRepository {
   saveCandles(candles: Candle[], poolId: string): Promise<void>;
   getCandles(poolId: string, limit: number): Promise<Candle[]>;
 }
-

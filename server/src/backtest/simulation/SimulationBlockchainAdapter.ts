@@ -18,7 +18,9 @@ export class SimulationBlockchainAdapter implements IBlockchainAdapter {
     return this.mockState;
   }
 
-  async getStrategyState(strategyAddress: string): Promise<{ totalAssets: bigint; totalPrincipal: bigint }> {
+  async getStrategyState(
+    strategyAddress: string,
+  ): Promise<{ totalAssets: bigint; totalPrincipal: bigint }> {
     return {
       totalAssets: this.mockState.totalAssets,
       totalPrincipal: this.mockState.totalPrincipal,
@@ -29,8 +31,9 @@ export class SimulationBlockchainAdapter implements IBlockchainAdapter {
     return this.mockState.gasPriceGwei;
   }
 
-  async getStrategyPositionRange(strategyAddress: string): Promise<{ lower: number; upper: number } | null> {
+  async getStrategyPositionRange(
+    strategyAddress: string,
+  ): Promise<{ lower: number; upper: number } | null> {
     return this.mockState.positionRange;
   }
 }
-

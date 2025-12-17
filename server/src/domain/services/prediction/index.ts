@@ -14,5 +14,5 @@ export { KalmanFilterEstimator } from './filters/KalmanFilterEstimator';
 export { RegimeDetector } from './filters/RegimeDetector';
 
 // Backtesting
-export { PredictionBacktester, BacktestResults } from './PredictionBacktester';
-
+export { PredictionBacktester } from './PredictionBacktester';
+export type { BacktestResults } from './PredictionBacktester';

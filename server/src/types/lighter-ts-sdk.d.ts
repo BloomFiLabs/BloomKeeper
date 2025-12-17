@@ -21,7 +21,11 @@ declare module '@reservoir0x/lighter-ts-sdk' {
       isAsk: boolean;
       reduceOnly: boolean;
     }): Promise<[any, string, any]>;
-    waitForTransaction(txHash: string, timeout: number, interval: number): Promise<void>;
+    waitForTransaction(
+      txHash: string,
+      timeout: number,
+      interval: number,
+    ): Promise<void>;
     cancelOrder(orderId: string): Promise<any>;
     cancelAllOrders(timeInForce: number, time: number): Promise<any>;
     createAuthTokenWithExpiry(expiry: number): Promise<string>;
@@ -59,4 +63,3 @@ declare module '@reservoir0x/lighter-ts-sdk' {
     priceToUnits(price: number): string;
   }
 }
-

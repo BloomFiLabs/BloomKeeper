@@ -37,7 +37,7 @@ interface CachedVolatility {
 
 /**
  * OptimalLeverageService - Calculates optimal leverage per-asset based on multiple factors
- * 
+ *
  * Factors considered:
  * - Price volatility (daily/hourly)
  * - Liquidation risk (distance to liquidation)
@@ -47,29 +47,36 @@ interface CachedVolatility {
 @Injectable()
 export class OptimalLeverageService implements IOptimalLeverageService {
   private readonly logger = new Logger(OptimalLeverageService.name);
-  
+
   // Configuration
   private readonly config: LeverageConfig;
-  
+
   // Caches
   private volatilityCache = new Map<string, CachedVolatility>();
   private readonly VOLATILITY_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
-  
+
   // Open interest cache
-  private openInterestCache = new Map<string, { oi: number; expiresAt: number }>();
+  private openInterestCache = new Map<
+    string,
+    { oi: number; expiresAt: number }
+  >();
   private readonly OI_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor(
     private readonly configService: ConfigService,
-    @Optional() private readonly fundingPaymentsService?: RealFundingPaymentsService,
-    @Optional() @Inject('IHistoricalFundingRateService') 
+    @Optional()
+    private readonly fundingPaymentsService?: RealFundingPaymentsService,
+    @Optional()
+    @Inject('IHistoricalFundingRateService')
     private readonly historicalService?: IHistoricalFundingRateService,
   ) {
     // Initialize configuration from env or defaults
     this.config = {
       minLeverage: parseFloat(this.configService.get('LEVERAGE_MIN') || '1'),
       maxLeverage: parseFloat(this.configService.get('LEVERAGE_MAX') || '10'),
-      volatilityLookbackHours: parseInt(this.configService.get('LEVERAGE_LOOKBACK_HOURS') || '24'),
+      volatilityLookbackHours: parseInt(
+        this.configService.get('LEVERAGE_LOOKBACK_HOURS') || '24',
+      ),
       leverageOverrides: new Map(),
       volatilityWeight: 0.35,
       liquidationWeight: 0.25,
@@ -83,14 +90,17 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       for (const pair of overridesStr.split(',')) {
         const [symbol, leverage] = pair.split(':');
         if (symbol && leverage) {
-          this.config.leverageOverrides.set(symbol.trim().toUpperCase(), parseFloat(leverage));
+          this.config.leverageOverrides.set(
+            symbol.trim().toUpperCase(),
+            parseFloat(leverage),
+          );
         }
       }
     }
 
     this.logger.log(
       `OptimalLeverageService initialized: min=${this.config.minLeverage}x, ` +
-      `max=${this.config.maxLeverage}x, lookback=${this.config.volatilityLookbackHours}h`
+        `max=${this.config.maxLeverage}x, lookback=${this.config.volatilityLookbackHours}h`,
     );
   }
 
@@ -103,7 +113,7 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     positionSizeUsd: number = 100,
   ): Promise<LeverageRecommendation> {
     const normalizedSymbol = this.normalizeSymbol(symbol);
-    
+
     // Check for manual override first
     const override = this.config.leverageOverrides.get(normalizedSymbol);
     if (override !== undefined) {
@@ -127,11 +137,12 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     }
 
     // Calculate all factor scores
-    const [volatilityMetrics, liquidityAssessment, winRateScore] = await Promise.all([
-      this.getAssetVolatility(symbol, exchange),
-      this.getLiquidityAssessment(symbol, exchange, positionSizeUsd),
-      this.getWinRateAdjustedLeverage(normalizedSymbol),
-    ]);
+    const [volatilityMetrics, liquidityAssessment, winRateScore] =
+      await Promise.all([
+        this.getAssetVolatility(symbol, exchange),
+        this.getLiquidityAssessment(symbol, exchange, positionSizeUsd),
+        this.getWinRateAdjustedLeverage(normalizedSymbol),
+      ]);
 
     // Calculate factor scores
     const factors = this.calculateFactorScores(
@@ -144,7 +155,8 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     const compositeScore = this.calculateCompositeScore(factors);
 
     // Calculate optimal leverage
-    let optimalLeverage = this.config.minLeverage + 
+    let optimalLeverage =
+      this.config.minLeverage +
       (this.config.maxLeverage - this.config.minLeverage) * compositeScore;
 
     // Apply safety constraints
@@ -163,7 +175,11 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       this.config.maxLeverage,
     );
 
-    const reason = this.generateReason(factors, optimalLeverage, volatilityMetrics);
+    const reason = this.generateReason(
+      factors,
+      optimalLeverage,
+      volatilityMetrics,
+    );
 
     return {
       symbol: normalizedSymbol,
@@ -189,29 +205,40 @@ export class OptimalLeverageService implements IOptimalLeverageService {
   ): Promise<VolatilityMetrics> {
     const cacheKey = `${symbol}:${exchange}:${lookbackHours}`;
     const cached = this.volatilityCache.get(cacheKey);
-    
+
     if (cached && cached.expiresAt > Date.now()) {
       return cached.metrics;
     }
 
     try {
       // Fetch price history
-      const candles = await this.fetchPriceHistory(symbol, exchange, lookbackHours);
-      
+      const candles = await this.fetchPriceHistory(
+        symbol,
+        exchange,
+        lookbackHours,
+      );
+
       if (candles.length < 2) {
-        return this.getDefaultVolatilityMetrics(symbol, exchange, lookbackHours);
+        return this.getDefaultVolatilityMetrics(
+          symbol,
+          exchange,
+          lookbackHours,
+        );
       }
 
       // Calculate returns
       const returns: number[] = [];
       for (let i = 1; i < candles.length; i++) {
-        const ret = (candles[i].close - candles[i - 1].close) / candles[i - 1].close;
+        const ret =
+          (candles[i].close - candles[i - 1].close) / candles[i - 1].close;
         returns.push(ret);
       }
 
       // Calculate hourly volatility (standard deviation of returns)
       const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
-      const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+      const variance =
+        returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) /
+        returns.length;
       const hourlyVolatility = Math.sqrt(variance);
 
       // Annualize to daily (assume hourly candles, 24 hours per day)
@@ -262,7 +289,9 @@ export class OptimalLeverageService implements IOptimalLeverageService {
 
       return metrics;
     } catch (error: any) {
-      this.logger.warn(`Failed to get volatility for ${symbol}: ${error.message}`);
+      this.logger.warn(
+        `Failed to get volatility for ${symbol}: ${error.message}`,
+      );
       return this.getDefaultVolatilityMetrics(symbol, exchange, lookbackHours);
     }
   }
@@ -282,12 +311,12 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     // For LONG: liqPrice = entryPrice * (1 - 1/leverage + maintenanceMargin)
     // For SHORT: liqPrice = entryPrice * (1 + 1/leverage - maintenanceMargin)
     const maintenanceMargin = 0.005; // 0.5% typical maintenance margin
-    
+
     let liquidationPrice: number;
     if (side === 'LONG') {
-      liquidationPrice = entryPrice * (1 - (1 / leverage) + maintenanceMargin);
+      liquidationPrice = entryPrice * (1 - 1 / leverage + maintenanceMargin);
     } else {
-      liquidationPrice = entryPrice * (1 + (1 / leverage) - maintenanceMargin);
+      liquidationPrice = entryPrice * (1 + 1 / leverage - maintenanceMargin);
     }
 
     // Calculate distance to liquidation
@@ -300,13 +329,13 @@ export class OptimalLeverageService implements IOptimalLeverageService {
 
     // Determine risk level
     let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-    const isAtRisk = distanceToLiquidation < 0.10; // Less than 10% distance
-    
+    const isAtRisk = distanceToLiquidation < 0.1; // Less than 10% distance
+
     if (distanceToLiquidation < 0.05) {
       riskLevel = 'CRITICAL';
-    } else if (distanceToLiquidation < 0.10) {
+    } else if (distanceToLiquidation < 0.1) {
       riskLevel = 'HIGH';
-    } else if (distanceToLiquidation < 0.20) {
+    } else if (distanceToLiquidation < 0.2) {
       riskLevel = 'MEDIUM';
     } else {
       riskLevel = 'LOW';
@@ -334,21 +363,22 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     positionSizeUsd: number,
   ): Promise<LiquidityAssessment> {
     const openInterest = await this.getOpenInterest(symbol, exchange);
-    
-    const positionAsPercentOfOI = openInterest > 0 
-      ? (positionSizeUsd / openInterest) * 100 
-      : 100;
+
+    const positionAsPercentOfOI =
+      openInterest > 0 ? (positionSizeUsd / openInterest) * 100 : 100;
 
     // Estimate slippage using square root model
     // Slippage increases with sqrt(position / OI)
-    const estimatedSlippage = openInterest > 0
-      ? Math.min(Math.sqrt(positionSizeUsd / openInterest) * 0.01, 0.02)
-      : 0.02; // Default 2% if no OI data
+    const estimatedSlippage =
+      openInterest > 0
+        ? Math.min(Math.sqrt(positionSizeUsd / openInterest) * 0.01, 0.02)
+        : 0.02; // Default 2% if no OI data
 
     // Max recommended size to keep slippage < 0.5%
     // Solve: sqrt(size / OI) * 0.01 = 0.005
     // size = (0.5)^2 * OI = 0.25 * OI
-    const maxRecommendedSize = openInterest > 0 ? openInterest * 0.05 : positionSizeUsd;
+    const maxRecommendedSize =
+      openInterest > 0 ? openInterest * 0.05 : positionSizeUsd;
 
     // Liquidity score: higher is better
     // Score = 1 if position < 1% of OI, decreases as position increases
@@ -384,12 +414,15 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     }
 
     try {
-      const summary = await this.fundingPaymentsService.getCombinedSummary(30, 0);
-      
+      const summary = await this.fundingPaymentsService.getCombinedSummary(
+        30,
+        0,
+      );
+
       // Find symbol in top or bottom performers
       const allSymbols = [...summary.topSymbols, ...summary.bottomSymbols];
-      const symbolData = allSymbols.find(s => 
-        this.normalizeSymbol(s.symbol) === this.normalizeSymbol(symbol)
+      const symbolData = allSymbols.find(
+        (s) => this.normalizeSymbol(s.symbol) === this.normalizeSymbol(symbol),
       );
 
       if (symbolData) {
@@ -401,7 +434,9 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       const overallWinRate = summary.winRateMetrics.winRate;
       return Math.min(overallWinRate / 70, 1);
     } catch (error: any) {
-      this.logger.debug(`Failed to get win rate for ${symbol}: ${error.message}`);
+      this.logger.debug(
+        `Failed to get win rate for ${symbol}: ${error.message}`,
+      );
       return 0.5;
     }
   }
@@ -411,10 +446,10 @@ export class OptimalLeverageService implements IOptimalLeverageService {
    */
   async monitorAndAlert(): Promise<LeverageAlert[]> {
     const alerts: LeverageAlert[] = [];
-    
+
     // This would typically iterate over active positions
     // For now, return empty - will be integrated with position manager
-    
+
     return alerts;
   }
 
@@ -424,11 +459,15 @@ export class OptimalLeverageService implements IOptimalLeverageService {
   async getAllRecommendations(): Promise<LeverageRecommendation[]> {
     // Get common trading symbols
     const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'PEPE', 'WIF', 'BONK'];
-    const exchanges = [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER];
+    const exchanges = [
+      ExchangeType.HYPERLIQUID,
+      ExchangeType.LIGHTER,
+      ExchangeType.ASTER,
+    ];
 
     // Build all symbol/exchange combinations
-    const combinations = symbols.flatMap(symbol => 
-      exchanges.map(exchange => ({ symbol, exchange }))
+    const combinations = symbols.flatMap((symbol) =>
+      exchanges.map((exchange) => ({ symbol, exchange })),
     );
 
     // Fetch all recommendations in parallel
@@ -437,10 +476,12 @@ export class OptimalLeverageService implements IOptimalLeverageService {
         try {
           return await this.calculateOptimalLeverage(symbol, exchange);
         } catch (error: any) {
-          this.logger.debug(`Failed to get recommendation for ${symbol} on ${exchange}`);
+          this.logger.debug(
+            `Failed to get recommendation for ${symbol} on ${exchange}`,
+          );
           return null;
         }
-      })
+      }),
     );
 
     // Filter out nulls (failed fetches)
@@ -454,10 +495,19 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     symbol: string,
     exchange: ExchangeType,
     currentLeverage: number,
-  ): Promise<{ shouldAdjust: boolean; reason: string; recommendedLeverage: number }> {
-    const recommendation = await this.calculateOptimalLeverage(symbol, exchange);
-    
-    const difference = Math.abs(currentLeverage - recommendation.optimalLeverage);
+  ): Promise<{
+    shouldAdjust: boolean;
+    reason: string;
+    recommendedLeverage: number;
+  }> {
+    const recommendation = await this.calculateOptimalLeverage(
+      symbol,
+      exchange,
+    );
+
+    const difference = Math.abs(
+      currentLeverage - recommendation.optimalLeverage,
+    );
     const percentDiff = difference / currentLeverage;
 
     // Adjust if difference is > 20% or leverage is significantly off
@@ -502,7 +552,7 @@ export class OptimalLeverageService implements IOptimalLeverageService {
   ): LeverageFactors {
     // Volatility score: lower volatility = higher score
     // 10% daily vol = 0, 0% = 1
-    const volatilityScore = Math.max(0, 1 - volatility.dailyVolatility / 0.10);
+    const volatilityScore = Math.max(0, 1 - volatility.dailyVolatility / 0.1);
 
     // Liquidation risk score: assume we want at least 20% distance
     // This is computed dynamically based on leverage in actual positions
@@ -540,7 +590,7 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     let constrained = leverage;
 
     // Cap at 5x for high volatility assets (> 10% daily vol)
-    if (volatility.dailyVolatility > 0.10) {
+    if (volatility.dailyVolatility > 0.1) {
       constrained = Math.min(constrained, 5);
     }
 
@@ -550,7 +600,8 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     }
 
     // Cap at 3x for low win rate assets (< 50%)
-    if (winRateScore < 0.5 / 0.7) { // Win rate < 50%
+    if (winRateScore < 0.5 / 0.7) {
+      // Win rate < 50%
       constrained = Math.min(constrained, 3);
     }
 
@@ -572,7 +623,9 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     const parts: string[] = [];
 
     if (factors.volatilityScore < 0.5) {
-      parts.push(`high volatility (${(volatility.dailyVolatility * 100).toFixed(1)}% daily)`);
+      parts.push(
+        `high volatility (${(volatility.dailyVolatility * 100).toFixed(1)}% daily)`,
+      );
     }
 
     if (factors.liquidityScore < 0.5) {
@@ -603,7 +656,7 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       exchange,
       dailyVolatility: 0.05, // 5% default
       hourlyVolatility: 0.01,
-      maxDrawdown24h: 0.10,
+      maxDrawdown24h: 0.1,
       atr: 0,
       lookbackHours,
       dataPoints: 0,
@@ -625,11 +678,13 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       if (exchange === ExchangeType.HYPERLIQUID) {
         return await this.fetchHyperliquidCandles(normalizedSymbol, hours);
       }
-      
+
       // For other exchanges, try Hyperliquid as fallback (same assets)
       return await this.fetchHyperliquidCandles(normalizedSymbol, hours);
     } catch (error: any) {
-      this.logger.debug(`Failed to fetch candles for ${symbol}: ${error.message}`);
+      this.logger.debug(
+        `Failed to fetch candles for ${symbol}: ${error.message}`,
+      );
       return [];
     }
   }
@@ -637,20 +692,27 @@ export class OptimalLeverageService implements IOptimalLeverageService {
   /**
    * Fetch candles from Hyperliquid
    */
-  private async fetchHyperliquidCandles(symbol: string, hours: number): Promise<PriceCandle[]> {
+  private async fetchHyperliquidCandles(
+    symbol: string,
+    hours: number,
+  ): Promise<PriceCandle[]> {
     const endTime = Date.now();
     const startTime = endTime - hours * 60 * 60 * 1000;
 
     try {
-      const response = await axios.post('https://api.hyperliquid.xyz/info', {
-        type: 'candleSnapshot',
-        req: {
-          coin: symbol,
-          interval: '1h',
-          startTime,
-          endTime,
+      const response = await axios.post(
+        'https://api.hyperliquid.xyz/info',
+        {
+          type: 'candleSnapshot',
+          req: {
+            coin: symbol,
+            interval: '1h',
+            startTime,
+            endTime,
+          },
         },
-      }, { timeout: 10000 });
+        { timeout: 10000 },
+      );
 
       const data = response.data;
       if (!Array.isArray(data)) return [];
@@ -672,10 +734,13 @@ export class OptimalLeverageService implements IOptimalLeverageService {
   /**
    * Get open interest for a symbol
    */
-  private async getOpenInterest(symbol: string, exchange: ExchangeType): Promise<number> {
+  private async getOpenInterest(
+    symbol: string,
+    exchange: ExchangeType,
+  ): Promise<number> {
     const cacheKey = `${symbol}:${exchange}`;
     const cached = this.openInterestCache.get(cacheKey);
-    
+
     if (cached && cached.expiresAt > Date.now()) {
       return cached.oi;
     }
@@ -685,14 +750,18 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       const normalizedSymbol = this.normalizeSymbol(symbol);
 
       if (exchange === ExchangeType.HYPERLIQUID) {
-        const response = await axios.post('https://api.hyperliquid.xyz/info', {
-          type: 'metaAndAssetCtxs',
-        }, { timeout: 10000 });
+        const response = await axios.post(
+          'https://api.hyperliquid.xyz/info',
+          {
+            type: 'metaAndAssetCtxs',
+          },
+          { timeout: 10000 },
+        );
 
         const data = response.data;
         if (data && data.meta && data.assetCtxs) {
           const assetIndex = data.meta.universe.findIndex(
-            (u: any) => u.name.toUpperCase() === normalizedSymbol
+            (u: any) => u.name.toUpperCase() === normalizedSymbol,
           );
           if (assetIndex >= 0 && data.assetCtxs[assetIndex]) {
             oi = parseFloat(data.assetCtxs[assetIndex].openInterest || '0');
@@ -718,12 +787,12 @@ export class OptimalLeverageService implements IOptimalLeverageService {
    */
   async logRecommendationSummary(): Promise<void> {
     const recommendations = await this.getAllRecommendations();
-    
+
     this.logger.log('');
     this.logger.log('═'.repeat(70));
     this.logger.log('  📊 OPTIMAL LEVERAGE RECOMMENDATIONS');
     this.logger.log('═'.repeat(70));
-    
+
     // Group by symbol
     const bySymbol = new Map<string, LeverageRecommendation[]>();
     for (const rec of recommendations) {
@@ -733,17 +802,20 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     }
 
     for (const [symbol, recs] of bySymbol) {
-      const avgLeverage = recs.reduce((sum, r) => sum + r.optimalLeverage, 0) / recs.length;
-      const avgVolScore = recs.reduce((sum, r) => sum + r.factors.volatilityScore, 0) / recs.length;
-      
+      const avgLeverage =
+        recs.reduce((sum, r) => sum + r.optimalLeverage, 0) / recs.length;
+      const avgVolScore =
+        recs.reduce((sum, r) => sum + r.factors.volatilityScore, 0) /
+        recs.length;
+
       this.logger.log(`  ${symbol}:`);
       this.logger.log(`     Optimal Leverage: ${avgLeverage.toFixed(1)}x`);
-      this.logger.log(`     Volatility Score: ${(avgVolScore * 100).toFixed(0)}%`);
+      this.logger.log(
+        `     Volatility Score: ${(avgVolScore * 100).toFixed(0)}%`,
+      );
     }
 
     this.logger.log('');
     this.logger.log('═'.repeat(70));
   }
 }
-
-

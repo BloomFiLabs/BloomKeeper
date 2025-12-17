@@ -4,13 +4,13 @@ import { ExchangeType } from '../value-objects/ExchangeConfig';
 /**
  * Failure types that indicate market quality issues
  */
-export type MarketFailureType = 
-  | 'NO_LIQUIDITY'      // "couldn't match", IOC rejected
-  | 'FILL_TIMEOUT'      // Order sat unfilled too long
+export type MarketFailureType =
+  | 'NO_LIQUIDITY' // "couldn't match", IOC rejected
+  | 'FILL_TIMEOUT' // Order sat unfilled too long
   | 'INSUFFICIENT_DEPTH' // Order book too thin
-  | 'HIGH_SLIPPAGE'     // Execution price far from expected
-  | 'REJECTED'          // Exchange rejected order
-  | 'NONCE_ERROR'       // Exchange-specific errors
+  | 'HIGH_SLIPPAGE' // Execution price far from expected
+  | 'REJECTED' // Exchange rejected order
+  | 'NONCE_ERROR' // Exchange-specific errors
   | 'OTHER';
 
 /**
@@ -69,24 +69,24 @@ interface BlacklistEntry {
  */
 const FILTER_CONFIG = {
   // Thresholds for automatic blacklisting
-  FAILURE_THRESHOLD_1H: 5,        // 5 failures in 1 hour = temporary blacklist
-  FAILURE_THRESHOLD_24H: 15,      // 15 failures in 24 hours = longer blacklist
-  FAILURE_RATE_THRESHOLD: 0.7,    // 70% failure rate = blacklist
-  
+  FAILURE_THRESHOLD_1H: 5, // 5 failures in 1 hour = temporary blacklist
+  FAILURE_THRESHOLD_24H: 15, // 15 failures in 24 hours = longer blacklist
+  FAILURE_RATE_THRESHOLD: 0.7, // 70% failure rate = blacklist
+
   // Timeouts
-  TEMP_BLACKLIST_DURATION_MS: 30 * 60 * 1000,  // 30 minutes
+  TEMP_BLACKLIST_DURATION_MS: 30 * 60 * 1000, // 30 minutes
   LONG_BLACKLIST_DURATION_MS: 6 * 60 * 60 * 1000, // 6 hours
-  
+
   // Minimum samples before calculating failure rate
   MIN_SAMPLES_FOR_RATE: 5,
-  
+
   // How long to keep failure history
   HISTORY_RETENTION_MS: 24 * 60 * 60 * 1000, // 24 hours
 } as const;
 
 /**
  * MarketQualityFilter - Tracks market execution quality and blacklists problematic markets
- * 
+ *
  * Key features:
  * - Tracks failures by type (no liquidity, timeouts, etc.)
  * - Automatically blacklists markets that consistently fail
@@ -98,8 +98,9 @@ export class MarketQualityFilter {
   private readonly logger = new Logger(MarketQualityFilter.name);
 
   // Failure history: key = `${symbol}-${exchange}`
-  private readonly failureHistory: Map<string, MarketFailureEvent[]> = new Map();
-  
+  private readonly failureHistory: Map<string, MarketFailureEvent[]> =
+    new Map();
+
   // Success history: key = `${symbol}-${exchange}`
   private readonly successHistory: Map<string, Date[]> = new Map();
 
@@ -119,7 +120,7 @@ export class MarketQualityFilter {
    */
   recordFailure(event: MarketFailureEvent): void {
     const key = this.getKey(event.symbol, event.exchange);
-    
+
     // Add to history
     if (!this.failureHistory.has(key)) {
       this.failureHistory.set(key, []);
@@ -128,7 +129,7 @@ export class MarketQualityFilter {
 
     // Log the failure
     this.logger.warn(
-      `Market failure: ${event.symbol} on ${event.exchange} - ${event.failureType}: ${event.message}`
+      `Market failure: ${event.symbol} on ${event.exchange} - ${event.failureType}: ${event.message}`,
     );
 
     // Check if should blacklist
@@ -140,7 +141,7 @@ export class MarketQualityFilter {
    */
   recordSuccess(symbol: string, exchange: ExchangeType): void {
     const key = this.getKey(symbol, exchange);
-    
+
     if (!this.successHistory.has(key)) {
       this.successHistory.set(key, []);
     }
@@ -215,7 +216,7 @@ export class MarketQualityFilter {
     durationMs?: number,
   ): void {
     const key = exchange ? this.getKey(symbol, exchange) : symbol;
-    
+
     this.blacklist.set(key, {
       symbol,
       exchange,
@@ -227,7 +228,9 @@ export class MarketQualityFilter {
 
     this.logger.warn(
       `Manually blacklisted ${symbol}${exchange ? ` on ${exchange}` : ''}: ${reason}` +
-      (durationMs ? ` (expires in ${Math.round(durationMs / 60000)}min)` : ' (permanent)')
+        (durationMs
+          ? ` (expires in ${Math.round(durationMs / 60000)}min)`
+          : ' (permanent)'),
     );
   }
 
@@ -236,7 +239,7 @@ export class MarketQualityFilter {
    */
   removeFromBlacklist(symbol: string, exchange?: ExchangeType): boolean {
     const key = exchange ? this.getKey(symbol, exchange) : symbol;
-    
+
     if (this.permanentBlacklist.has(symbol)) {
       this.permanentBlacklist.delete(symbol);
       this.logger.log(`Removed ${symbol} from permanent blacklist`);
@@ -245,7 +248,9 @@ export class MarketQualityFilter {
 
     if (this.blacklist.has(key)) {
       this.blacklist.delete(key);
-      this.logger.log(`Removed ${symbol}${exchange ? ` on ${exchange}` : ''} from blacklist`);
+      this.logger.log(
+        `Removed ${symbol}${exchange ? ` on ${exchange}` : ''} from blacklist`,
+      );
       return true;
     }
 
@@ -312,12 +317,14 @@ export class MarketQualityFilter {
 
     // Calculate failure rate
     const total24h = failures24h + successes24h;
-    const failureRate24h = total24h >= FILTER_CONFIG.MIN_SAMPLES_FOR_RATE
-      ? failures24h / total24h
-      : 0;
+    const failureRate24h =
+      total24h >= FILTER_CONFIG.MIN_SAMPLES_FOR_RATE
+        ? failures24h / total24h
+        : 0;
 
     // Get blacklist info
-    const blacklistEntry = this.blacklist.get(key) || this.blacklist.get(symbol);
+    const blacklistEntry =
+      this.blacklist.get(key) || this.blacklist.get(symbol);
 
     return {
       symbol,
@@ -346,7 +353,7 @@ export class MarketQualityFilter {
    */
   getBlacklistedMarkets(): BlacklistEntry[] {
     const result: BlacklistEntry[] = [];
-    
+
     // Add permanent blacklist
     for (const symbol of this.permanentBlacklist) {
       result.push({
@@ -406,7 +413,7 @@ export class MarketQualityFilter {
     }
     allFailures.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
-    const recentFailures = allFailures.slice(0, 10).map(f => ({
+    const recentFailures = allFailures.slice(0, 10).map((f) => ({
       symbol: f.symbol,
       exchange: f.exchange,
       type: f.failureType,
@@ -435,7 +442,7 @@ export class MarketQualityFilter {
     for (const key of seenMarkets) {
       const [symbol, exchange] = key.split('-');
       const stats = this.getMarketStats(symbol, exchange as ExchangeType);
-      
+
       let status: 'healthy' | 'degraded' | 'blacklisted' = 'healthy';
       if (this.isBlacklisted(symbol, exchange as ExchangeType)) {
         status = 'blacklisted';
@@ -458,7 +465,7 @@ export class MarketQualityFilter {
 
     return {
       blacklistedCount: blacklisted.length,
-      blacklistedMarkets: blacklisted.map(b => ({
+      blacklistedMarkets: blacklisted.map((b) => ({
         symbol: b.symbol,
         exchange: b.exchange,
         reason: b.reason,
@@ -474,7 +481,13 @@ export class MarketQualityFilter {
   /**
    * Filter opportunities by market quality
    */
-  filterOpportunities<T extends { symbol: string; longExchange: ExchangeType; shortExchange?: ExchangeType }>(
+  filterOpportunities<
+    T extends {
+      symbol: string;
+      longExchange: ExchangeType;
+      shortExchange?: ExchangeType;
+    },
+  >(
     opportunities: T[],
   ): { passed: T[]; filtered: T[]; reasons: Map<string, string> } {
     const passed: T[] = [];
@@ -487,17 +500,22 @@ export class MarketQualityFilter {
         filtered.push(opp);
         reasons.set(
           `${opp.symbol}-${opp.longExchange}`,
-          this.getBlacklistReason(opp.symbol, opp.longExchange) || 'Blacklisted',
+          this.getBlacklistReason(opp.symbol, opp.longExchange) ||
+            'Blacklisted',
         );
         continue;
       }
 
       // Check if blacklisted on short exchange
-      if (opp.shortExchange && this.isBlacklisted(opp.symbol, opp.shortExchange)) {
+      if (
+        opp.shortExchange &&
+        this.isBlacklisted(opp.symbol, opp.shortExchange)
+      ) {
         filtered.push(opp);
         reasons.set(
           `${opp.symbol}-${opp.shortExchange}`,
-          this.getBlacklistReason(opp.symbol, opp.shortExchange) || 'Blacklisted',
+          this.getBlacklistReason(opp.symbol, opp.shortExchange) ||
+            'Blacklisted',
         );
         continue;
       }
@@ -529,33 +547,39 @@ export class MarketQualityFilter {
    */
   static parseFailureType(errorMessage: string): MarketFailureType {
     const msg = errorMessage.toLowerCase();
-    
-    if (msg.includes('could not immediately match') || 
-        msg.includes('no liquidity') ||
-        msg.includes('no resting orders')) {
+
+    if (
+      msg.includes('could not immediately match') ||
+      msg.includes('no liquidity') ||
+      msg.includes('no resting orders')
+    ) {
       return 'NO_LIQUIDITY';
     }
-    
-    if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('fill timeout')) {
+
+    if (
+      msg.includes('timeout') ||
+      msg.includes('timed out') ||
+      msg.includes('fill timeout')
+    ) {
       return 'FILL_TIMEOUT';
     }
-    
+
     if (msg.includes('slippage') || msg.includes('price moved')) {
       return 'HIGH_SLIPPAGE';
     }
-    
+
     if (msg.includes('insufficient') || msg.includes('depth')) {
       return 'INSUFFICIENT_DEPTH';
     }
-    
+
     if (msg.includes('nonce')) {
       return 'NONCE_ERROR';
     }
-    
+
     if (msg.includes('rejected') || msg.includes('invalid')) {
       return 'REJECTED';
     }
-    
+
     return 'OTHER';
   }
 
@@ -572,23 +596,40 @@ export class MarketQualityFilter {
     // Check 1-hour threshold
     if (stats.failures.last1h >= FILTER_CONFIG.FAILURE_THRESHOLD_1H) {
       const reason = `${stats.failures.last1h} failures in last hour (threshold: ${FILTER_CONFIG.FAILURE_THRESHOLD_1H})`;
-      this.addToBlacklist(symbol, reason, exchange, FILTER_CONFIG.TEMP_BLACKLIST_DURATION_MS);
+      this.addToBlacklist(
+        symbol,
+        reason,
+        exchange,
+        FILTER_CONFIG.TEMP_BLACKLIST_DURATION_MS,
+      );
       return;
     }
 
     // Check 24-hour threshold
     if (stats.failures.last24h >= FILTER_CONFIG.FAILURE_THRESHOLD_24H) {
       const reason = `${stats.failures.last24h} failures in last 24h (threshold: ${FILTER_CONFIG.FAILURE_THRESHOLD_24H})`;
-      this.addToBlacklist(symbol, reason, exchange, FILTER_CONFIG.LONG_BLACKLIST_DURATION_MS);
+      this.addToBlacklist(
+        symbol,
+        reason,
+        exchange,
+        FILTER_CONFIG.LONG_BLACKLIST_DURATION_MS,
+      );
       return;
     }
 
     // Check failure rate
     const total = stats.failures.last24h + stats.successes.last24h;
-    if (total >= FILTER_CONFIG.MIN_SAMPLES_FOR_RATE && 
-        stats.failureRate24h >= FILTER_CONFIG.FAILURE_RATE_THRESHOLD) {
+    if (
+      total >= FILTER_CONFIG.MIN_SAMPLES_FOR_RATE &&
+      stats.failureRate24h >= FILTER_CONFIG.FAILURE_RATE_THRESHOLD
+    ) {
       const reason = `${(stats.failureRate24h * 100).toFixed(0)}% failure rate (threshold: ${FILTER_CONFIG.FAILURE_RATE_THRESHOLD * 100}%)`;
-      this.addToBlacklist(symbol, reason, exchange, FILTER_CONFIG.LONG_BLACKLIST_DURATION_MS);
+      this.addToBlacklist(
+        symbol,
+        reason,
+        exchange,
+        FILTER_CONFIG.LONG_BLACKLIST_DURATION_MS,
+      );
     }
   }
 
@@ -596,7 +637,7 @@ export class MarketQualityFilter {
     const cutoff = Date.now() - FILTER_CONFIG.HISTORY_RETENTION_MS;
 
     for (const [key, failures] of this.failureHistory) {
-      const filtered = failures.filter(f => f.timestamp.getTime() > cutoff);
+      const filtered = failures.filter((f) => f.timestamp.getTime() > cutoff);
       if (filtered.length === 0) {
         this.failureHistory.delete(key);
       } else {
@@ -605,7 +646,7 @@ export class MarketQualityFilter {
     }
 
     for (const [key, successes] of this.successHistory) {
-      const filtered = successes.filter(s => s.getTime() > cutoff);
+      const filtered = successes.filter((s) => s.getTime() > cutoff);
       if (filtered.length === 0) {
         this.successHistory.delete(key);
       } else {
@@ -636,4 +677,3 @@ export class MarketQualityFilter {
     return `${Math.round(minutes / 60)}h`;
   }
 }
-

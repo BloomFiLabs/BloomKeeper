@@ -21,6 +21,10 @@ import {
   FundingArbitrageStrategy,
   ArbitrageExecutionResult,
 } from './FundingArbitrageStrategy';
+import {
+  createMutex,
+  AsyncMutex,
+} from '../../infrastructure/services/AsyncMutex';
 
 /**
  * Strategy execution result
@@ -59,6 +63,9 @@ export class PerpKeeperOrchestrator {
     new Map();
   private readonly activeOrders: Map<string, PerpOrder> = new Map(); // Internal order ID -> PerpOrder
 
+  // Mutex to protect activeOrders from concurrent access
+  private readonly ordersMutex: AsyncMutex = createMutex('activeOrders', 10000);
+
   constructor(
     private readonly aggregator: FundingRateAggregator,
     private readonly arbitrageStrategy: FundingArbitrageStrategy,
@@ -86,6 +93,7 @@ export class PerpKeeperOrchestrator {
 
   /**
    * Place an order and track it internally
+   * Protected by mutex to prevent race conditions on activeOrders
    */
   async placeAndTrackOrder(
     exchangeType: ExchangeType,
@@ -105,7 +113,11 @@ export class PerpKeeperOrchestrator {
         request,
         response,
       );
-      this.activeOrders.set(orderId, order);
+
+      // Protected: add to activeOrders
+      await this.ordersMutex.runExclusive(async () => {
+        this.activeOrders.set(orderId, order);
+      }, 'placeAndTrackOrder');
 
       this.logger.log(
         `Order placed: ${orderId} on ${exchangeType} - ${request.symbol} ${request.side} ${request.size}`,
@@ -122,6 +134,7 @@ export class PerpKeeperOrchestrator {
 
   /**
    * Update order status by polling exchange
+   * Protected by mutex to prevent race conditions on activeOrders
    */
   async updateOrderStatus(
     orderId: string,
@@ -129,7 +142,11 @@ export class PerpKeeperOrchestrator {
     exchangeOrderId: string,
     symbol?: string,
   ): Promise<PerpOrder> {
-    const order = this.activeOrders.get(orderId);
+    // Protected: get order from activeOrders
+    const order = await this.ordersMutex.runExclusive(async () => {
+      return this.activeOrders.get(orderId);
+    }, 'updateOrderStatus-get');
+
     if (!order) {
       throw new Error(`Order not found: ${orderId}`);
     }
@@ -147,7 +164,11 @@ export class PerpKeeperOrchestrator {
         response.averageFillPrice,
         response.error,
       );
-      this.activeOrders.set(orderId, updatedOrder);
+
+      // Protected: update activeOrders
+      await this.ordersMutex.runExclusive(async () => {
+        this.activeOrders.set(orderId, updatedOrder);
+      }, 'updateOrderStatus-set');
 
       return updatedOrder;
     } catch (error) {
@@ -158,9 +179,14 @@ export class PerpKeeperOrchestrator {
 
   /**
    * Cancel an order and remove from tracking
+   * Protected by mutex to prevent race conditions on activeOrders
    */
   async cancelAndUntrackOrder(orderId: string): Promise<boolean> {
-    const order = this.activeOrders.get(orderId);
+    // Protected: get order from activeOrders
+    const order = await this.ordersMutex.runExclusive(async () => {
+      return this.activeOrders.get(orderId);
+    }, 'cancelAndUntrackOrder-get');
+
     if (!order) {
       throw new Error(`Order not found: ${orderId}`);
     }
@@ -178,7 +204,10 @@ export class PerpKeeperOrchestrator {
 
       if (success) {
         const cancelledOrder = order.update(OrderStatus.CANCELLED);
-        this.activeOrders.set(orderId, cancelledOrder);
+        // Protected: update activeOrders
+        await this.ordersMutex.runExclusive(async () => {
+          this.activeOrders.set(orderId, cancelledOrder);
+        }, 'cancelAndUntrackOrder-set');
       }
 
       return success;
@@ -190,11 +219,14 @@ export class PerpKeeperOrchestrator {
 
   /**
    * Get all active orders across all exchanges
+   * Protected by mutex to prevent race conditions on activeOrders
    */
-  getActiveOrders(): PerpOrder[] {
-    return Array.from(this.activeOrders.values()).filter((order) =>
-      order.isActive(),
-    );
+  async getActiveOrders(): Promise<PerpOrder[]> {
+    return this.ordersMutex.runExclusive(async () => {
+      return Array.from(this.activeOrders.values()).filter((order) =>
+        order.isActive(),
+      );
+    }, 'getActiveOrders');
   }
 
   /**
@@ -347,17 +379,21 @@ export class PerpKeeperOrchestrator {
 
   /**
    * Clean up old completed orders from tracking
+   * Protected by mutex to prevent race conditions on activeOrders
    */
-  cleanupCompletedOrders(maxAgeHours: number = 24): void {
+  async cleanupCompletedOrders(maxAgeHours: number = 24): Promise<void> {
     const cutoffTime = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
-    let cleaned = 0;
 
-    for (const [orderId, order] of this.activeOrders.entries()) {
-      if (order.isTerminal() && order.updatedAt < cutoffTime) {
-        this.activeOrders.delete(orderId);
-        cleaned++;
+    const cleaned = await this.ordersMutex.runExclusive(async () => {
+      let count = 0;
+      for (const [orderId, order] of this.activeOrders.entries()) {
+        if (order.isTerminal() && order.updatedAt < cutoffTime) {
+          this.activeOrders.delete(orderId);
+          count++;
+        }
       }
-    }
+      return count;
+    }, 'cleanupCompletedOrders');
 
     if (cleaned > 0) {
       this.logger.log(`Cleaned up ${cleaned} old completed orders`);

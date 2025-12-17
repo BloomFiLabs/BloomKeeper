@@ -27,4 +27,3 @@ export class CandleEntity {
   @Column('float')
   volume: number;
 }
-

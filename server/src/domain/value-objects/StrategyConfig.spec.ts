@@ -29,7 +29,9 @@ describe('StrategyConfig', () => {
     it('should have correct exchange fee rates', () => {
       const config = StrategyConfig.withDefaults();
 
-      expect(config.exchangeFeeRates.get(ExchangeType.HYPERLIQUID)).toBe(0.00015);
+      expect(config.exchangeFeeRates.get(ExchangeType.HYPERLIQUID)).toBe(
+        0.00015,
+      );
       expect(config.exchangeFeeRates.get(ExchangeType.ASTER)).toBe(0.00005);
       expect(config.exchangeFeeRates.get(ExchangeType.LIGHTER)).toBe(0);
     });
@@ -202,7 +204,9 @@ describe('StrategyConfig', () => {
       const config1 = StrategyConfig.withDefaults();
       const config2 = StrategyConfig.withDefaults();
 
-      expect(config1.defaultMinSpread.toDecimal()).toBe(config2.defaultMinSpread.toDecimal());
+      expect(config1.defaultMinSpread.toDecimal()).toBe(
+        config2.defaultMinSpread.toDecimal(),
+      );
       expect(config1.leverage).toBe(config2.leverage);
       expect(config1.exchangeFeeRates.size).toBe(config2.exchangeFeeRates.size);
     });
@@ -216,7 +220,10 @@ describe('StrategyConfig', () => {
         1, // minLeverage
         10, // maxLeverage
         24, // volatilityLookbackHours
-        new Map([['BTC', 5], ['ETH', 3]]), // leverageOverrides
+        new Map([
+          ['BTC', 5],
+          ['ETH', 3],
+        ]), // leverageOverrides
       );
 
       expect(config.useDynamicLeverage).toBe(true);
@@ -261,7 +268,10 @@ describe('StrategyConfig', () => {
         1,
         10,
         24,
-        new Map([['BTC', 5], ['ETH', 3]]),
+        new Map([
+          ['BTC', 5],
+          ['ETH', 3],
+        ]),
       );
 
       expect(config.getLeverageForSymbol('BTC')).toBe(5);
@@ -463,8 +473,3 @@ describe('StrategyConfig', () => {
     });
   });
 });
-
-
-
-
-

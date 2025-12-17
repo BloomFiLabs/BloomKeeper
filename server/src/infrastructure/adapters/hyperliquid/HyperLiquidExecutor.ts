@@ -29,7 +29,7 @@ interface Position {
 
 /**
  * HyperLiquidExecutor - Executes trades on HyperLiquid via HyperEVM
- * 
+ *
  * This adapter interacts with the deployed HyperEVMFundingStrategy contract
  * which in turn communicates with HyperCore via the CoreWriter precompile.
  */
@@ -48,7 +48,9 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
     const privateKey = this.configService.get<string>('PRIVATE_KEY');
 
     if (!rpcUrl || !privateKey) {
-      this.logger.warn('HyperLiquid not configured - funding strategies will be disabled');
+      this.logger.warn(
+        'HyperLiquid not configured - funding strategies will be disabled',
+      );
       // Create dummy provider/wallet for type safety
       this.provider = null as any;
       this.wallet = null as any;
@@ -57,8 +59,10 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
 
     this.provider = new JsonRpcProvider(rpcUrl);
     this.wallet = new Wallet(privateKey, this.provider);
-    
-    this.logger.log(`HyperLiquid Executor initialized for wallet: ${this.wallet.address}`);
+
+    this.logger.log(
+      `HyperLiquid Executor initialized for wallet: ${this.wallet.address}`,
+    );
   }
 
   isConfigured(): boolean {
@@ -97,11 +101,16 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
     } catch (error: any) {
       // Silently return empty position if contract doesn't exist or RPC is unavailable
       // This is expected when strategy contracts aren't deployed
-      if (error.code === 'CALL_EXCEPTION' || error.message?.includes('missing revert data')) {
+      if (
+        error.code === 'CALL_EXCEPTION' ||
+        error.message?.includes('missing revert data')
+      ) {
         return { size: 0, side: 'none', entryPrice: 0 };
       }
       // Only log unexpected errors
-      this.logger.debug(`Failed to get position for ${strategyAddress}: ${error.message}`);
+      this.logger.debug(
+        `Failed to get position for ${strategyAddress}: ${error.message}`,
+      );
       return { size: 0, side: 'none', entryPrice: 0 };
     }
   }
@@ -116,7 +125,11 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
     price: number,
   ): Promise<string> {
     try {
-      const strategy = new Contract(strategyAddress, FUNDING_STRATEGY_ABI, this.wallet);
+      const strategy = new Contract(
+        strategyAddress,
+        FUNDING_STRATEGY_ABI,
+        this.wallet,
+      );
 
       // Convert to 1e8 scale as expected by HyperLiquid
       const sizeScaled = BigInt(Math.round(size * this.SCALE_1E8));
@@ -124,8 +137,8 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
 
       this.logger.log(
         `Placing ${isLong ? 'LONG' : 'SHORT'} order: ` +
-        `Size=${size.toFixed(4)}, Price=${price.toFixed(2)}, ` +
-        `Strategy=${strategyAddress}`
+          `Size=${size.toFixed(4)}, Price=${price.toFixed(2)}, ` +
+          `Strategy=${strategyAddress}`,
       );
 
       const tx = await strategy.rebalance(
@@ -137,7 +150,7 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
 
       const receipt = await tx.wait();
       this.logger.log(`Order placed: ${receipt.hash}`);
-      
+
       return receipt.hash;
     } catch (error) {
       this.logger.error(`Failed to place order: ${error.message}`);
@@ -150,13 +163,17 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
    */
   async closePosition(strategyAddress: string): Promise<string> {
     try {
-      const strategy = new Contract(strategyAddress, FUNDING_STRATEGY_ABI, this.wallet);
+      const strategy = new Contract(
+        strategyAddress,
+        FUNDING_STRATEGY_ABI,
+        this.wallet,
+      );
 
       this.logger.log(`Closing position for strategy: ${strategyAddress}`);
 
       const tx = await strategy.emergencyExit();
       const receipt = await tx.wait();
-      
+
       this.logger.log(`Position closed: ${receipt.hash}`);
       return receipt.hash;
     } catch (error) {
@@ -176,28 +193,40 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
     try {
       const l1Read = new Contract(L1_READ_ADDRESS, L1_READ_ABI, this.provider);
       const equity = await l1Read.readVaultEquity(strategyAddress);
-      
+
       // Equity is in 6 decimals (USDC)
       return Number(equity) / 1e6;
     } catch (error: any) {
       // Silently return 0 if contract doesn't exist or RPC is unavailable
       // This is expected when strategy contracts aren't deployed
-      if (error.code === 'CALL_EXCEPTION' || error.message?.includes('missing revert data')) {
+      if (
+        error.code === 'CALL_EXCEPTION' ||
+        error.message?.includes('missing revert data')
+      ) {
         return 0;
       }
-      
+
       // Fallback: try reading from strategy contract
       try {
-        const strategy = new Contract(strategyAddress, FUNDING_STRATEGY_ABI, this.provider);
+        const strategy = new Contract(
+          strategyAddress,
+          FUNDING_STRATEGY_ABI,
+          this.provider,
+        );
         const totalAssets = await strategy.totalAssets();
         return Number(totalAssets) / 1e6;
       } catch (fallbackError: any) {
         // Silently return 0 if fallback also fails (contract doesn't exist)
-        if (fallbackError.code === 'CALL_EXCEPTION' || fallbackError.message?.includes('missing revert data')) {
+        if (
+          fallbackError.code === 'CALL_EXCEPTION' ||
+          fallbackError.message?.includes('missing revert data')
+        ) {
           return 0;
         }
         // Only log unexpected errors
-        this.logger.debug(`Fallback equity fetch failed: ${fallbackError.message}`);
+        this.logger.debug(
+          `Fallback equity fetch failed: ${fallbackError.message}`,
+        );
         return 0;
       }
     }
@@ -213,9 +242,16 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
   /**
    * Check if an address is authorized as a keeper
    */
-  async isKeeper(strategyAddress: string, keeperAddress: string): Promise<boolean> {
+  async isKeeper(
+    strategyAddress: string,
+    keeperAddress: string,
+  ): Promise<boolean> {
     try {
-      const strategy = new Contract(strategyAddress, FUNDING_STRATEGY_ABI, this.provider);
+      const strategy = new Contract(
+        strategyAddress,
+        FUNDING_STRATEGY_ABI,
+        this.provider,
+      );
       return await strategy.keepers(keeperAddress);
     } catch (error) {
       this.logger.error(`Failed to check keeper status: ${error.message}`);
@@ -230,4 +266,3 @@ export class HyperLiquidExecutor implements IHyperLiquidExecutor {
     return this.wallet.address;
   }
 }
-

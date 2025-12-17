@@ -3,31 +3,41 @@ import { PerpKeeperService } from './PerpKeeperService';
 import { AsterExchangeAdapter } from '../../infrastructure/adapters/aster/AsterExchangeAdapter';
 import { LighterExchangeAdapter } from '../../infrastructure/adapters/lighter/LighterExchangeAdapter';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
-import { PerpOrderRequest, OrderSide, OrderType, OrderStatus } from '../../domain/value-objects/PerpOrder';
+import {
+  PerpOrderRequest,
+  OrderSide,
+  OrderType,
+  OrderStatus,
+} from '../../domain/value-objects/PerpOrder';
 
 // Mock Hyperliquid adapter to avoid ESM import issues
-jest.mock('../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter', () => {
-  const mockHyperliquidClass = jest.fn().mockImplementation(() => ({
-    getConfig: jest.fn(),
-    getExchangeType: jest.fn().mockReturnValue(ExchangeType.HYPERLIQUID),
-    placeOrder: jest.fn(),
-    getPosition: jest.fn(),
-    getPositions: jest.fn().mockResolvedValue([]),
-    cancelOrder: jest.fn(),
-    cancelAllOrders: jest.fn(),
-    getOrderStatus: jest.fn(),
-    getMarkPrice: jest.fn(),
-    getBalance: jest.fn(),
-    getEquity: jest.fn(),
-    isReady: jest.fn().mockResolvedValue(true),
-    testConnection: jest.fn().mockResolvedValue(undefined),
-  }));
-  return {
-    HyperliquidExchangeAdapter: mockHyperliquidClass,
-  };
-});
+jest.mock(
+  '../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter',
+  () => {
+    const mockHyperliquidClass = jest.fn().mockImplementation(() => ({
+      getConfig: jest.fn(),
+      getExchangeType: jest.fn().mockReturnValue(ExchangeType.HYPERLIQUID),
+      placeOrder: jest.fn(),
+      getPosition: jest.fn(),
+      getPositions: jest.fn().mockResolvedValue([]),
+      cancelOrder: jest.fn(),
+      cancelAllOrders: jest.fn(),
+      getOrderStatus: jest.fn(),
+      getMarkPrice: jest.fn(),
+      getBalance: jest.fn(),
+      getEquity: jest.fn(),
+      isReady: jest.fn().mockResolvedValue(true),
+      testConnection: jest.fn().mockResolvedValue(undefined),
+    }));
+    return {
+      HyperliquidExchangeAdapter: mockHyperliquidClass,
+    };
+  },
+);
 
-const { HyperliquidExchangeAdapter } = require('../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter');
+const {
+  HyperliquidExchangeAdapter,
+} = require('../../infrastructure/adapters/hyperliquid/HyperliquidExchangeAdapter');
 
 describe('PerpKeeperService', () => {
   let service: PerpKeeperService;
@@ -75,7 +85,10 @@ describe('PerpKeeperService', () => {
         PerpKeeperService,
         { provide: AsterExchangeAdapter, useValue: mockAsterAdapter },
         { provide: LighterExchangeAdapter, useValue: mockLighterAdapter },
-        { provide: HyperliquidExchangeAdapter, useValue: mockHyperliquidAdapter },
+        {
+          provide: HyperliquidExchangeAdapter,
+          useValue: mockHyperliquidAdapter,
+        },
       ],
     }).compile();
 
@@ -154,10 +167,11 @@ describe('PerpKeeperService', () => {
     });
 
     it('should throw error if any connection fails', async () => {
-      mockAsterAdapter.testConnection.mockRejectedValue(new Error('Connection failed'));
+      mockAsterAdapter.testConnection.mockRejectedValue(
+        new Error('Connection failed'),
+      );
 
       await expect(service.testAllConnections()).rejects.toThrow();
     });
   });
 });
-

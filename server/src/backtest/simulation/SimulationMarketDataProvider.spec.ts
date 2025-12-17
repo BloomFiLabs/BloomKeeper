@@ -17,7 +17,7 @@ describe('SimulationMarketDataProvider', () => {
     it('should return same value for any pool address', async () => {
       const feeTier1 = await provider.getPoolFeeTier('0xPool1');
       const feeTier2 = await provider.getPoolFeeTier('0xPool2');
-      
+
       expect(feeTier1).toBe(feeTier2);
       expect(feeTier1).toBe(0.0005);
     });
@@ -63,13 +63,3 @@ describe('SimulationMarketDataProvider', () => {
     });
   });
 });
-
-
-
-
-
-
-
-
-
-

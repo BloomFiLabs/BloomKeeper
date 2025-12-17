@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ExchangeConfig, ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
+import {
+  ExchangeConfig,
+  ExchangeType,
+} from '../../../domain/value-objects/ExchangeConfig';
 import {
   PerpOrderRequest,
   PerpOrderResponse,
@@ -9,7 +12,11 @@ import {
   OrderStatus,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
+import {
+  IPerpExchangeAdapter,
+  ExchangeError,
+  FundingPayment,
+} from '../../../domain/ports/IPerpExchangeAdapter';
 import { AsterExchangeAdapter } from '../aster/AsterExchangeAdapter';
 import { LighterExchangeAdapter } from '../lighter/LighterExchangeAdapter';
 import { HyperliquidExchangeAdapter } from '../hyperliquid/HyperliquidExchangeAdapter';
@@ -31,7 +38,7 @@ interface PendingLimitOrder {
 
 /**
  * MockExchangeAdapter - Wraps real exchange adapters for testing
- * 
+ *
  * In test mode, this adapter:
  * - Uses REAL market data (prices, order books, funding rates) from actual exchanges
  * - Tracks FAKE positions and balances internally
@@ -52,7 +59,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
   // Pending limit orders queue
   private pendingOrders: Map<string, PendingLimitOrder> = new Map();
-  
+
   // Price polling interval (ms)
   private readonly PRICE_POLL_INTERVAL = 2000; // Poll every 2 seconds
   private readonly ORDER_EXPIRY_MS = 60 * 60 * 1000; // Orders expire after 1 hour
@@ -68,7 +75,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
     private readonly extendedAdapter: ExtendedExchangeAdapter | null = null,
   ) {
     this.exchangeType = exchangeType;
-    
+
     // Get the real adapter for this exchange type
     switch (exchangeType) {
       case ExchangeType.ASTER:
@@ -76,32 +83,40 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
         this.realAdapter = asterAdapter;
         break;
       case ExchangeType.LIGHTER:
-        if (!lighterAdapter) throw new Error('Lighter adapter required for mock');
+        if (!lighterAdapter)
+          throw new Error('Lighter adapter required for mock');
         this.realAdapter = lighterAdapter;
         break;
       case ExchangeType.HYPERLIQUID:
-        if (!hyperliquidAdapter) throw new Error('Hyperliquid adapter required for mock');
+        if (!hyperliquidAdapter)
+          throw new Error('Hyperliquid adapter required for mock');
         this.realAdapter = hyperliquidAdapter;
         break;
       case ExchangeType.EXTENDED:
         if (!extendedAdapter) {
           // Extended adapter is optional - use a stub that returns empty data
-          this.logger.warn('Extended adapter not available - mock will return empty market data');
+          this.logger.warn(
+            'Extended adapter not available - mock will return empty market data',
+          );
           this.realAdapter = {
             getBalance: async () => 0,
             getPositions: async () => [],
             getPosition: async () => null,
-            placeOrder: async () => { throw new Error('Extended adapter not configured'); },
-            cancelOrder: async () => { throw new Error('Extended adapter not configured'); },
+            placeOrder: async () => {
+              throw new Error('Extended adapter not configured');
+            },
+            cancelOrder: async () => {
+              throw new Error('Extended adapter not configured');
+            },
             cancelAllOrders: async () => 0,
             getOpenOrders: async () => [],
-            getOrderStatus: async () => ({ status: 'UNKNOWN' } as any),
+            getOrderStatus: async () => ({ status: 'UNKNOWN' }) as any,
             getBestBidAsk: async () => ({ bestBid: 0, bestAsk: 0 }),
             getAvailableMargin: async () => 0,
             getAccountInfo: async () => ({}),
             getFundingPayments: async () => [],
             getExchangeType: () => ExchangeType.EXTENDED,
-            getConfig: () => ({ exchangeType: ExchangeType.EXTENDED } as any),
+            getConfig: () => ({ exchangeType: ExchangeType.EXTENDED }) as any,
             getMarkPrice: async () => 0,
             getEquity: async () => 0,
             isReady: () => false,
@@ -117,28 +132,29 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       default:
         throw new Error(`Unsupported exchange type: ${exchangeType}`);
     }
-    
+
     // Initialize mock capital from env (default 5M split across exchanges)
     const mockCapital = parseFloat(
-      this.configService.get<string>('MOCK_CAPITAL_USD') || '5000000'
+      this.configService.get<string>('MOCK_CAPITAL_USD') || '5000000',
     );
     // Split capital across 4 exchanges (Aster, Lighter, Hyperliquid, Extended)
     this.mockBalance = mockCapital / 4;
-    
+
     // Use the real adapter's config (it has all the necessary credentials)
     this.config = this.realAdapter.getConfig();
 
     // Check if instant fill mode is enabled (default: false = realistic limit orders)
-    this.instantFill = this.configService.get<string>('MOCK_INSTANT_FILL') === 'true';
+    this.instantFill =
+      this.configService.get<string>('MOCK_INSTANT_FILL') === 'true';
 
     this.logger.log(
       `🧪 MockExchangeAdapter initialized for ${exchangeType} with mock balance: $${this.mockBalance.toFixed(2)} ` +
-      `(using REAL market data from exchange)`
+        `(using REAL market data from exchange)`,
     );
-    
+
     if (!this.instantFill) {
       this.logger.log(
-        `📊 Limit order mode: REALISTIC (orders fill when price crosses threshold)`
+        `📊 Limit order mode: REALISTIC (orders fill when price crosses threshold)`,
       );
       // Start price polling for limit orders
       this.startPricePolling();
@@ -187,7 +203,9 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
       // Check if price crossed threshold
       try {
-        const currentPrice = await this.realAdapter.getMarkPrice(order.request.symbol);
+        const currentPrice = await this.realAdapter.getMarkPrice(
+          order.request.symbol,
+        );
         const limitPrice = order.request.price || currentPrice;
 
         let shouldFill = false;
@@ -203,12 +221,14 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
         if (shouldFill) {
           this.logger.log(
             `[MOCK] 📈 Limit order ${orderId} triggered: ${order.request.symbol} ` +
-            `price ${currentPrice.toFixed(2)} crossed limit ${limitPrice.toFixed(2)}`
+              `price ${currentPrice.toFixed(2)} crossed limit ${limitPrice.toFixed(2)}`,
           );
           await this.executeLimitOrderFill(order, currentPrice);
         }
       } catch (error: any) {
-        this.logger.debug(`[MOCK] Error checking price for ${order.request.symbol}: ${error.message}`);
+        this.logger.debug(
+          `[MOCK] Error checking price for ${order.request.symbol}: ${error.message}`,
+        );
       }
     }
   }
@@ -216,7 +236,10 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Execute a limit order fill
    */
-  private async executeLimitOrderFill(order: PendingLimitOrder, currentPrice: number): Promise<void> {
+  private async executeLimitOrderFill(
+    order: PendingLimitOrder,
+    currentPrice: number,
+  ): Promise<void> {
     const request = order.request;
     const fillPrice = request.price || currentPrice;
 
@@ -233,22 +256,25 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
     this.pendingOrders.delete(order.orderId);
 
     this.logger.log(
-      `[MOCK] ✅ Limit order ${order.orderId} filled: ${request.side} ${request.size} ${request.symbol} @ $${fillPrice.toFixed(2)}`
+      `[MOCK] ✅ Limit order ${order.orderId} filled: ${request.side} ${request.size} ${request.symbol} @ $${fillPrice.toFixed(2)}`,
     );
   }
 
   /**
    * Update position when an order fills
    */
-  private async updatePositionOnFill(request: PerpOrderRequest, fillPrice: number): Promise<void> {
+  private async updatePositionOnFill(
+    request: PerpOrderRequest,
+    fillPrice: number,
+  ): Promise<void> {
     const existingPosition = this.mockPositions.get(request.symbol);
-    
+
     if (existingPosition) {
       if (request.reduceOnly) {
         // Closing position
         const closeSize = Math.min(request.size, existingPosition.size);
         const newSize = existingPosition.size - closeSize;
-        
+
         if (newSize <= 0.001) {
           this.mockPositions.delete(request.symbol);
         } else {
@@ -259,7 +285,9 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
             newSize,
             existingPosition.entryPrice,
             fillPrice,
-            (fillPrice - existingPosition.entryPrice) * newSize * (existingPosition.side === OrderSide.LONG ? 1 : -1),
+            (fillPrice - existingPosition.entryPrice) *
+              newSize *
+              (existingPosition.side === OrderSide.LONG ? 1 : -1),
             1,
             undefined,
             undefined,
@@ -271,8 +299,11 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       } else {
         // Increasing position
         const totalSize = existingPosition.size + request.size;
-        const avgEntryPrice = (existingPosition.entryPrice * existingPosition.size + fillPrice * request.size) / totalSize;
-        
+        const avgEntryPrice =
+          (existingPosition.entryPrice * existingPosition.size +
+            fillPrice * request.size) /
+          totalSize;
+
         const newPosition = new PerpPosition(
           this.exchangeType,
           request.symbol,
@@ -280,7 +311,9 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
           totalSize,
           avgEntryPrice,
           fillPrice,
-          (fillPrice - avgEntryPrice) * totalSize * (existingPosition.side === OrderSide.LONG ? 1 : -1),
+          (fillPrice - avgEntryPrice) *
+            totalSize *
+            (existingPosition.side === OrderSide.LONG ? 1 : -1),
           1,
           undefined,
           undefined,
@@ -332,54 +365,64 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       // Get real order book data from the exchange
       let bestBid: number | undefined;
       let bestAsk: number | undefined;
-      
+
       // Try to get best bid/ask from real adapter
-      if ('getBestBidAsk' in this.realAdapter && typeof (this.realAdapter as any).getBestBidAsk === 'function') {
+      if (
+        'getBestBidAsk' in this.realAdapter &&
+        typeof (this.realAdapter as any).getBestBidAsk === 'function'
+      ) {
         const bidAsk = await (this.realAdapter as any).getBestBidAsk(symbol);
         bestBid = bidAsk.bestBid;
         bestAsk = bidAsk.bestAsk;
       }
-      
+
       // If we have order book data, calculate slippage based on real depth
       if (bestBid && bestAsk) {
         const spread = bestAsk - bestBid;
         const midPrice = (bestBid + bestAsk) / 2;
         const spreadPercent = spread / midPrice;
-        
+
         // Estimate available liquidity at best bid/ask
         // For simplicity, assume we can get ~1% of daily volume at best price
         // In reality, this would come from order book depth
         const markPrice = await this.realAdapter.getMarkPrice(symbol);
         const estimatedLiquidity = markPrice * orderSize * 100; // Rough estimate
-        
+
         // Calculate slippage based on order size relative to estimated liquidity
         const liquidityRatio = orderValue / estimatedLiquidity;
-        
+
         // Square root model: slippage increases with sqrt(order_size / liquidity)
-        const baseSlippage = orderType === OrderType.MARKET 
-          ? spreadPercent / 2  // Pay half the spread for market orders
-          : 0.0001; // Minimal slippage for limit orders
-        
-        const impactSlippage = Math.sqrt(Math.min(liquidityRatio, 1)) * spreadPercent * 2;
+        const baseSlippage =
+          orderType === OrderType.MARKET
+            ? spreadPercent / 2 // Pay half the spread for market orders
+            : 0.0001; // Minimal slippage for limit orders
+
+        const impactSlippage =
+          Math.sqrt(Math.min(liquidityRatio, 1)) * spreadPercent * 2;
         const slippagePercent = Math.min(baseSlippage + impactSlippage, 0.05); // Cap at 5%
-        
+
         // Price impact: how much our trade moves the market
-        const priceImpactPercent = Math.min(Math.sqrt(liquidityRatio) * spreadPercent, 0.02);
-        
+        const priceImpactPercent = Math.min(
+          Math.sqrt(liquidityRatio) * spreadPercent,
+          0.02,
+        );
+
         return {
           slippage: slippagePercent,
           priceImpact: priceImpactPercent,
         };
       }
     } catch (error: any) {
-      this.logger.debug(`Failed to get real order book for slippage calculation: ${error.message}`);
+      this.logger.debug(
+        `Failed to get real order book for slippage calculation: ${error.message}`,
+      );
     }
-    
+
     // Fallback: use mark price spread estimate
     const markPrice = await this.realAdapter.getMarkPrice(symbol);
     const estimatedSpread = markPrice * 0.001; // Assume 0.1% spread
     const baseSlippage = orderType === OrderType.MARKET ? 0.0005 : 0.0001;
-    
+
     return {
       slippage: baseSlippage,
       priceImpact: 0.0002, // Small impact
@@ -388,20 +431,20 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
   async placeOrder(request: PerpOrderRequest): Promise<PerpOrderResponse> {
     this.logger.debug(
-      `[MOCK] Placing ${request.side} ${request.type} order: ${request.size} ${request.symbol}`
+      `[MOCK] Placing ${request.side} ${request.type} order: ${request.size} ${request.symbol}`,
     );
 
     // Simulate order processing delay
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     const orderId = `mock-${this.exchangeType}-${++this.orderCounter}`;
-    
+
     // Get REAL mark price from actual exchange
     const markPrice = await this.realAdapter.getMarkPrice(request.symbol);
-    
+
     // Calculate order value for slippage calculation
     const orderValue = request.size * markPrice;
-    
+
     // Check if we have enough balance (margin check)
     const positionValue = request.size * (request.price || markPrice);
     if (positionValue > this.mockBalance * 10 && !request.reduceOnly) {
@@ -422,7 +465,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       // Instant fill mode: fill immediately at limit price
       const fillPrice = request.price || markPrice;
       await this.updatePositionOnFill(request, fillPrice);
-      
+
       return new PerpOrderResponse(
         orderId,
         OrderStatus.FILLED,
@@ -452,11 +495,11 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       // Price already favorable - fill immediately
       this.logger.log(
         `[MOCK] Limit order fills immediately: price $${markPrice.toFixed(2)} is ` +
-        `${request.side === OrderSide.LONG ? '<=' : '>='} limit $${limitPrice.toFixed(2)}`
+          `${request.side === OrderSide.LONG ? '<=' : '>='} limit $${limitPrice.toFixed(2)}`,
       );
-      
+
       await this.updatePositionOnFill(request, limitPrice);
-      
+
       return new PerpOrderResponse(
         orderId,
         OrderStatus.FILLED,
@@ -484,8 +527,8 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
     this.logger.log(
       `[MOCK] 🕐 Limit order ${orderId} queued: ${request.side} ${request.size} ${request.symbol} ` +
-      `@ $${limitPrice.toFixed(2)} (current: $${markPrice.toFixed(2)}, ` +
-      `waiting for price to ${request.side === OrderSide.LONG ? 'drop' : 'rise'})`
+        `@ $${limitPrice.toFixed(2)} (current: $${markPrice.toFixed(2)}, ` +
+        `waiting for price to ${request.side === OrderSide.LONG ? 'drop' : 'rise'})`,
     );
 
     return new PerpOrderResponse(
@@ -518,7 +561,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       request.side,
       request.type,
     );
-    
+
     // Apply slippage and price impact to fill price
     let fillPrice: number;
     if (request.side === OrderSide.LONG) {
@@ -528,15 +571,15 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       // Selling: price moves down (get less)
       fillPrice = markPrice * (1 - slippage - priceImpact);
     }
-    
+
     // Log slippage for large orders
     if (orderValue > 100000) {
       this.logger.debug(
         `[MOCK] Large order (using REAL market data): ` +
-        `slippage: ${(slippage * 100).toFixed(3)}%, ` +
-        `price impact: ${(priceImpact * 100).toFixed(3)}%, ` +
-        `order value: $${orderValue.toFixed(2)}, ` +
-        `mark price: $${markPrice.toFixed(2)}`
+          `slippage: ${(slippage * 100).toFixed(3)}%, ` +
+          `price impact: ${(priceImpact * 100).toFixed(3)}%, ` +
+          `order value: $${orderValue.toFixed(2)}, ` +
+          `mark price: $${markPrice.toFixed(2)}`,
       );
     }
 
@@ -562,7 +605,9 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
     // Update mark price and unrealized PnL
     const markPrice = await this.getMarkPrice(symbol);
-    const unrealizedPnl = (markPrice - position.entryPrice) * position.size * 
+    const unrealizedPnl =
+      (markPrice - position.entryPrice) *
+      position.size *
       (position.side === OrderSide.LONG ? 1 : -1);
 
     return new PerpPosition(
@@ -583,7 +628,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
   async getPositions(): Promise<PerpPosition[]> {
     const positions: PerpPosition[] = [];
-    
+
     for (const [symbol] of this.mockPositions.entries()) {
       const position = await this.getPosition(symbol);
       if (position) {
@@ -596,7 +641,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
   async cancelOrder(orderId: string, symbol?: string): Promise<boolean> {
     this.logger.debug(`[MOCK] Cancelling order ${orderId}`);
-    
+
     const pendingOrder = this.pendingOrders.get(orderId);
     if (pendingOrder) {
       pendingOrder.status = OrderStatus.CANCELLED;
@@ -604,13 +649,13 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
       this.logger.log(`[MOCK] ❌ Order ${orderId} cancelled`);
       return true;
     }
-    
+
     return true; // Order might have already filled
   }
 
   async cancelAllOrders(symbol: string): Promise<number> {
     this.logger.debug(`[MOCK] Cancelling all orders for ${symbol}`);
-    
+
     let cancelledCount = 0;
     for (const [orderId, order] of this.pendingOrders.entries()) {
       if (order.request.symbol === symbol) {
@@ -619,15 +664,20 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
         cancelledCount++;
       }
     }
-    
+
     if (cancelledCount > 0) {
-      this.logger.log(`[MOCK] ❌ Cancelled ${cancelledCount} orders for ${symbol}`);
+      this.logger.log(
+        `[MOCK] ❌ Cancelled ${cancelledCount} orders for ${symbol}`,
+      );
     }
-    
+
     return cancelledCount;
   }
 
-  async getOrderStatus(orderId: string, symbol?: string): Promise<PerpOrderResponse> {
+  async getOrderStatus(
+    orderId: string,
+    symbol?: string,
+  ): Promise<PerpOrderResponse> {
     // Check pending orders first
     const pendingOrder = this.pendingOrders.get(orderId);
     if (pendingOrder) {
@@ -643,7 +693,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
         pendingOrder.filledAt || pendingOrder.createdAt,
       );
     }
-    
+
     // If not in pending, assume it was filled
     return new PerpOrderResponse(
       orderId,
@@ -670,7 +720,7 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
    */
   getPendingOrdersForSymbol(symbol: string): PendingLimitOrder[] {
     return Array.from(this.pendingOrders.values()).filter(
-      order => order.request.symbol === symbol
+      (order) => order.request.symbol === symbol,
     );
   }
 
@@ -692,11 +742,13 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
   async getEquity(): Promise<number> {
     let totalEquity = this.mockBalance;
-    
+
     // Add unrealized PnL from positions
     for (const position of this.mockPositions.values()) {
       const markPrice = await this.getMarkPrice(position.symbol);
-      const unrealizedPnl = (markPrice - position.entryPrice) * position.size * 
+      const unrealizedPnl =
+        (markPrice - position.entryPrice) *
+        position.size *
         (position.side === OrderSide.LONG ? 1 : -1);
       totalEquity += unrealizedPnl;
     }
@@ -710,23 +762,33 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
 
   async testConnection(): Promise<void> {
     // Mock connection always succeeds
-    this.logger.debug(`[MOCK] Connection test successful for ${this.exchangeType}`);
+    this.logger.debug(
+      `[MOCK] Connection test successful for ${this.exchangeType}`,
+    );
   }
 
   async transferInternal(amount: number, toPerp: boolean): Promise<string> {
     this.logger.debug(
-      `[MOCK] Transferring $${amount.toFixed(2)} ${toPerp ? 'spot → perp' : 'perp → spot'}`
+      `[MOCK] Transferring $${amount.toFixed(2)} ${toPerp ? 'spot → perp' : 'perp → spot'}`,
     );
     return `mock-transfer-${Date.now()}`;
   }
 
-  async depositExternal(amount: number, asset: string, destination?: string): Promise<string> {
+  async depositExternal(
+    amount: number,
+    asset: string,
+    destination?: string,
+  ): Promise<string> {
     this.logger.debug(`[MOCK] Depositing $${amount.toFixed(2)} ${asset}`);
     this.mockBalance += amount;
     return `mock-deposit-${Date.now()}`;
   }
 
-  async withdrawExternal(amount: number, asset: string, destination: string): Promise<string> {
+  async withdrawExternal(
+    amount: number,
+    asset: string,
+    destination: string,
+  ): Promise<string> {
     if (amount > this.mockBalance) {
       throw new ExchangeError(
         `Insufficient balance for withdrawal: need $${amount.toFixed(2)}, have $${this.mockBalance.toFixed(2)}`,
@@ -734,8 +796,10 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
         'INSUFFICIENT_BALANCE',
       );
     }
-    
-    this.logger.debug(`[MOCK] Withdrawing $${amount.toFixed(2)} ${asset} to ${destination}`);
+
+    this.logger.debug(
+      `[MOCK] Withdrawing $${amount.toFixed(2)} ${asset} to ${destination}`,
+    );
     this.mockBalance -= amount;
     return `mock-withdraw-${Date.now()}`;
   }
@@ -750,11 +814,16 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Get best bid/ask from real exchange (if available)
    */
-  async getBestBidAsk(symbol: string): Promise<{ bestBid: number; bestAsk: number }> {
-    if ('getBestBidAsk' in this.realAdapter && typeof (this.realAdapter as any).getBestBidAsk === 'function') {
+  async getBestBidAsk(
+    symbol: string,
+  ): Promise<{ bestBid: number; bestAsk: number }> {
+    if (
+      'getBestBidAsk' in this.realAdapter &&
+      typeof (this.realAdapter as any).getBestBidAsk === 'function'
+    ) {
       return await (this.realAdapter as any).getBestBidAsk(symbol);
     }
-    
+
     // Fallback: use mark price and estimate spread
     const markPrice = await this.realAdapter.getMarkPrice(symbol);
     const spread = markPrice * 0.001; // Assume 0.1% spread
@@ -767,13 +836,18 @@ export class MockExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Get funding payments - delegates to real adapter
    */
-  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+  async getFundingPayments(
+    startTime?: number,
+    endTime?: number,
+  ): Promise<FundingPayment[]> {
     // In mock mode, return empty array (no real positions = no real funding)
     // But if you want to see real funding for testing, delegate to real adapter
-    if ('getFundingPayments' in this.realAdapter && typeof (this.realAdapter as any).getFundingPayments === 'function') {
+    if (
+      'getFundingPayments' in this.realAdapter &&
+      typeof (this.realAdapter as any).getFundingPayments === 'function'
+    ) {
       return await this.realAdapter.getFundingPayments(startTime, endTime);
     }
     return [];
   }
 }
-

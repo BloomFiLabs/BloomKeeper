@@ -161,7 +161,12 @@ describe('DeltaNeutralPositionGroup', () => {
     );
 
     expect(() => {
-      new DeltaNeutralPositionGroup('ETH', ExchangeType.HYPERLIQUID, perpPosition, spotPosition);
+      new DeltaNeutralPositionGroup(
+        'ETH',
+        ExchangeType.HYPERLIQUID,
+        perpPosition,
+        spotPosition,
+      );
     }).toThrow('Perp and spot positions must be on the same exchange');
   });
 
@@ -186,7 +191,12 @@ describe('DeltaNeutralPositionGroup', () => {
     );
 
     expect(() => {
-      new DeltaNeutralPositionGroup('ETH', ExchangeType.HYPERLIQUID, perpPosition, spotPosition);
+      new DeltaNeutralPositionGroup(
+        'ETH',
+        ExchangeType.HYPERLIQUID,
+        perpPosition,
+        spotPosition,
+      );
     }).toThrow('Perp and spot positions must be for the same symbol');
   });
 
@@ -210,4 +220,3 @@ describe('DeltaNeutralPositionGroup', () => {
     expect(updatedGroup.spotPosition.currentPrice).toBe(3100);
   });
 });
-

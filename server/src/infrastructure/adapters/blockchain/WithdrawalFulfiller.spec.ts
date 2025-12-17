@@ -1,9 +1,9 @@
 /**
  * Unit tests for WithdrawalFulfiller
- * 
+ *
  * These tests verify the delta-neutral unwinding logic and partial position reduction
  * calculations WITHOUT importing the actual class (to avoid ESM dependency issues).
- * 
+ *
  * The logic is extracted and tested in isolation.
  */
 
@@ -35,7 +35,9 @@ interface DeltaNeutralPair {
 }
 
 // Extracted logic: Group positions by symbol
-function groupPositionsBySymbol(positions: MockPosition[]): Map<string, MockPosition[]> {
+function groupPositionsBySymbol(
+  positions: MockPosition[],
+): Map<string, MockPosition[]> {
   const grouped = new Map<string, MockPosition[]>();
   for (const position of positions) {
     const symbol = position.symbol;
@@ -48,13 +50,15 @@ function groupPositionsBySymbol(positions: MockPosition[]): Map<string, MockPosi
 }
 
 // Extracted logic: Identify delta-neutral pairs
-function identifyDeltaNeutralPairs(positionsBySymbol: Map<string, MockPosition[]>): DeltaNeutralPair[] {
+function identifyDeltaNeutralPairs(
+  positionsBySymbol: Map<string, MockPosition[]>,
+): DeltaNeutralPair[] {
   const pairs: DeltaNeutralPair[] = [];
-  
+
   for (const [symbol, positions] of positionsBySymbol) {
-    const longs = positions.filter(p => p.side === OrderSide.LONG);
-    const shorts = positions.filter(p => p.side === OrderSide.SHORT);
-    
+    const longs = positions.filter((p) => p.side === OrderSide.LONG);
+    const shorts = positions.filter((p) => p.side === OrderSide.SHORT);
+
     for (const longPos of longs) {
       for (const shortPos of shorts) {
         if (longPos.exchangeType !== shortPos.exchangeType) {
@@ -63,7 +67,7 @@ function identifyDeltaNeutralPairs(positionsBySymbol: Map<string, MockPosition[]
           const longValue = longSize * longPos.markPrice;
           const shortValue = shortSize * shortPos.markPrice;
           const maxDeltaNeutralSize = Math.min(longSize, shortSize);
-          
+
           pairs.push({
             symbol,
             longPosition: longPos,
@@ -78,20 +82,23 @@ function identifyDeltaNeutralPairs(positionsBySymbol: Map<string, MockPosition[]
       }
     }
   }
-  
+
   return pairs;
 }
 
 // Extracted logic: Get unpaired positions
-function getUnpairedPositions(allPositions: MockPosition[], pairs: DeltaNeutralPair[]): MockPosition[] {
+function getUnpairedPositions(
+  allPositions: MockPosition[],
+  pairs: DeltaNeutralPair[],
+): MockPosition[] {
   const pairedPositionIds = new Set<string>();
-  
+
   for (const pair of pairs) {
     pairedPositionIds.add(`${pair.longExchange}-${pair.symbol}-LONG`);
     pairedPositionIds.add(`${pair.shortExchange}-${pair.symbol}-SHORT`);
   }
-  
-  return allPositions.filter(pos => {
+
+  return allPositions.filter((pos) => {
     const id = `${pos.exchangeType}-${pos.symbol}-${pos.side}`;
     return !pairedPositionIds.has(id);
   });
@@ -103,15 +110,15 @@ function calculatePairReductionSize(
   amountNeeded: number,
 ): { sizeToReduce: number; isFullClose: boolean } {
   const avgPrice = pair.longPosition.markPrice;
-  
+
   // Each unit of size freed = avgPrice USD from each leg (2x total)
   const sizeToReduce = Math.min(
     amountNeeded / (2 * avgPrice),
     pair.maxDeltaNeutralSize,
   );
-  
+
   const isFullClose = sizeToReduce >= pair.maxDeltaNeutralSize * 0.99;
-  
+
   return { sizeToReduce, isFullClose };
 }
 
@@ -121,14 +128,14 @@ function calculateUnpairedReductionSize(
   amountNeeded: number,
 ): { sizeToReduce: number; isFullClose: boolean } {
   const positionSize = Math.abs(position.size);
-  
+
   const sizeToReduce = Math.min(
     amountNeeded / position.markPrice,
     positionSize,
   );
-  
+
   const isFullClose = sizeToReduce >= positionSize * 0.99;
-  
+
   return { sizeToReduce, isFullClose };
 }
 
@@ -157,9 +164,27 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
   describe('groupPositionsBySymbol', () => {
     it('should group positions by symbol correctly', () => {
       const positions = [
-        createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID),
-        createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER),
-        createMockPosition('BTC', OrderSide.LONG, 0.1, 100000, ExchangeType.HYPERLIQUID),
+        createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+        ),
+        createMockPosition(
+          'BTC',
+          OrderSide.LONG,
+          0.1,
+          100000,
+          ExchangeType.HYPERLIQUID,
+        ),
       ];
 
       const grouped = groupPositionsBySymbol(positions);
@@ -173,8 +198,22 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
   describe('identifyDeltaNeutralPairs', () => {
     it('should identify a delta-neutral pair on different exchanges', () => {
       const positions = [
-        createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID, 50),
-        createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER, -30),
+        createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          50,
+        ),
+        createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+          -30,
+        ),
       ];
 
       const grouped = groupPositionsBySymbol(positions);
@@ -191,8 +230,22 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
 
     it('should set maxDeltaNeutralSize as the smaller of two legs', () => {
       const positions = [
-        createMockPosition('BTC', OrderSide.LONG, 0.5, 100000, ExchangeType.HYPERLIQUID, 100),
-        createMockPosition('BTC', OrderSide.SHORT, 0.3, 100000, ExchangeType.LIGHTER, -50),
+        createMockPosition(
+          'BTC',
+          OrderSide.LONG,
+          0.5,
+          100000,
+          ExchangeType.HYPERLIQUID,
+          100,
+        ),
+        createMockPosition(
+          'BTC',
+          OrderSide.SHORT,
+          0.3,
+          100000,
+          ExchangeType.LIGHTER,
+          -50,
+        ),
       ];
 
       const grouped = groupPositionsBySymbol(positions);
@@ -204,8 +257,22 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
 
     it('should NOT pair positions on the same exchange', () => {
       const positions = [
-        createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID, 50),
-        createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.HYPERLIQUID, -30),
+        createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          50,
+        ),
+        createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          -30,
+        ),
       ];
 
       const grouped = groupPositionsBySymbol(positions);
@@ -216,19 +283,47 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
 
     it('should handle multiple pairs across different symbols', () => {
       const positions = [
-        createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID, 50),
-        createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER, -30),
-        createMockPosition('BTC', OrderSide.LONG, 0.1, 100000, ExchangeType.LIGHTER, 200),
-        createMockPosition('BTC', OrderSide.SHORT, 0.1, 100000, ExchangeType.HYPERLIQUID, -100),
+        createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          50,
+        ),
+        createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+          -30,
+        ),
+        createMockPosition(
+          'BTC',
+          OrderSide.LONG,
+          0.1,
+          100000,
+          ExchangeType.LIGHTER,
+          200,
+        ),
+        createMockPosition(
+          'BTC',
+          OrderSide.SHORT,
+          0.1,
+          100000,
+          ExchangeType.HYPERLIQUID,
+          -100,
+        ),
       ];
 
       const grouped = groupPositionsBySymbol(positions);
       const pairs = identifyDeltaNeutralPairs(grouped);
 
       expect(pairs).toHaveLength(2);
-      
-      const ethPair = pairs.find(p => p.symbol === 'ETH');
-      const btcPair = pairs.find(p => p.symbol === 'BTC');
+
+      const ethPair = pairs.find((p) => p.symbol === 'ETH');
+      const btcPair = pairs.find((p) => p.symbol === 'BTC');
 
       expect(ethPair).toBeDefined();
       expect(btcPair).toBeDefined();
@@ -240,9 +335,30 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
   describe('getUnpairedPositions', () => {
     it('should identify positions not in any delta-neutral pair', () => {
       const positions = [
-        createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID, 50),
-        createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER, -30),
-        createMockPosition('SOL', OrderSide.LONG, 10, 200, ExchangeType.HYPERLIQUID, 25), // Unpaired
+        createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          50,
+        ),
+        createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+          -30,
+        ),
+        createMockPosition(
+          'SOL',
+          OrderSide.LONG,
+          10,
+          200,
+          ExchangeType.HYPERLIQUID,
+          25,
+        ), // Unpaired
       ];
 
       const grouped = groupPositionsBySymbol(positions);
@@ -255,8 +371,22 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
 
     it('should return all positions when no pairs exist', () => {
       const positions = [
-        createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID, 50),
-        createMockPosition('BTC', OrderSide.LONG, 0.1, 100000, ExchangeType.HYPERLIQUID, 100),
+        createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          50,
+        ),
+        createMockPosition(
+          'BTC',
+          OrderSide.LONG,
+          0.1,
+          100000,
+          ExchangeType.HYPERLIQUID,
+          100,
+        ),
       ];
 
       const grouped = groupPositionsBySymbol(positions);
@@ -271,8 +401,20 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
     it('should calculate partial reduction when amount needed is less than pair value', () => {
       const pair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER),
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+        ),
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 0,
@@ -292,8 +434,20 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
     it('should cap reduction at maxDeltaNeutralSize', () => {
       const pair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 0.5, 3500, ExchangeType.LIGHTER), // Smaller
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          0.5,
+          3500,
+          ExchangeType.LIGHTER,
+        ), // Smaller
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 0,
@@ -311,8 +465,20 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
     it('should identify full close when reduction >= 99% of max', () => {
       const pair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER),
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+        ),
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 0,
@@ -330,8 +496,20 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
     it('should NOT identify full close when reduction < 99% of max', () => {
       const pair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER),
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+        ),
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 0,
@@ -349,7 +527,13 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
 
   describe('calculateUnpairedReductionSize', () => {
     it('should calculate partial reduction for unpaired position', () => {
-      const position = createMockPosition('SOL', OrderSide.LONG, 100, 200, ExchangeType.HYPERLIQUID);
+      const position = createMockPosition(
+        'SOL',
+        OrderSide.LONG,
+        100,
+        200,
+        ExchangeType.HYPERLIQUID,
+      );
 
       // Position worth $20000 (100 * $200)
       // Need $5000 -> reduce 25 units (5000 / 200)
@@ -360,7 +544,13 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
     });
 
     it('should cap at full position size', () => {
-      const position = createMockPosition('SOL', OrderSide.LONG, 10, 200, ExchangeType.HYPERLIQUID);
+      const position = createMockPosition(
+        'SOL',
+        OrderSide.LONG,
+        10,
+        200,
+        ExchangeType.HYPERLIQUID,
+      );
 
       // Position worth $2000 (10 * $200)
       // Need $5000 -> can only close full position (10 units)
@@ -375,11 +565,39 @@ describe('WithdrawalFulfiller - Delta-Neutral Logic', () => {
     it('should sort pairs by combined PnL (least profitable first)', () => {
       const positions = [
         // Pair 1: Combined PnL = +$70 (profitable)
-        createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID, 100),
-        createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER, -30),
+        createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          100,
+        ),
+        createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+          -30,
+        ),
         // Pair 2: Combined PnL = -$50 (losing - should close first)
-        createMockPosition('BTC', OrderSide.LONG, 0.1, 100000, ExchangeType.HYPERLIQUID, -100),
-        createMockPosition('BTC', OrderSide.SHORT, 0.1, 100000, ExchangeType.LIGHTER, 50),
+        createMockPosition(
+          'BTC',
+          OrderSide.LONG,
+          0.1,
+          100000,
+          ExchangeType.HYPERLIQUID,
+          -100,
+        ),
+        createMockPosition(
+          'BTC',
+          OrderSide.SHORT,
+          0.1,
+          100000,
+          ExchangeType.LIGHTER,
+          50,
+        ),
       ];
 
       const grouped = groupPositionsBySymbol(positions);
@@ -401,8 +619,20 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
     it('scenario: need $1000, have $7000 in positions - should only reduce ~14%', () => {
       const pair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER),
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+        ),
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 0,
@@ -412,7 +642,8 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
 
       const amountNeeded = 1000;
       const result = calculatePairReductionSize(pair, amountNeeded);
-      const reductionPercent = (result.sizeToReduce / pair.maxDeltaNeutralSize) * 100;
+      const reductionPercent =
+        (result.sizeToReduce / pair.maxDeltaNeutralSize) * 100;
 
       expect(reductionPercent).toBeCloseTo(14.3, 0);
       expect(result.isFullClose).toBe(false);
@@ -421,8 +652,20 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
     it('scenario: need $10000, have $7000 in positions - should close entirely', () => {
       const pair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER),
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+        ),
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 0,
@@ -442,11 +685,25 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
       // - Pair 1 (ETH): $7000 total value, PnL = -$50 (close first)
       // - Pair 2 (BTC): $20000 total value, PnL = +$200 (close last)
       // Need: $8000
-      
+
       const ethPair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 1.0, 3500, ExchangeType.HYPERLIQUID, -30),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 1.0, 3500, ExchangeType.LIGHTER, -20),
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          1.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+          -30,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.0,
+          3500,
+          ExchangeType.LIGHTER,
+          -20,
+        ),
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: -50,
@@ -456,8 +713,22 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
 
       const btcPair: DeltaNeutralPair = {
         symbol: 'BTC',
-        longPosition: createMockPosition('BTC', OrderSide.LONG, 0.1, 100000, ExchangeType.HYPERLIQUID, 100),
-        shortPosition: createMockPosition('BTC', OrderSide.SHORT, 0.1, 100000, ExchangeType.LIGHTER, 100),
+        longPosition: createMockPosition(
+          'BTC',
+          OrderSide.LONG,
+          0.1,
+          100000,
+          ExchangeType.HYPERLIQUID,
+          100,
+        ),
+        shortPosition: createMockPosition(
+          'BTC',
+          OrderSide.SHORT,
+          0.1,
+          100000,
+          ExchangeType.LIGHTER,
+          100,
+        ),
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 200,
@@ -469,14 +740,16 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
       let totalFreed = 0;
 
       // Sort by PnL (ETH first since it's losing)
-      const pairs = [ethPair, btcPair].sort((a, b) => a.combinedPnl - b.combinedPnl);
-      
+      const pairs = [ethPair, btcPair].sort(
+        (a, b) => a.combinedPnl - b.combinedPnl,
+      );
+
       expect(pairs[0].symbol).toBe('ETH'); // ETH first (PnL = -$50)
 
       // Process ETH pair first
       const ethResult = calculatePairReductionSize(pairs[0], remainingNeeded);
       expect(ethResult.isFullClose).toBe(true); // $8000 > $7000 = full close
-      
+
       const ethFreed = pairs[0].totalValue; // $7000
       totalFreed += ethFreed;
       remainingNeeded -= ethFreed;
@@ -487,7 +760,7 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
       // Process BTC pair for remaining $1000
       const btcResult = calculatePairReductionSize(pairs[1], remainingNeeded);
       expect(btcResult.isFullClose).toBe(false); // $1000 < $20000 = partial close
-      
+
       // BTC reduction: $1000 / (2 * $100000) = 0.005 units (out of 0.1 max)
       expect(btcResult.sizeToReduce).toBeCloseTo(0.005, 3);
     });
@@ -497,8 +770,20 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
     it('should always reduce both legs equally', () => {
       const pair: DeltaNeutralPair = {
         symbol: 'ETH',
-        longPosition: createMockPosition('ETH', OrderSide.LONG, 2.0, 3500, ExchangeType.HYPERLIQUID),
-        shortPosition: createMockPosition('ETH', OrderSide.SHORT, 1.5, 3500, ExchangeType.LIGHTER), // Smaller
+        longPosition: createMockPosition(
+          'ETH',
+          OrderSide.LONG,
+          2.0,
+          3500,
+          ExchangeType.HYPERLIQUID,
+        ),
+        shortPosition: createMockPosition(
+          'ETH',
+          OrderSide.SHORT,
+          1.5,
+          3500,
+          ExchangeType.LIGHTER,
+        ), // Smaller
         longExchange: ExchangeType.HYPERLIQUID,
         shortExchange: ExchangeType.LIGHTER,
         combinedPnl: 0,
@@ -518,14 +803,15 @@ describe('WithdrawalFulfiller - Integration Scenarios', () => {
       // SHORT: 1.5 - 0.5 = 1.0 ETH
       // Delta before: 2.0 - 1.5 = 0.5 (slightly long)
       // Delta after: 1.5 - 1.0 = 0.5 (still slightly long, ratio preserved)
-      
+
       const longAfter = pair.longPosition.size - result.sizeToReduce;
-      const shortAfter = Math.abs(pair.shortPosition.size) - result.sizeToReduce;
-      const deltaBefore = pair.longPosition.size - Math.abs(pair.shortPosition.size);
+      const shortAfter =
+        Math.abs(pair.shortPosition.size) - result.sizeToReduce;
+      const deltaBefore =
+        pair.longPosition.size - Math.abs(pair.shortPosition.size);
       const deltaAfter = longAfter - shortAfter;
 
       expect(deltaBefore).toBe(deltaAfter); // Delta exposure unchanged
     });
   });
 });
-

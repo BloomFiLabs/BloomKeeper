@@ -1,19 +1,28 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ExchangeConfig, ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
+import {
+  ExchangeConfig,
+  ExchangeType,
+} from '../../../domain/value-objects/ExchangeConfig';
 import {
   OrderSide,
   OrderType,
   OrderStatus,
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
-import { SpotOrderRequest, SpotOrderResponse } from '../../../domain/value-objects/SpotOrder';
+import {
+  SpotOrderRequest,
+  SpotOrderResponse,
+} from '../../../domain/value-objects/SpotOrder';
 import { SpotPosition } from '../../../domain/entities/SpotPosition';
-import { ISpotExchangeAdapter, SpotExchangeError } from '../../../domain/ports/ISpotExchangeAdapter';
+import {
+  ISpotExchangeAdapter,
+  SpotExchangeError,
+} from '../../../domain/ports/ISpotExchangeAdapter';
 
 /**
  * LighterSpotAdapter - Implements ISpotExchangeAdapter for Lighter Protocol
- * 
+ *
  * Note: Lighter may not support spot trading. This adapter will return errors
  * if spot trading is not available. Check Lighter documentation for spot support.
  */
@@ -23,9 +32,13 @@ export class LighterSpotAdapter implements ISpotExchangeAdapter {
   private readonly config: ExchangeConfig;
 
   constructor(private readonly configService: ConfigService) {
-    const baseUrl = this.configService.get<string>('LIGHTER_API_BASE_URL') || 'https://mainnet.zklighter.elliot.ai';
+    const baseUrl =
+      this.configService.get<string>('LIGHTER_API_BASE_URL') ||
+      'https://mainnet.zklighter.elliot.ai';
     const apiKey = this.configService.get<string>('LIGHTER_API_KEY');
-    const accountIndex = parseInt(this.configService.get<string>('LIGHTER_ACCOUNT_INDEX') || '1000');
+    const accountIndex = parseInt(
+      this.configService.get<string>('LIGHTER_ACCOUNT_INDEX') || '1000',
+    );
 
     if (!apiKey) {
       throw new Error('Lighter spot adapter requires LIGHTER_API_KEY');
@@ -59,7 +72,7 @@ export class LighterSpotAdapter implements ISpotExchangeAdapter {
   private throwNotSupported(): never {
     throw new SpotExchangeError(
       'Spot trading is not supported on Lighter Protocol. ' +
-      'Please verify if Lighter has added spot trading support.',
+        'Please verify if Lighter has added spot trading support.',
       ExchangeType.LIGHTER,
       'SPOT_NOT_SUPPORTED',
     );
@@ -90,7 +103,10 @@ export class LighterSpotAdapter implements ISpotExchangeAdapter {
     this.throwNotSupported();
   }
 
-  async getSpotOrderStatus(orderId: string, symbol?: string): Promise<SpotOrderResponse> {
+  async getSpotOrderStatus(
+    orderId: string,
+    symbol?: string,
+  ): Promise<SpotOrderResponse> {
     this.throwNotSupported();
   }
 
@@ -115,4 +131,3 @@ export class LighterSpotAdapter implements ISpotExchangeAdapter {
     // This allows the adapter to be instantiated without errors
   }
 }
-

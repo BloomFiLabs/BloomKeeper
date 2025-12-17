@@ -57,23 +57,26 @@ export interface BacktestResults {
   testPeriodEnd: Date;
   totalDataPoints: number;
   trainingWindowHours: number;
-  
+
   /** Ensemble metrics */
   ensembleMetrics: PredictorMetrics;
-  
+
   /** Individual predictor metrics */
   individualMetrics: PredictorMetrics[];
-  
+
   /** Regime-specific performance */
-  regimePerformance: Record<MarketRegime, {
-    predictions: number;
-    meanAbsoluteError: number;
-    directionalAccuracy: number;
-  }>;
-  
+  regimePerformance: Record<
+    MarketRegime,
+    {
+      predictions: number;
+      meanAbsoluteError: number;
+      directionalAccuracy: number;
+    }
+  >;
+
   /** Detailed predictions (optional, can be large) */
   predictions?: BacktestPrediction[];
-  
+
   /** Summary statistics */
   summary: {
     bestPredictor: string;
@@ -132,7 +135,8 @@ export class PredictionBacktester {
       includeDetailedPredictions?: boolean;
     } = {},
   ): Promise<BacktestResults> {
-    const trainingWindow = options.trainingWindowHours ?? BACKTEST_CONFIG.DEFAULT_TRAINING_WINDOW;
+    const trainingWindow =
+      options.trainingWindowHours ?? BACKTEST_CONFIG.DEFAULT_TRAINING_WINDOW;
     const includeDetails = options.includeDetailedPredictions ?? false;
 
     this.logger.log(
@@ -140,7 +144,10 @@ export class PredictionBacktester {
     );
 
     // Get historical data
-    const historicalData = this.historicalService.getHistoricalData(symbol, exchange);
+    const historicalData = this.historicalService.getHistoricalData(
+      symbol,
+      exchange,
+    );
 
     if (historicalData.length < BACKTEST_CONFIG.MIN_DATA_POINTS) {
       throw new Error(
@@ -184,7 +191,7 @@ export class PredictionBacktester {
     for (let i = startIdx; i < endIdx; i += BACKTEST_CONFIG.STEP_SIZE) {
       // Training data: rates from (i - trainingWindow) to (i - 1)
       const trainingRates = ratePoints.slice(i - trainingWindow, i);
-      
+
       // Actual next rate
       const actualRate = ratePoints[i].rate;
       const currentRate = ratePoints[i - 1].rate;
@@ -222,9 +229,9 @@ export class PredictionBacktester {
         try {
           if (predictor.canPredict(context)) {
             const pred = predictor.predict(context);
-            individualPredictions.get(predictor.name)!.push(
-              this.createBacktestPrediction(pred, actualRate, timestamp),
-            );
+            individualPredictions
+              .get(predictor.name)!
+              .push(this.createBacktestPrediction(pred, actualRate, timestamp));
           }
         } catch (error) {
           // Skip failed predictions
@@ -233,7 +240,10 @@ export class PredictionBacktester {
     }
 
     // Calculate metrics
-    const ensembleMetrics = this.calculateMetrics('Ensemble', ensemblePredictions);
+    const ensembleMetrics = this.calculateMetrics(
+      'Ensemble',
+      ensemblePredictions,
+    );
     const individualMetrics: PredictorMetrics[] = [];
 
     for (const [name, predictions] of individualPredictions) {
@@ -243,7 +253,8 @@ export class PredictionBacktester {
     }
 
     // Calculate regime-specific performance
-    const regimePerformance = this.calculateRegimePerformance(ensemblePredictions);
+    const regimePerformance =
+      this.calculateRegimePerformance(ensemblePredictions);
 
     // Generate summary
     const summary = this.generateSummary(ensembleMetrics, individualMetrics);
@@ -281,17 +292,18 @@ export class PredictionBacktester {
     const error = prediction.predictedRate - actualRate;
     const absoluteError = Math.abs(error);
     const percentageError =
-      actualRate !== 0 ? Math.abs(error / actualRate) * 100 : absoluteError * 10000;
+      actualRate !== 0
+        ? Math.abs(error / actualRate) * 100
+        : absoluteError * 10000;
 
     // Direction correct if both have same sign or both are near zero
     const directionCorrect =
       Math.sign(prediction.predictedRate) === Math.sign(actualRate) ||
-      (Math.abs(prediction.predictedRate) < 1e-6 && Math.abs(actualRate) < 1e-6);
+      (Math.abs(prediction.predictedRate) < 1e-6 &&
+        Math.abs(actualRate) < 1e-6);
 
     const regime =
-      'regime' in prediction
-        ? prediction.regime
-        : MarketRegime.MEAN_REVERTING;
+      'regime' in prediction ? prediction.regime : MarketRegime.MEAN_REVERTING;
 
     return {
       timestamp,
@@ -334,7 +346,8 @@ export class PredictionBacktester {
       predictions.filter((p) => p.directionCorrect).length / n;
 
     // Average Confidence
-    const avgConfidence = predictions.reduce((sum, p) => sum + p.confidence, 0) / n;
+    const avgConfidence =
+      predictions.reduce((sum, p) => sum + p.confidence, 0) / n;
 
     // Confidence Calibration (correlation between confidence and accuracy)
     const calibration = this.calculateConfidenceCalibration(predictions);
@@ -347,7 +360,8 @@ export class PredictionBacktester {
     let worstError = 0;
 
     for (const [regime, preds] of regimeErrors) {
-      const regimeMae = preds.reduce((sum, p) => sum + p.absoluteError, 0) / preds.length;
+      const regimeMae =
+        preds.reduce((sum, p) => sum + p.absoluteError, 0) / preds.length;
       if (regimeMae < bestError) {
         bestError = regimeMae;
         bestRegime = regime;
@@ -447,7 +461,8 @@ export class PredictionBacktester {
   private calculateRegimePerformance(
     predictions: BacktestPrediction[],
   ): BacktestResults['regimePerformance'] {
-    const result: BacktestResults['regimePerformance'] = {} as BacktestResults['regimePerformance'];
+    const result: BacktestResults['regimePerformance'] =
+      {} as BacktestResults['regimePerformance'];
 
     const groups = this.groupByRegime(predictions);
 
@@ -535,9 +550,13 @@ export class PredictionBacktester {
    */
   private logResults(results: BacktestResults): void {
     this.logger.log('');
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
     this.logger.log(`BACKTEST RESULTS: ${results.symbol}/${results.exchange}`);
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
     this.logger.log(
       `Period: ${results.testPeriodStart.toISOString()} to ${results.testPeriodEnd.toISOString()}`,
     );
@@ -547,7 +566,9 @@ export class PredictionBacktester {
     this.logger.log('');
 
     this.logger.log('ENSEMBLE PERFORMANCE:');
-    this.logger.log(`  Predictions: ${results.ensembleMetrics.totalPredictions}`);
+    this.logger.log(
+      `  Predictions: ${results.ensembleMetrics.totalPredictions}`,
+    );
     this.logger.log(
       `  MAE: ${(results.ensembleMetrics.meanAbsoluteError * 100).toFixed(6)}%`,
     );
@@ -568,7 +589,9 @@ export class PredictionBacktester {
     this.logger.log('INDIVIDUAL PREDICTORS:');
     for (const metrics of results.individualMetrics) {
       this.logger.log(`  ${metrics.predictorName}:`);
-      this.logger.log(`    MAE: ${(metrics.meanAbsoluteError * 100).toFixed(6)}%`);
+      this.logger.log(
+        `    MAE: ${(metrics.meanAbsoluteError * 100).toFixed(6)}%`,
+      );
       this.logger.log(
         `    Directional: ${(metrics.directionalAccuracy * 100).toFixed(1)}%`,
       );
@@ -593,7 +616,9 @@ export class PredictionBacktester {
     this.logger.log(
       `  Ensemble beats best: ${results.summary.ensembleBeatsBestIndividual ? 'YES' : 'NO'}`,
     );
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
     this.logger.log('');
   }
 
@@ -615,7 +640,9 @@ export class PredictionBacktester {
         results.set(symbol, result);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`Backtest failed for ${symbol}/${exchange}: ${message}`);
+        this.logger.warn(
+          `Backtest failed for ${symbol}/${exchange}: ${message}`,
+        );
       }
     }
 
@@ -642,14 +669,19 @@ export class PredictionBacktester {
     }
 
     this.logger.log('');
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
     this.logger.log(`BATCH BACKTEST SUMMARY (${count} symbols)`);
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
     this.logger.log(`Average MAE: ${((totalMae / count) * 100).toFixed(6)}%`);
     this.logger.log(
       `Average Directional Accuracy: ${((totalDirAcc / count) * 100).toFixed(1)}%`,
     );
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
   }
 }
-

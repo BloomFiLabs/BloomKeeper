@@ -1,4 +1,7 @@
-import { ArbitrageExecutionPlan, ArbitrageExecutionResult } from '../FundingArbitrageStrategy';
+import {
+  ArbitrageExecutionPlan,
+  ArbitrageExecutionResult,
+} from '../FundingArbitrageStrategy';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { IPerpExchangeAdapter } from '../../ports/IPerpExchangeAdapter';
@@ -41,9 +44,14 @@ export interface IOrderExecutor {
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
     exchangeBalances: Map<ExchangeType, number>,
     result: ArbitrageExecutionResult,
-  ): Promise<Result<{
-    successfulExecutions: number;
-    totalOrders: number;
-    totalExpectedReturn: number;
-  }, DomainException>>;
+  ): Promise<
+    Result<
+      {
+        successfulExecutions: number;
+        totalOrders: number;
+        totalExpectedReturn: number;
+      },
+      DomainException
+    >
+  >;
 }

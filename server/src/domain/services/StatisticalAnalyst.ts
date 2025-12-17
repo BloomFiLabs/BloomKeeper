@@ -30,7 +30,7 @@ export class StatisticalAnalyst {
 
     const hurstValue = this.calculateHurst(returns);
     const volatilityValue = this.calculateVolatility(returns);
-    
+
     let garchVol: Volatility;
     try {
       garchVol = this.garchService.calculateVolatility(returns);
@@ -38,7 +38,7 @@ export class StatisticalAnalyst {
       // Fallback if not enough data for GARCH or convergence issues
       garchVol = new Volatility(volatilityValue);
     }
-    
+
     const driftValue = this.calculateDrift(prices, candles.length);
     const macd = this.calculateMACD(prices);
 
@@ -100,34 +100,34 @@ export class StatisticalAnalyst {
   private calculateDrift(prices: number[], hours: number): number {
     const startPrice = prices[0];
     const endPrice = prices[prices.length - 1];
-    
+
     if (startPrice === 0 || endPrice === 0) return 0;
-    
+
     const totalRet = Math.abs(Math.log(endPrice / startPrice));
-    
+
     // FIXED: The issue is that we're extrapolating short-term moves to annual drift
     // A 8.84% move over 7 days doesn't mean 441% annual drift - it's just noise
     // Instead, calculate drift as the average hourly return, then annualize
     // But cap it aggressively to prevent absurd values
-    
+
     // Calculate average hourly return (more stable than total return)
     const returns: number[] = [];
     for (let i = 1; i < prices.length; i++) {
-      if (prices[i-1] > 0) {
-        returns.push(Math.abs(Math.log(prices[i] / prices[i-1])));
+      if (prices[i - 1] > 0) {
+        returns.push(Math.abs(Math.log(prices[i] / prices[i - 1])));
       }
     }
-    
+
     if (returns.length === 0) return 0;
-    
+
     const avgHourlyReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
     const annualizedDrift = avgHourlyReturn * 365 * 24;
-    
+
     // CRITICAL FIX: Cap drift to reasonable maximum (20% annual)
     // Most crypto assets don't have >20% annual drift in practice
     // This prevents the optimizer from choosing absurdly wide ranges
     // The previous 5.0 (500%) clamp was way too high
-    return Math.min(annualizedDrift, 0.20); // Cap at 20% annual
+    return Math.min(annualizedDrift, 0.2); // Cap at 20% annual
   }
 
   /**

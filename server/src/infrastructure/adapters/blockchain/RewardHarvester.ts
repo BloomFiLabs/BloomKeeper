@@ -1,11 +1,27 @@
-import { Injectable, Logger, OnModuleInit, Optional, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  Optional,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { Contract, Wallet, JsonRpcProvider, formatUnits, parseUnits } from 'ethers';
+import {
+  Contract,
+  Wallet,
+  JsonRpcProvider,
+  formatUnits,
+  parseUnits,
+} from 'ethers';
 import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
 import { IPerpExchangeAdapter } from '../../../domain/ports/IPerpExchangeAdapter';
 import { PerpKeeperService } from '../../../application/services/PerpKeeperService';
-import { RealFundingPaymentsService, CombinedFundingSummary } from '../../services/RealFundingPaymentsService';
+import {
+  RealFundingPaymentsService,
+  CombinedFundingSummary,
+} from '../../services/RealFundingPaymentsService';
 import { HyperliquidExchangeAdapter } from '../hyperliquid/HyperliquidExchangeAdapter';
 import { DiagnosticsService } from '../../services/DiagnosticsService';
 
@@ -33,7 +49,7 @@ interface HarvestHistoryEntry {
 
 /**
  * RewardHarvester - Sends accumulated profits back to the vault
- * 
+ *
  * Responsibilities:
  * 1. Calculate realized profits from funding payments
  * 2. Withdraw profits from exchanges (keeping operational buffer)
@@ -43,31 +59,31 @@ interface HarvestHistoryEntry {
 @Injectable()
 export class RewardHarvester implements OnModuleInit {
   private readonly logger = new Logger(RewardHarvester.name);
-  
+
   private wallet: Wallet | null = null;
   private provider: JsonRpcProvider | null = null;
   private strategyContract: Contract | null = null;
   private usdcContract: Contract | null = null;
-  
+
   // Last harvest tracking
   private lastHarvestTime: Date | null = null;
   private lastHarvestAmount: number = 0;
-  
+
   // Harvest history (last 30 entries)
   private readonly harvestHistory: HarvestHistoryEntry[] = [];
   private readonly MAX_HISTORY = 30;
-  
+
   // Configuration
   private readonly strategyAddress: string;
   private readonly usdcAddress: string;
   private readonly rpcUrl: string;
-  
+
   // Operational buffer - keep this much on each exchange for operations
   private readonly OPERATIONAL_BUFFER_PER_EXCHANGE = 50; // $50 buffer per exchange
-  
+
   // Minimum harvest amount - don't bother if less than this
   private readonly MIN_HARVEST_AMOUNT = 10; // $10 minimum
-  
+
   // Contract ABI for USDC transfers
   private readonly ERC20_ABI = [
     'function transfer(address to, uint256 amount) external returns (bool)',
@@ -78,23 +94,33 @@ export class RewardHarvester implements OnModuleInit {
   constructor(
     private readonly configService: ConfigService,
     @Optional() private readonly fundingService?: RealFundingPaymentsService,
-    @Optional() @Inject(forwardRef(() => HyperliquidExchangeAdapter)) 
+    @Optional()
+    @Inject(forwardRef(() => HyperliquidExchangeAdapter))
     private readonly hyperliquidAdapter?: HyperliquidExchangeAdapter,
-    @Optional() @Inject(forwardRef(() => PerpKeeperService))
+    @Optional()
+    @Inject(forwardRef(() => PerpKeeperService))
     private readonly perpKeeperService?: PerpKeeperService,
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
   ) {
-    this.strategyAddress = this.configService.get<string>('KEEPER_STRATEGY_ADDRESS', '');
+    this.strategyAddress = this.configService.get<string>(
+      'KEEPER_STRATEGY_ADDRESS',
+      '',
+    );
     this.usdcAddress = this.configService.get<string>(
       'USDC_ADDRESS',
       '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // Arbitrum native USDC
     );
-    this.rpcUrl = this.configService.get<string>('ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc');
+    this.rpcUrl = this.configService.get<string>(
+      'ARBITRUM_RPC_URL',
+      'https://arb1.arbitrum.io/rpc',
+    );
   }
 
   async onModuleInit() {
     if (!this.strategyAddress) {
-      this.logger.warn('KEEPER_STRATEGY_ADDRESS not configured, reward harvester disabled');
+      this.logger.warn(
+        'KEEPER_STRATEGY_ADDRESS not configured, reward harvester disabled',
+      );
       return;
     }
 
@@ -105,22 +131,33 @@ export class RewardHarvester implements OnModuleInit {
    * Initialize wallet and contract connections
    */
   private async initialize(): Promise<void> {
-    const privateKey = this.configService.get<string>('KEEPER_PRIVATE_KEY') || 
-                       this.configService.get<string>('PRIVATE_KEY');
-    
+    const privateKey =
+      this.configService.get<string>('KEEPER_PRIVATE_KEY') ||
+      this.configService.get<string>('PRIVATE_KEY');
+
     if (!privateKey) {
-      this.logger.warn('KEEPER_PRIVATE_KEY/PRIVATE_KEY not configured, cannot harvest rewards');
+      this.logger.warn(
+        'KEEPER_PRIVATE_KEY/PRIVATE_KEY not configured, cannot harvest rewards',
+      );
       return;
     }
 
     try {
       this.provider = new JsonRpcProvider(this.rpcUrl);
       this.wallet = new Wallet(privateKey, this.provider);
-      this.usdcContract = new Contract(this.usdcAddress, this.ERC20_ABI, this.wallet);
+      this.usdcContract = new Contract(
+        this.usdcAddress,
+        this.ERC20_ABI,
+        this.wallet,
+      );
 
-      this.logger.log(`RewardHarvester initialized - sending to ${this.strategyAddress}`);
+      this.logger.log(
+        `RewardHarvester initialized - sending to ${this.strategyAddress}`,
+      );
     } catch (error: any) {
-      this.logger.error(`Failed to initialize RewardHarvester: ${error.message}`);
+      this.logger.error(
+        `Failed to initialize RewardHarvester: ${error.message}`,
+      );
     }
   }
 
@@ -134,16 +171,18 @@ export class RewardHarvester implements OnModuleInit {
   @Cron('0 0 * * *') // Every day at 00:00 UTC
   async harvestRewardsScheduled(): Promise<void> {
     this.logger.log('🌾 Starting scheduled reward harvest...');
-    
+
     try {
       const result = await this.harvestAndSendRewards();
-      
+
       if (result.success && result.sentToContract > 0) {
         this.logger.log(
           `✅ Harvest complete: $${result.sentToContract.toFixed(2)} sent to vault contract`,
         );
       } else if (result.success) {
-        this.logger.log('✅ Harvest complete: No rewards to send (below minimum or insufficient profits)');
+        this.logger.log(
+          '✅ Harvest complete: No rewards to send (below minimum or insufficient profits)',
+        );
       } else {
         this.logger.warn(`⚠️ Harvest failed: ${result.error}`);
       }
@@ -182,9 +221,11 @@ export class RewardHarvester implements OnModuleInit {
     try {
       // 1. Calculate available profits
       const profitsAvailable = await this.calculateHarvestableAmount();
-      
-      this.logger.log(`📊 Harvestable profits: $${profitsAvailable.total.toFixed(2)}`);
-      
+
+      this.logger.log(
+        `📊 Harvestable profits: $${profitsAvailable.total.toFixed(2)}`,
+      );
+
       if (profitsAvailable.total < this.MIN_HARVEST_AMOUNT) {
         this.logger.log(
           `⏭️ Skipping harvest: $${profitsAvailable.total.toFixed(2)} below minimum ($${this.MIN_HARVEST_AMOUNT})`,
@@ -195,10 +236,10 @@ export class RewardHarvester implements OnModuleInit {
 
       // 2. Withdraw from exchanges
       let totalWithdrawn = 0;
-      
+
       for (const [exchange, amount] of profitsAvailable.byExchange) {
         if (amount <= 0) continue;
-        
+
         const withdrawn = await this.withdrawFromExchange(exchange, amount);
         if (withdrawn > 0) {
           totalWithdrawn += withdrawn;
@@ -207,7 +248,7 @@ export class RewardHarvester implements OnModuleInit {
       }
 
       result.totalHarvested = totalWithdrawn;
-      
+
       if (totalWithdrawn < this.MIN_HARVEST_AMOUNT) {
         this.logger.log(
           `⏭️ Insufficient withdrawn: $${totalWithdrawn.toFixed(2)} below minimum`,
@@ -222,11 +263,11 @@ export class RewardHarvester implements OnModuleInit {
       // 4. Send to strategy contract
       const sent = await this.sendToStrategyContract(totalWithdrawn);
       result.sentToContract = sent;
-      
+
       if (sent > 0) {
         this.lastHarvestTime = new Date();
         this.lastHarvestAmount = sent;
-        
+
         // Record in history
         this.harvestHistory.push({
           timestamp: new Date(),
@@ -237,9 +278,11 @@ export class RewardHarvester implements OnModuleInit {
         if (this.harvestHistory.length > this.MAX_HISTORY) {
           this.harvestHistory.shift();
         }
-        
+
         result.success = true;
-        this.logger.log(`✅ Sent $${sent.toFixed(2)} to strategy contract at ${this.strategyAddress}`);
+        this.logger.log(
+          `✅ Sent $${sent.toFixed(2)} to strategy contract at ${this.strategyAddress}`,
+        );
       } else {
         result.error = 'Failed to send funds to strategy contract';
       }
@@ -256,11 +299,18 @@ export class RewardHarvester implements OnModuleInit {
    * Calculate harvestable amount across all exchanges
    * Returns amount above operational buffer that can be harvested
    */
-  async calculateHarvestableAmount(): Promise<{ total: number; byExchange: Map<ExchangeType, number> }> {
+  async calculateHarvestableAmount(): Promise<{
+    total: number;
+    byExchange: Map<ExchangeType, number>;
+  }> {
     const byExchange = new Map<ExchangeType, number>();
     let total = 0;
 
-    const exchanges = [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER];
+    const exchanges = [
+      ExchangeType.HYPERLIQUID,
+      ExchangeType.LIGHTER,
+      ExchangeType.ASTER,
+    ];
 
     for (const exchangeType of exchanges) {
       try {
@@ -269,24 +319,29 @@ export class RewardHarvester implements OnModuleInit {
 
         const balance = await adapter.getBalance();
         const positions = await adapter.getPositions();
-        
+
         // Calculate margin used by positions
         const marginUsed = positions.reduce((sum, pos) => {
-          return sum + (pos.marginUsed ?? (pos.getPositionValue() / 2)); // Assume 2x leverage if not specified
+          return sum + (pos.marginUsed ?? pos.getPositionValue() / 2); // Assume 2x leverage if not specified
         }, 0);
 
         // Harvestable = balance - margin - operational buffer
-        const harvestable = Math.max(0, balance - marginUsed - this.OPERATIONAL_BUFFER_PER_EXCHANGE);
-        
+        const harvestable = Math.max(
+          0,
+          balance - marginUsed - this.OPERATIONAL_BUFFER_PER_EXCHANGE,
+        );
+
         byExchange.set(exchangeType, harvestable);
         total += harvestable;
 
         this.logger.debug(
           `${exchangeType}: Balance=$${balance.toFixed(2)}, Margin=$${marginUsed.toFixed(2)}, ` +
-          `Harvestable=$${harvestable.toFixed(2)}`,
+            `Harvestable=$${harvestable.toFixed(2)}`,
         );
       } catch (error: any) {
-        this.logger.warn(`Failed to calculate harvestable for ${exchangeType}: ${error.message}`);
+        this.logger.warn(
+          `Failed to calculate harvestable for ${exchangeType}: ${error.message}`,
+        );
       }
     }
 
@@ -296,7 +351,9 @@ export class RewardHarvester implements OnModuleInit {
   /**
    * Get adapter for a specific exchange
    */
-  private async getAdapterForExchange(exchangeType: ExchangeType): Promise<IPerpExchangeAdapter | null> {
+  private async getAdapterForExchange(
+    exchangeType: ExchangeType,
+  ): Promise<IPerpExchangeAdapter | null> {
     if (this.perpKeeperService) {
       try {
         const adapter = this.perpKeeperService.getExchangeAdapter(exchangeType);
@@ -305,24 +362,27 @@ export class RewardHarvester implements OnModuleInit {
         // getExchangeAdapter throws if not found
       }
     }
-    
+
     if (exchangeType === ExchangeType.HYPERLIQUID && this.hyperliquidAdapter) {
       return this.hyperliquidAdapter;
     }
-    
+
     return null;
   }
 
   /**
    * Withdraw USDC from an exchange to Arbitrum
    */
-  private async withdrawFromExchange(exchangeType: ExchangeType, maxAmount: number): Promise<number> {
+  private async withdrawFromExchange(
+    exchangeType: ExchangeType,
+    maxAmount: number,
+  ): Promise<number> {
     const adapter = await this.getAdapterForExchange(exchangeType);
     if (!adapter) {
       this.logger.warn(`No adapter for ${exchangeType}, cannot withdraw`);
       return 0;
     }
-    
+
     try {
       const keeperAddress = this.wallet?.address;
       if (!keeperAddress) {
@@ -332,27 +392,47 @@ export class RewardHarvester implements OnModuleInit {
 
       // Use the smaller of maxAmount or available balance
       const availableBalance = await adapter.getBalance();
-      const withdrawAmount = Math.min(maxAmount, availableBalance - this.OPERATIONAL_BUFFER_PER_EXCHANGE);
-      
+      const withdrawAmount = Math.min(
+        maxAmount,
+        availableBalance - this.OPERATIONAL_BUFFER_PER_EXCHANGE,
+      );
+
       if (withdrawAmount <= 1) {
         return 0;
       }
-      
-      this.logger.log(`📤 Withdrawing $${withdrawAmount.toFixed(2)} from ${exchangeType}...`);
-      
+
+      this.logger.log(
+        `📤 Withdrawing $${withdrawAmount.toFixed(2)} from ${exchangeType}...`,
+      );
+
       // Different exchanges have different withdrawal methods
-      if (exchangeType === ExchangeType.HYPERLIQUID && this.hyperliquidAdapter) {
-        await this.hyperliquidAdapter.withdrawExternal(withdrawAmount, 'USDC', keeperAddress);
+      if (
+        exchangeType === ExchangeType.HYPERLIQUID &&
+        this.hyperliquidAdapter
+      ) {
+        await this.hyperliquidAdapter.withdrawExternal(
+          withdrawAmount,
+          'USDC',
+          keeperAddress,
+        );
       } else if ('withdrawExternal' in adapter) {
-        await (adapter as any).withdrawExternal(withdrawAmount, 'USDC', keeperAddress);
+        await (adapter as any).withdrawExternal(
+          withdrawAmount,
+          'USDC',
+          keeperAddress,
+        );
       } else {
-        this.logger.warn(`${exchangeType} does not support external withdrawals`);
+        this.logger.warn(
+          `${exchangeType} does not support external withdrawals`,
+        );
         return 0;
       }
-      
+
       return withdrawAmount;
     } catch (error: any) {
-      this.logger.error(`Failed to withdraw from ${exchangeType}: ${error.message}`);
+      this.logger.error(
+        `Failed to withdraw from ${exchangeType}: ${error.message}`,
+      );
       return 0;
     }
   }
@@ -364,27 +444,35 @@ export class RewardHarvester implements OnModuleInit {
     if (!this.wallet || !this.usdcContract) return;
 
     const startBalance = await this.getKeeperUsdcBalance();
-    const targetBalance = startBalance + parseUnits(expectedAmount.toFixed(6), 6);
-    
+    const targetBalance =
+      startBalance + parseUnits(expectedAmount.toFixed(6), 6);
+
     const maxWait = 300000; // 5 minutes
     const startTime = Date.now();
-    
-    this.logger.log(`⏳ Waiting for funds on Arbitrum (expecting ~$${expectedAmount.toFixed(2)})...`);
-    
+
+    this.logger.log(
+      `⏳ Waiting for funds on Arbitrum (expecting ~$${expectedAmount.toFixed(2)})...`,
+    );
+
     while (Date.now() - startTime < maxWait) {
-      await new Promise(resolve => setTimeout(resolve, 15000)); // Check every 15 seconds
-      
+      await new Promise((resolve) => setTimeout(resolve, 15000)); // Check every 15 seconds
+
       const currentBalance = await this.getKeeperUsdcBalance();
-      if (currentBalance >= targetBalance * 95n / 100n) { // 95% threshold
+      if (currentBalance >= (targetBalance * 95n) / 100n) {
+        // 95% threshold
         const received = Number(formatUnits(currentBalance - startBalance, 6));
         this.logger.log(`✅ Received $${received.toFixed(2)} on Arbitrum`);
         return;
       }
-      
-      this.logger.debug(`Waiting for funds... (${Math.floor((Date.now() - startTime) / 1000)}s)`);
+
+      this.logger.debug(
+        `Waiting for funds... (${Math.floor((Date.now() - startTime) / 1000)}s)`,
+      );
     }
-    
-    this.logger.warn('⚠️ Timeout waiting for funds, proceeding with available balance');
+
+    this.logger.warn(
+      '⚠️ Timeout waiting for funds, proceeding with available balance',
+    );
   }
 
   /**
@@ -392,7 +480,7 @@ export class RewardHarvester implements OnModuleInit {
    */
   private async getKeeperUsdcBalance(): Promise<bigint> {
     if (!this.usdcContract || !this.wallet) return 0n;
-    
+
     try {
       return await this.usdcContract.balanceOf(this.wallet.address);
     } catch {
@@ -412,26 +500,33 @@ export class RewardHarvester implements OnModuleInit {
     try {
       const balance = await this.getKeeperUsdcBalance();
       const amountToSend = parseUnits(amount.toFixed(6), 6);
-      
+
       // Use the smaller of requested amount or available balance
       const actualAmount = amountToSend > balance ? balance : amountToSend;
-      
+
       if (actualAmount <= 0n) {
         this.logger.warn('No USDC available to send');
         return 0;
       }
 
-      this.logger.log(`💸 Sending $${formatUnits(actualAmount, 6)} to strategy contract...`);
-      
-      const tx = await this.usdcContract.transfer(this.strategyAddress, actualAmount);
+      this.logger.log(
+        `💸 Sending $${formatUnits(actualAmount, 6)} to strategy contract...`,
+      );
+
+      const tx = await this.usdcContract.transfer(
+        this.strategyAddress,
+        actualAmount,
+      );
       this.logger.debug(`Transfer tx: ${tx.hash}`);
-      
+
       const receipt = await tx.wait();
       this.logger.log(`✅ Transfer confirmed in block ${receipt.blockNumber}`);
-      
+
       return Number(formatUnits(actualAmount, 6));
     } catch (error: any) {
-      this.logger.error(`Failed to send to strategy contract: ${error.message}`);
+      this.logger.error(
+        `Failed to send to strategy contract: ${error.message}`,
+      );
       this.recordDiagnosticError('TRANSFER_FAILED', error.message);
       return 0;
     }
@@ -480,7 +575,7 @@ export class RewardHarvester implements OnModuleInit {
     const tomorrow = new Date(now);
     tomorrow.setUTCHours(0, 0, 0, 0);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-    
+
     return tomorrow.getTime() - now.getTime();
   }
 

@@ -161,7 +161,8 @@ export class OpenInterestPredictor implements IFundingRatePredictor {
 
     const sorted = this.sortByTime(context.historicalOI);
     const oldestOI = sorted[0].openInterest;
-    const currentOI = context.openInterest ?? sorted[sorted.length - 1].openInterest;
+    const currentOI =
+      context.openInterest ?? sorted[sorted.length - 1].openInterest;
 
     if (oldestOI <= 0) return 0;
     return (currentOI - oldestOI) / oldestOI;
@@ -276,7 +277,9 @@ export class OpenInterestPredictor implements IFundingRatePredictor {
   /**
    * Create fallback prediction when OI data unavailable
    */
-  private createFallbackPrediction(context: PredictionContext): PredictionResult {
+  private createFallbackPrediction(
+    context: PredictionContext,
+  ): PredictionResult {
     // Without OI data, predict current rate continues with low confidence
     return {
       predictedRate: context.currentRate,
@@ -298,4 +301,3 @@ export class OpenInterestPredictor implements IFundingRatePredictor {
     );
   }
 }
-

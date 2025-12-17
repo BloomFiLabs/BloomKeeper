@@ -1,5 +1,8 @@
 import { StrategyOrchestrator } from './StrategyOrchestrator';
-import { IExecutableStrategy, StrategyExecutionResult } from './IExecutableStrategy';
+import {
+  IExecutableStrategy,
+  StrategyExecutionResult,
+} from './IExecutableStrategy';
 
 // Mock strategy implementation
 class MockStrategy implements IExecutableStrategy {
@@ -51,33 +54,30 @@ describe('StrategyOrchestrator', () => {
 
   beforeEach(() => {
     orchestrator = new StrategyOrchestrator();
-    
-    mockStrategy1 = new MockStrategy(
-      'Funding Rate ETH',
-      999,
-      '0xFunding1',
-      { executed: true, action: 'OPEN_SHORT', reason: 'Positive funding' },
-    );
-    
-    mockStrategy2 = new MockStrategy(
-      'LP ETH/USDC',
-      8453,
-      '0xLP1',
-      { executed: false, action: 'HOLD', reason: 'In range' },
-    );
-    
-    mockStrategy3 = new MockStrategy(
-      'Funding Rate BTC',
-      999,
-      '0xFunding2',
-      { executed: true, action: 'CLOSE_POSITION', reason: 'Rate flipped' },
-    );
+
+    mockStrategy1 = new MockStrategy('Funding Rate ETH', 999, '0xFunding1', {
+      executed: true,
+      action: 'OPEN_SHORT',
+      reason: 'Positive funding',
+    });
+
+    mockStrategy2 = new MockStrategy('LP ETH/USDC', 8453, '0xLP1', {
+      executed: false,
+      action: 'HOLD',
+      reason: 'In range',
+    });
+
+    mockStrategy3 = new MockStrategy('Funding Rate BTC', 999, '0xFunding2', {
+      executed: true,
+      action: 'CLOSE_POSITION',
+      reason: 'Rate flipped',
+    });
   });
 
   describe('Strategy registration', () => {
     it('should register a strategy', () => {
       orchestrator.registerStrategy(mockStrategy1);
-      
+
       expect(orchestrator.getStrategies()).toHaveLength(1);
       expect(orchestrator.getStrategies()[0].name).toBe('Funding Rate ETH');
     });
@@ -86,25 +86,25 @@ describe('StrategyOrchestrator', () => {
       orchestrator.registerStrategy(mockStrategy1);
       orchestrator.registerStrategy(mockStrategy2);
       orchestrator.registerStrategy(mockStrategy3);
-      
+
       expect(orchestrator.getStrategies()).toHaveLength(3);
     });
 
     it('should not register duplicate strategies (same contract address)', () => {
       orchestrator.registerStrategy(mockStrategy1);
-      
+
       const duplicate = new MockStrategy('Duplicate', 999, '0xFunding1');
       orchestrator.registerStrategy(duplicate);
-      
+
       expect(orchestrator.getStrategies()).toHaveLength(1);
     });
 
     it('should unregister a strategy', () => {
       orchestrator.registerStrategy(mockStrategy1);
       orchestrator.registerStrategy(mockStrategy2);
-      
+
       orchestrator.unregisterStrategy('0xFunding1');
-      
+
       expect(orchestrator.getStrategies()).toHaveLength(1);
       expect(orchestrator.getStrategies()[0].name).toBe('LP ETH/USDC');
     });
@@ -133,7 +133,7 @@ describe('StrategyOrchestrator', () => {
       expect(results[0].strategyName).toBe('Funding Rate ETH');
       expect(results[0].executed).toBe(true);
       expect(results[0].action).toBe('OPEN_SHORT');
-      
+
       expect(results[1].strategyName).toBe('LP ETH/USDC');
       expect(results[1].executed).toBe(false);
       expect(results[1].action).toBe('HOLD');
@@ -141,8 +141,10 @@ describe('StrategyOrchestrator', () => {
 
     it('should continue executing other strategies if one fails', async () => {
       const failingStrategy = new MockStrategy('Failing', 999, '0xFail');
-      failingStrategy.execute = jest.fn().mockRejectedValue(new Error('Network error'));
-      
+      failingStrategy.execute = jest
+        .fn()
+        .mockRejectedValue(new Error('Network error'));
+
       orchestrator.registerStrategy(failingStrategy);
       orchestrator.registerStrategy(mockStrategy2);
 
@@ -205,7 +207,7 @@ describe('StrategyOrchestrator', () => {
     it('should call emergencyExit on all strategies', async () => {
       const exitSpy1 = jest.spyOn(mockStrategy1, 'emergencyExit');
       const exitSpy2 = jest.spyOn(mockStrategy2, 'emergencyExit');
-      
+
       orchestrator.registerStrategy(mockStrategy1);
       orchestrator.registerStrategy(mockStrategy2);
 
@@ -229,4 +231,3 @@ describe('StrategyOrchestrator', () => {
     });
   });
 });
-

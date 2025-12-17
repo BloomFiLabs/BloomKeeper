@@ -4,7 +4,11 @@ import type { IHistoricalFundingRateService } from '../../ports/IHistoricalFundi
 import { HistoricalMetrics } from '../../ports/IHistoricalFundingRateService';
 import { FundingRateAggregator } from '../FundingRateAggregator';
 import type { IPositionLossTracker } from '../../ports/IPositionLossTracker';
-import type { IFundingRatePredictionService, EnsemblePredictionResult, MarketRegime } from '../../ports/IFundingRatePredictor';
+import type {
+  IFundingRatePredictionService,
+  EnsemblePredictionResult,
+  MarketRegime,
+} from '../../ports/IFundingRatePredictor';
 import { CostCalculator } from './CostCalculator';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
@@ -15,7 +19,11 @@ import { IPerpExchangeAdapter } from '../../ports/IPerpExchangeAdapter';
 import { Result } from '../../common/Result';
 import { DomainException } from '../../exceptions/DomainException';
 import { OrderSide } from '../../value-objects/PerpOrder';
-import { PredictedBreakEvenCalculator, PredictedBreakEven, OpportunityScore } from './PredictedBreakEvenCalculator';
+import {
+  PredictedBreakEvenCalculator,
+  PredictedBreakEven,
+  OpportunityScore,
+} from './PredictedBreakEvenCalculator';
 import { Percentage } from '../../value-objects/Percentage';
 
 /**
@@ -25,7 +33,10 @@ export interface PredictionEnhancedEvaluation {
   /** Standard historical evaluation */
   historicalEvaluation: {
     breakEvenHours: number | null;
-    historicalMetrics: { long: HistoricalMetrics | null; short: HistoricalMetrics | null };
+    historicalMetrics: {
+      long: HistoricalMetrics | null;
+      short: HistoricalMetrics | null;
+    };
     worstCaseBreakEvenHours: number | null;
     consistencyScore: number;
   };
@@ -147,9 +158,7 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
 
       // Filter by prediction recommendation
       if (opp.predictionRecommendation === 'skip') {
-        this.logger.debug(
-          `Filtering ${opp.symbol}: recommendation is 'skip'`,
-        );
+        this.logger.debug(`Filtering ${opp.symbol}: recommendation is 'skip'`);
         return false;
       }
 
@@ -327,7 +336,7 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
 
       const historicalResult = this.evaluateOpportunityWithHistory(
         item.opportunity,
-        item.plan as ArbitrageExecutionPlan,
+        item.plan,
       );
       if (historicalResult.isFailure) {
         this.logger.warn(
@@ -616,38 +625,46 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
     plan: ArbitrageExecutionPlan | null,
   ): Promise<Result<PredictionEnhancedEvaluation, DomainException>> {
     // Get standard historical evaluation
-    const historicalResult = this.evaluateOpportunityWithHistory(opportunity, plan);
+    const historicalResult = this.evaluateOpportunityWithHistory(
+      opportunity,
+      plan,
+    );
     if (historicalResult.isFailure) {
       return Result.failure(historicalResult.error);
     }
     const historicalEvaluation = historicalResult.value;
 
     // Get prediction evaluation if service is available
-    let predictionEvaluation: PredictionEnhancedEvaluation['predictionEvaluation'] = null;
+    let predictionEvaluation: PredictionEnhancedEvaluation['predictionEvaluation'] =
+      null;
 
     if (this.predictionService && opportunity.shortExchange) {
       try {
-        const spreadPrediction = await this.predictionService.getSpreadPrediction(
-          opportunity.symbol,
-          opportunity.longExchange,
-          opportunity.shortExchange,
-        );
+        const spreadPrediction =
+          await this.predictionService.getSpreadPrediction(
+            opportunity.symbol,
+            opportunity.longExchange,
+            opportunity.shortExchange,
+          );
 
         // Calculate predicted break-even hours
         let predictedBreakEvenHours: number | null = null;
         if (plan && spreadPrediction.predictedSpread !== 0) {
           const periodsPerYear = 24 * 365;
-          const predictedAPY = Math.abs(spreadPrediction.predictedSpread) * periodsPerYear;
+          const predictedAPY =
+            Math.abs(spreadPrediction.predictedSpread) * periodsPerYear;
 
           const avgMarkPrice =
             opportunity.longMarkPrice && opportunity.shortMarkPrice
               ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
               : opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
           const positionSizeUsd = plan.positionSize.toUSD(avgMarkPrice);
-          const predictedHourlyReturn = (predictedAPY / periodsPerYear) * positionSizeUsd;
+          const predictedHourlyReturn =
+            (predictedAPY / periodsPerYear) * positionSizeUsd;
 
           if (predictedHourlyReturn > 0) {
-            predictedBreakEvenHours = plan.estimatedCosts.total / predictedHourlyReturn;
+            predictedBreakEvenHours =
+              plan.estimatedCosts.total / predictedHourlyReturn;
           }
         }
 
@@ -691,8 +708,14 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
     let score = historical.consistencyScore;
 
     // Adjust for worst-case break-even (lower is better)
-    if (historical.worstCaseBreakEvenHours && historical.worstCaseBreakEvenHours < Infinity) {
-      const breakEvenFactor = Math.max(0, 1 - historical.worstCaseBreakEvenHours / (24 * 7));
+    if (
+      historical.worstCaseBreakEvenHours &&
+      historical.worstCaseBreakEvenHours < Infinity
+    ) {
+      const breakEvenFactor = Math.max(
+        0,
+        1 - historical.worstCaseBreakEvenHours / (24 * 7),
+      );
       score *= 0.7 + 0.3 * breakEvenFactor;
     }
 
@@ -702,9 +725,18 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
       const historicalWeight = 1 - predictionWeight;
 
       // Prediction score based on predicted spread magnitude and break-even
-      let predictionScore = Math.min(1, Math.abs(prediction.predictedSpread) * 10000);
-      if (prediction.predictedBreakEvenHours && prediction.predictedBreakEvenHours < Infinity) {
-        const predBreakEvenFactor = Math.max(0, 1 - prediction.predictedBreakEvenHours / (24 * 7));
+      let predictionScore = Math.min(
+        1,
+        Math.abs(prediction.predictedSpread) * 10000,
+      );
+      if (
+        prediction.predictedBreakEvenHours &&
+        prediction.predictedBreakEvenHours < Infinity
+      ) {
+        const predBreakEvenFactor = Math.max(
+          0,
+          1 - prediction.predictedBreakEvenHours / (24 * 7),
+        );
         predictionScore *= 0.7 + 0.3 * predBreakEvenFactor;
       }
 
@@ -760,13 +792,13 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
 
       const evalResult = await this.evaluateWithPredictions(
         item.opportunity,
-        item.plan as ArbitrageExecutionPlan,
+        item.plan,
       );
 
       if (evalResult.isSuccess) {
         evaluated.push({
           opportunity: item.opportunity,
-          plan: item.plan as ArbitrageExecutionPlan,
+          plan: item.plan,
           evaluation: evalResult.value,
         });
       }
@@ -777,7 +809,9 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
     }
 
     // Sort by combined score (highest first)
-    evaluated.sort((a, b) => b.evaluation.combinedScore - a.evaluation.combinedScore);
+    evaluated.sort(
+      (a, b) => b.evaluation.combinedScore - a.evaluation.combinedScore,
+    );
     const best = evaluated[0];
 
     // Build reason string
@@ -798,11 +832,17 @@ export class OpportunityEvaluator implements IOpportunityEvaluator {
   /**
    * Build human-readable reason for opportunity selection
    */
-  private buildSelectionReason(evaluation: PredictionEnhancedEvaluation): string {
+  private buildSelectionReason(
+    evaluation: PredictionEnhancedEvaluation,
+  ): string {
     const parts: string[] = [];
 
-    parts.push(`Combined score: ${(evaluation.combinedScore * 100).toFixed(1)}%`);
-    parts.push(`Consistency: ${(evaluation.historicalEvaluation.consistencyScore * 100).toFixed(1)}%`);
+    parts.push(
+      `Combined score: ${(evaluation.combinedScore * 100).toFixed(1)}%`,
+    );
+    parts.push(
+      `Consistency: ${(evaluation.historicalEvaluation.consistencyScore * 100).toFixed(1)}%`,
+    );
 
     if (evaluation.historicalEvaluation.worstCaseBreakEvenHours) {
       parts.push(

@@ -1,13 +1,16 @@
 import { Logger } from '@nestjs/common';
 import { ethers } from 'ethers';
-import { IExecutableStrategy, StrategyExecutionResult } from './IExecutableStrategy';
+import {
+  IExecutableStrategy,
+  StrategyExecutionResult,
+} from './IExecutableStrategy';
 import { MarketDataContext } from '../services/MarketDataContext';
 
 /**
  * Delta-Neutral Funding Strategy - KEEPER LOGIC
- * 
+ *
  * Uses SHARED MarketDataContext - does NOT fetch its own data!
- * 
+ *
  * Strategy: Borrow ETH from HyperLend + Short ETH on HyperLiquid Perps
  * Result: Delta = 0, Profit = Funding Rate - Borrow Rate
  */
@@ -23,7 +26,7 @@ export interface DeltaNeutralFundingConfig {
   enabled: boolean;
   asset: string;
   assetId: number;
-  
+
   riskParams: {
     minHealthFactor: number;
     targetHealthFactor: number;
@@ -32,13 +35,13 @@ export interface DeltaNeutralFundingConfig {
     targetLeverage: number;
     minLeverage: number;
   };
-  
+
   fundingParams: {
     minFundingRateThreshold: number;
     fundingFlipThreshold: number;
     minAnnualizedAPY: number;
   };
-  
+
   positionParams: {
     maxPositionSizeUSD: number;
     maxDeltaDriftPercent: number;
@@ -73,12 +76,12 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
   private contract: ethers.Contract;
   private enabled: boolean;
   private lastRebalanceTime: number = 0;
-  
+
   // Tracked state
   private currentSpotSize: number = 0;
   private currentPerpSize: number = 0;
   private isPositionOpen: boolean = false;
-  
+
   // Last metrics for monitoring
   private lastMetrics: Record<string, number | string> = {};
 
@@ -87,25 +90,45 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
     private readonly provider: ethers.Provider,
     private readonly wallet: ethers.Wallet,
   ) {
-    this.contract = new ethers.Contract(config.contractAddress, STRATEGY_ABI, wallet);
+    this.contract = new ethers.Contract(
+      config.contractAddress,
+      STRATEGY_ABI,
+      wallet,
+    );
     this.enabled = config.enabled;
     this.logger.log(`Initialized ${config.name} for ${config.asset}`);
   }
 
   // IExecutableStrategy implementation
-  get id(): string { return this.config.id; }
-  get name(): string { return this.config.name; }
-  get chainId(): number { return this.config.chainId; }
-  get contractAddress(): string { return this.config.contractAddress; }
-  
-  // Assets this strategy needs
-  get requiredAssets(): string[] { return [this.config.asset]; }
-  get requiredPools(): string[] { return []; } // No LP pools needed
+  get id(): string {
+    return this.config.id;
+  }
+  get name(): string {
+    return this.config.name;
+  }
+  get chainId(): number {
+    return this.config.chainId;
+  }
+  get contractAddress(): string {
+    return this.config.contractAddress;
+  }
 
-  isEnabled(): boolean { return this.enabled; }
-  setEnabled(enabled: boolean): void { 
+  // Assets this strategy needs
+  get requiredAssets(): string[] {
+    return [this.config.asset];
+  }
+  get requiredPools(): string[] {
+    return [];
+  } // No LP pools needed
+
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+  setEnabled(enabled: boolean): void {
     this.enabled = enabled;
-    this.logger.log(`Strategy ${this.name} ${enabled ? 'enabled' : 'disabled'}`);
+    this.logger.log(
+      `Strategy ${this.name} ${enabled ? 'enabled' : 'disabled'}`,
+    );
   }
 
   /**
@@ -130,7 +153,10 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
       const volData = context.volatility.get(this.config.asset);
 
       if (!fundingData || !priceData) {
-        return { ...baseResult, reason: `Missing market data for ${this.config.asset}` };
+        return {
+          ...baseResult,
+          reason: `Missing market data for ${this.config.asset}`,
+        };
       }
 
       const fundingRate = fundingData.currentRate;
@@ -146,9 +172,15 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
         this.contract.getIdleUSDC().catch(() => BigInt(0)),
       ]);
 
-      const healthFactor = hyperLendData ? Number(hyperLendData.healthFactor) / 1e18 : 0;
-      const totalCollateral = hyperLendData ? Number(hyperLendData.totalCollateral) / 1e6 : Number(idleUSDC) / 1e6;
-      const totalDebt = hyperLendData ? Number(hyperLendData.totalDebt) / 1e18 : 0;
+      const healthFactor = hyperLendData
+        ? Number(hyperLendData.healthFactor) / 1e18
+        : 0;
+      const totalCollateral = hyperLendData
+        ? Number(hyperLendData.totalCollateral) / 1e6
+        : Number(idleUSDC) / 1e6;
+      const totalDebt = hyperLendData
+        ? Number(hyperLendData.totalDebt) / 1e18
+        : 0;
 
       // Update metrics for monitoring
       this.lastMetrics = {
@@ -166,20 +198,36 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
       this.logger.debug(
         `[${this.name}] Funding: ${(fundingRate * 100).toFixed(4)}%/8h (${fundingAPY.toFixed(1)}% APY) | ` +
-        `Borrow: ${borrowAPY.toFixed(1)}% | Net: ${netCarryAPY.toFixed(1)}% | ` +
-        `HF: ${healthFactor.toFixed(2)} | Collateral: $${totalCollateral.toFixed(2)}`
+          `Borrow: ${borrowAPY.toFixed(1)}% | Net: ${netCarryAPY.toFixed(1)}% | ` +
+          `HF: ${healthFactor.toFixed(2)} | Collateral: $${totalCollateral.toFixed(2)}`,
       );
 
       // Decision logic
       if (!this.isPositionOpen) {
-        return await this.handleNoPosition(fundingRate, netCarryAPY, markPrice, totalCollateral, baseResult);
+        return await this.handleNoPosition(
+          fundingRate,
+          netCarryAPY,
+          markPrice,
+          totalCollateral,
+          baseResult,
+        );
       } else {
-        return await this.handleExistingPosition(fundingRate, netCarryAPY, markPrice, healthFactor, totalDebt, baseResult);
+        return await this.handleExistingPosition(
+          fundingRate,
+          netCarryAPY,
+          markPrice,
+          healthFactor,
+          totalDebt,
+          baseResult,
+        );
       }
-
     } catch (error) {
       this.logger.error(`[${this.name}] Error: ${error.message}`);
-      return { ...baseResult, reason: `Error: ${error.message}`, error: error.message };
+      return {
+        ...baseResult,
+        reason: `Error: ${error.message}`,
+        error: error.message,
+      };
     }
   }
 
@@ -195,10 +243,10 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
       this.isPositionOpen = false;
       this.currentSpotSize = 0;
       this.currentPerpSize = 0;
-      return { 
-        strategyName: this.name, 
-        executed: true, 
-        action: 'EMERGENCY_EXIT', 
+      return {
+        strategyName: this.name,
+        executed: true,
+        action: 'EMERGENCY_EXIT',
         reason: 'Emergency exit complete',
         txHash: tx.hash,
       };
@@ -224,7 +272,6 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
     availableCollateral: number,
     baseResult: StrategyExecutionResult,
   ): Promise<StrategyExecutionResult> {
-    
     const { fundingParams, riskParams, positionParams } = this.config;
 
     // Check if funding is attractive enough
@@ -255,27 +302,33 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
     }
 
     // Calculate optimal leverage
-    const optimalLeverage = this.calculateOptimalLeverage(riskParams.targetHealthFactor);
+    const optimalLeverage = this.calculateOptimalLeverage(
+      riskParams.targetHealthFactor,
+    );
     const leverage = Math.min(optimalLeverage, riskParams.maxLeverage);
-    
+
     // Calculate position size
     const positionSizeUSD = Math.min(
       availableCollateral * leverage,
-      positionParams.maxPositionSizeUSD
+      positionParams.maxPositionSizeUSD,
     );
     const positionSizeETH = positionSizeUSD / markPrice;
 
     this.logger.log(
       `[${this.name}] 🚀 OPENING DELTA-NEUTRAL:\n` +
-      `   💰 Collateral: $${availableCollateral.toFixed(2)}\n` +
-      `   📊 Leverage: ${leverage.toFixed(2)}x\n` +
-      `   📈 Spot: ${positionSizeETH.toFixed(4)} ETH\n` +
-      `   📉 Perp: ${positionSizeETH.toFixed(4)} ETH\n` +
-      `   💵 Net APY: ${netCarryAPY.toFixed(1)}%`
+        `   💰 Collateral: $${availableCollateral.toFixed(2)}\n` +
+        `   📊 Leverage: ${leverage.toFixed(2)}x\n` +
+        `   📈 Spot: ${positionSizeETH.toFixed(4)} ETH\n` +
+        `   📉 Perp: ${positionSizeETH.toFixed(4)} ETH\n` +
+        `   💵 Net APY: ${netCarryAPY.toFixed(1)}%`,
     );
 
     // Execute
-    const txHash = await this.openDeltaNeutralPosition(availableCollateral, positionSizeETH, markPrice);
+    const txHash = await this.openDeltaNeutralPosition(
+      availableCollateral,
+      positionSizeETH,
+      markPrice,
+    );
 
     this.isPositionOpen = true;
     this.currentSpotSize = positionSizeETH;
@@ -298,7 +351,6 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
     currentDebt: number,
     baseResult: StrategyExecutionResult,
   ): Promise<StrategyExecutionResult> {
-    
     const { fundingParams, riskParams, positionParams } = this.config;
 
     // Get perp PnL for rescue decisions
@@ -307,12 +359,20 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
     // 1. EMERGENCY: Health factor critical - try rescue first, then deleverage
     if (healthFactor > 0 && healthFactor < riskParams.emergencyHealthFactor) {
-      this.logger.warn(`[${this.name}] ⚠️ EMERGENCY: HF ${healthFactor.toFixed(2)} < ${riskParams.emergencyHealthFactor}!`);
-      
+      this.logger.warn(
+        `[${this.name}] ⚠️ EMERGENCY: HF ${healthFactor.toFixed(2)} < ${riskParams.emergencyHealthFactor}!`,
+      );
+
       // Check if perp is profitable enough to rescue
       if (perpPnL > 0) {
-        this.logger.log(`[${this.name}] 🚑 Attempting rescue from perp profits: $${perpPnL.toFixed(2)}`);
-        const result = await this.rescueHyperLendFromPerpProfits(markPrice, perpPnL, healthFactor);
+        this.logger.log(
+          `[${this.name}] 🚑 Attempting rescue from perp profits: $${perpPnL.toFixed(2)}`,
+        );
+        const result = await this.rescueHyperLendFromPerpProfits(
+          markPrice,
+          perpPnL,
+          healthFactor,
+        );
         if (result.success) {
           return {
             ...baseResult,
@@ -323,7 +383,7 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
           };
         }
       }
-      
+
       // Rescue failed or not possible - emergency deleverage
       const txHash = await this.emergencyDeleverage();
       return {
@@ -337,12 +397,20 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
     // 2. WARNING: Health factor low - try partial rescue
     if (healthFactor > 0 && healthFactor < riskParams.minHealthFactor) {
-      this.logger.warn(`[${this.name}] ⚠️ HF ${healthFactor.toFixed(2)} < ${riskParams.minHealthFactor}`);
-      
+      this.logger.warn(
+        `[${this.name}] ⚠️ HF ${healthFactor.toFixed(2)} < ${riskParams.minHealthFactor}`,
+      );
+
       // Check if perp is profitable enough to rescue
       if (perpPnL > 0) {
-        this.logger.log(`[${this.name}] 🔧 Attempting partial rescue from perp profits: $${perpPnL.toFixed(2)}`);
-        const result = await this.rescueHyperLendFromPerpProfits(markPrice, perpPnL, healthFactor);
+        this.logger.log(
+          `[${this.name}] 🔧 Attempting partial rescue from perp profits: $${perpPnL.toFixed(2)}`,
+        );
+        const result = await this.rescueHyperLendFromPerpProfits(
+          markPrice,
+          perpPnL,
+          healthFactor,
+        );
         if (result.success) {
           return {
             ...baseResult,
@@ -353,7 +421,7 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
           };
         }
       }
-      
+
       // Rescue failed - reduce leverage
       const txHash = await this.reduceLeverage();
       return {
@@ -367,7 +435,9 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
     // 3. Funding flipped negative
     if (fundingRate < fundingParams.fundingFlipThreshold) {
-      this.logger.log(`[${this.name}] 📉 Funding negative: ${(fundingRate * 100).toFixed(4)}%`);
+      this.logger.log(
+        `[${this.name}] 📉 Funding negative: ${(fundingRate * 100).toFixed(4)}%`,
+      );
       const txHash = await this.closePosition('Funding negative');
       return {
         ...baseResult,
@@ -380,7 +450,9 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
     // 4. Net carry unprofitable
     if (netCarryAPY < 0) {
-      this.logger.log(`[${this.name}] 📉 Net carry negative: ${netCarryAPY.toFixed(1)}%`);
+      this.logger.log(
+        `[${this.name}] 📉 Net carry negative: ${netCarryAPY.toFixed(1)}%`,
+      );
       const txHash = await this.closePosition('Net carry negative');
       return {
         ...baseResult,
@@ -394,10 +466,16 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
     // 5. Check perp margin health
     const minPerpMargin = this.currentPerpSize * markPrice * 0.05; // 5% margin minimum
     if (perpEquity > 0 && perpEquity < minPerpMargin) {
-      this.logger.warn(`[${this.name}] ⚠️ Perp margin low: $${perpEquity.toFixed(2)} < $${minPerpMargin.toFixed(2)}`);
-      
+      this.logger.warn(
+        `[${this.name}] ⚠️ Perp margin low: $${perpEquity.toFixed(2)} < $${minPerpMargin.toFixed(2)}`,
+      );
+
       // Try to rescue from HyperLend if HF allows
-      const result = await this.rescuePerpFromHyperLend(markPrice, perpEquity, minPerpMargin);
+      const result = await this.rescuePerpFromHyperLend(
+        markPrice,
+        perpEquity,
+        minPerpMargin,
+      );
       if (result.success) {
         return {
           ...baseResult,
@@ -407,7 +485,7 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
           txHash: result.txHash,
         };
       }
-      
+
       // Cannot rescue - close position to prevent liquidation
       const txHash = await this.closePosition('Perp margin critical');
       return {
@@ -421,10 +499,16 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
     // 6. Delta drift check
     if (this.currentSpotSize > 0) {
-      const deltaDrift = Math.abs(this.currentSpotSize - this.currentPerpSize) / this.currentSpotSize * 100;
+      const deltaDrift =
+        (Math.abs(this.currentSpotSize - this.currentPerpSize) /
+          this.currentSpotSize) *
+        100;
       if (deltaDrift > positionParams.maxDeltaDriftPercent) {
         const now = Date.now();
-        if (now - this.lastRebalanceTime > positionParams.rebalanceCooldownSeconds * 1000) {
+        if (
+          now - this.lastRebalanceTime >
+          positionParams.rebalanceCooldownSeconds * 1000
+        ) {
           const txHash = await this.rebalanceDelta(markPrice);
           this.lastRebalanceTime = now;
           return {
@@ -439,7 +523,8 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
     }
 
     // 7. All good - HOLD
-    const currentLeverage = healthFactor > 0 ? this.calculateCurrentLeverage(healthFactor) : 0;
+    const currentLeverage =
+      healthFactor > 0 ? this.calculateCurrentLeverage(healthFactor) : 0;
     return {
       ...baseResult,
       action: 'HOLD',
@@ -451,23 +536,37 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
   // EXECUTION
   // ═══════════════════════════════════════════════════════════
 
-  private async openDeltaNeutralPosition(collateral: number, sizeETH: number, price: number): Promise<string> {
+  private async openDeltaNeutralPosition(
+    collateral: number,
+    sizeETH: number,
+    price: number,
+  ): Promise<string> {
     // 1. Deposit collateral
     const idleUSDC = Number(await this.contract.getIdleUSDC()) / 1e6;
     if (idleUSDC > 0) {
-      const tx1 = await this.contract.depositCollateral(ethers.parseUnits(idleUSDC.toString(), 6));
+      const tx1 = await this.contract.depositCollateral(
+        ethers.parseUnits(idleUSDC.toString(), 6),
+      );
       await tx1.wait();
     }
 
     // 2. Borrow ETH
     const borrowAmount = ethers.parseEther(sizeETH.toString());
-    const tx2 = await this.contract.borrow(this.config.wethAddress, borrowAmount);
+    const tx2 = await this.contract.borrow(
+      this.config.wethAddress,
+      borrowAmount,
+    );
     await tx2.wait();
 
     // 3. Short perp
     const perpSize = BigInt(Math.round(sizeETH * 1e8));
     const limitPrice = BigInt(Math.round(price * 0.98 * 1e8));
-    const tx3 = await this.contract.placePerpOrder(false, perpSize, limitPrice, false);
+    const tx3 = await this.contract.placePerpOrder(
+      false,
+      perpSize,
+      limitPrice,
+      false,
+    );
     await tx3.wait();
 
     return tx3.hash;
@@ -475,31 +574,34 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
   private async closePosition(reason: string): Promise<string> {
     this.logger.log(`[${this.name}] Closing: ${reason}`);
-    
+
     const tx1 = await this.contract.closeAllPerpPositions();
     await tx1.wait();
-    
+
     const wethBalance = await this.contract.getWethBalance();
     if (wethBalance > 0) {
-      const tx2 = await this.contract.repay(this.config.wethAddress, wethBalance);
+      const tx2 = await this.contract.repay(
+        this.config.wethAddress,
+        wethBalance,
+      );
       await tx2.wait();
     }
 
     this.isPositionOpen = false;
     this.currentSpotSize = 0;
     this.currentPerpSize = 0;
-    
+
     return tx1.hash;
   }
 
   private async emergencyDeleverage(): Promise<string> {
     const tx = await this.contract.closeAllPerpPositions();
     await tx.wait();
-    
+
     this.currentPerpSize = 0;
     this.currentSpotSize = 0;
     this.isPositionOpen = false;
-    
+
     return tx.hash;
   }
 
@@ -518,14 +620,17 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
   private calculatePerpPnL(currentEquity: number): number {
     // Estimate initial margin as perpSize * price / leverage
     // For simplicity, track this separately or estimate from position value
-    const markPrice = typeof this.lastMetrics.markPrice === 'number' ? this.lastMetrics.markPrice : 0;
+    const markPrice =
+      typeof this.lastMetrics.markPrice === 'number'
+        ? this.lastMetrics.markPrice
+        : 0;
     const estimatedInitialMargin = this.currentPerpSize * markPrice;
     return currentEquity - estimatedInitialMargin;
   }
 
   /**
    * Rescue HyperLend by taking profits from perp position
-   * 
+   *
    * Flow:
    * 1. Calculate how much collateral we need to restore HF
    * 2. Calculate how much perp to close to realize that profit
@@ -539,35 +644,42 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
   ): Promise<{ success: boolean; txHash?: string; amountUsed?: number }> {
     try {
       const { riskParams } = this.config;
-      
+
       // Calculate how much collateral we need to restore target HF
       const [hyperLendData] = await Promise.all([
         this.contract.getHyperLendData(),
       ]);
-      
+
       const totalCollateral = Number(hyperLendData.totalCollateral) / 1e6;
       const totalDebt = Number(hyperLendData.totalDebt) / 1e18;
       const debtValueUSD = totalDebt * markPrice;
-      
+
       // Target HF formula: HF = (Collateral * LiqThreshold) / Debt
       // Solving for required collateral: Collateral = (HF * Debt) / LiqThreshold
       const liqThreshold = 0.8; // Typical value, should be from contract
-      const requiredCollateral = (riskParams.targetHealthFactor * debtValueUSD) / liqThreshold;
-      const collateralDeficit = Math.max(0, requiredCollateral - totalCollateral);
-      
+      const requiredCollateral =
+        (riskParams.targetHealthFactor * debtValueUSD) / liqThreshold;
+      const collateralDeficit = Math.max(
+        0,
+        requiredCollateral - totalCollateral,
+      );
+
       if (collateralDeficit <= 0) {
         this.logger.log(`[${this.name}] No rescue needed, HF will recover`);
         return { success: true, amountUsed: 0 };
       }
-      
+
       // Check if perp profit covers the deficit
       const amountToUse = Math.min(perpPnL * 0.9, collateralDeficit); // Use 90% of profit max
-      
-      if (amountToUse < 10) { // Minimum $10 to make it worthwhile
-        this.logger.log(`[${this.name}] Perp profit too small for rescue: $${amountToUse.toFixed(2)}`);
+
+      if (amountToUse < 10) {
+        // Minimum $10 to make it worthwhile
+        this.logger.log(
+          `[${this.name}] Perp profit too small for rescue: $${amountToUse.toFixed(2)}`,
+        );
         return { success: false };
       }
-      
+
       // Calculate how much perp to close
       // PnL per unit = (currentPrice - entryPrice) * direction
       // For shorts: PnL = (entryPrice - currentPrice) * size
@@ -580,41 +692,47 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
           break;
         }
       }
-      
+
       if (!perpPosition) {
         this.logger.warn(`[${this.name}] No perp position found for rescue`);
         return { success: false };
       }
-      
+
       const isLong = Number(perpPosition.szi) > 0;
       const perpSize = Math.abs(Number(perpPosition.szi)) / 1e8;
       const entryPrice = Number(perpPosition.entryPx) / 1e8;
       const unrealizedPnL = Number(perpPosition.unrealizedPnl) / 1e6;
-      
+
       if (unrealizedPnL <= 0) {
-        this.logger.log(`[${this.name}] Perp position not profitable: $${unrealizedPnL.toFixed(2)}`);
+        this.logger.log(
+          `[${this.name}] Perp position not profitable: $${unrealizedPnL.toFixed(2)}`,
+        );
         return { success: false };
       }
-      
+
       // Calculate size to close to realize the needed profit
       const pnlPerUnit = Math.abs(unrealizedPnL / perpSize);
       const sizeToClose = Math.min(perpSize, amountToUse / pnlPerUnit);
-      
+
       this.logger.log(
         `[${this.name}] 🚑 RESCUE PLAN:\n` +
-        `   💰 Collateral deficit: $${collateralDeficit.toFixed(2)}\n` +
-        `   📈 Perp PnL available: $${unrealizedPnL.toFixed(2)}\n` +
-        `   🔧 Closing ${sizeToClose.toFixed(4)} of ${perpSize.toFixed(4)} perp\n` +
-        `   💵 Expected rescue: $${amountToUse.toFixed(2)}`
+          `   💰 Collateral deficit: $${collateralDeficit.toFixed(2)}\n` +
+          `   📈 Perp PnL available: $${unrealizedPnL.toFixed(2)}\n` +
+          `   🔧 Closing ${sizeToClose.toFixed(4)} of ${perpSize.toFixed(4)} perp\n` +
+          `   💵 Expected rescue: $${amountToUse.toFixed(2)}`,
       );
-      
+
       // Execute rescue and releverage
       const closeSize = BigInt(Math.round(sizeToClose * 1e8));
-      const closePrice = BigInt(Math.round(markPrice * (isLong ? 0.98 : 1.02) * 1e8));
+      const closePrice = BigInt(
+        Math.round(markPrice * (isLong ? 0.98 : 1.02) * 1e8),
+      );
       const depositAmount = ethers.parseUnits(amountToUse.toFixed(6), 6);
       const reopenSize = closeSize; // Re-open same size to maintain delta neutral
-      const reopenPrice = BigInt(Math.round(markPrice * (isLong ? 1.02 : 0.98) * 1e8));
-      
+      const reopenPrice = BigInt(
+        Math.round(markPrice * (isLong ? 1.02 : 0.98) * 1e8),
+      );
+
       const tx = await this.contract.rescueAndReleverage(
         closeSize,
         closePrice,
@@ -624,11 +742,10 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
         isLong, // Re-open in same direction
       );
       await tx.wait();
-      
+
       this.logger.log(`[${this.name}] ✅ Rescue complete: ${tx.hash}`);
-      
+
       return { success: true, txHash: tx.hash, amountUsed: amountToUse };
-      
     } catch (error) {
       this.logger.error(`[${this.name}] Rescue failed: ${error.message}`);
       return { success: false };
@@ -647,49 +764,53 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
       const [hyperLendData] = await Promise.all([
         this.contract.getHyperLendData(),
       ]);
-      
+
       const healthFactor = Number(hyperLendData.healthFactor) / 1e18;
       const availableBorrows = Number(hyperLendData.availableBorrows) / 1e6;
-      
+
       // Only rescue if HF is healthy enough
       if (healthFactor < 2.0) {
-        this.logger.log(`[${this.name}] HF ${healthFactor.toFixed(2)} too low to withdraw for perp rescue`);
+        this.logger.log(
+          `[${this.name}] HF ${healthFactor.toFixed(2)} too low to withdraw for perp rescue`,
+        );
         return { success: false };
       }
-      
+
       // Calculate how much we can safely withdraw
       // Keep HF above 1.5 after withdrawal
       const { riskParams } = this.config;
       const totalCollateral = Number(hyperLendData.totalCollateral) / 1e6;
       const totalDebt = Number(hyperLendData.totalDebt) / 1e18;
       const debtValueUSD = totalDebt * markPrice;
-      
+
       const liqThreshold = 0.8;
-      const minCollateral = (riskParams.minHealthFactor * debtValueUSD) / liqThreshold;
+      const minCollateral =
+        (riskParams.minHealthFactor * debtValueUSD) / liqThreshold;
       const withdrawable = Math.max(0, totalCollateral - minCollateral);
-      
+
       const marginDeficit = minPerpMargin - perpEquity;
       const amountToWithdraw = Math.min(withdrawable, marginDeficit);
-      
+
       if (amountToWithdraw < 10) {
-        this.logger.log(`[${this.name}] Cannot withdraw enough for perp rescue: $${amountToWithdraw.toFixed(2)}`);
+        this.logger.log(
+          `[${this.name}] Cannot withdraw enough for perp rescue: $${amountToWithdraw.toFixed(2)}`,
+        );
         return { success: false };
       }
-      
+
       this.logger.log(
         `[${this.name}] 🚑 PERP RESCUE:\n` +
-        `   📉 Perp margin deficit: $${marginDeficit.toFixed(2)}\n` +
-        `   💰 Withdrawable from HyperLend: $${withdrawable.toFixed(2)}\n` +
-        `   💵 Rescuing: $${amountToWithdraw.toFixed(2)}`
+          `   📉 Perp margin deficit: $${marginDeficit.toFixed(2)}\n` +
+          `   💰 Withdrawable from HyperLend: $${withdrawable.toFixed(2)}\n` +
+          `   💵 Rescuing: $${amountToWithdraw.toFixed(2)}`,
       );
-      
+
       const tx = await this.contract.rescuePerpFromHyperLend(
-        ethers.parseUnits(amountToWithdraw.toFixed(6), 6)
+        ethers.parseUnits(amountToWithdraw.toFixed(6), 6),
       );
       await tx.wait();
-      
+
       return { success: true, txHash: tx.hash, amountUsed: amountToWithdraw };
-      
     } catch (error) {
       this.logger.error(`[${this.name}] Perp rescue failed: ${error.message}`);
       return { success: false };
@@ -698,16 +819,21 @@ export class DeltaNeutralFundingStrategy implements IExecutableStrategy {
 
   private async rebalanceDelta(price: number): Promise<string> {
     const delta = this.currentSpotSize - this.currentPerpSize;
-    
+
     if (Math.abs(delta) < 0.001) return '';
-    
+
     const perpSize = BigInt(Math.round(Math.abs(delta) * 1e8));
     const isLong = delta < 0;
     const limitPrice = BigInt(Math.round(price * (isLong ? 1.02 : 0.98) * 1e8));
-    
-    const tx = await this.contract.placePerpOrder(isLong, perpSize, limitPrice, !isLong);
+
+    const tx = await this.contract.placePerpOrder(
+      isLong,
+      perpSize,
+      limitPrice,
+      !isLong,
+    );
     await tx.wait();
-    
+
     this.currentPerpSize = this.currentSpotSize;
     return tx.hash;
   }

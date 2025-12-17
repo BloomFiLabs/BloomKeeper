@@ -37,7 +37,7 @@ export interface IFundingDataProvider {
   /**
    * Get all funding data for a symbol in a single call
    * This is more efficient than calling individual methods
-   * 
+   *
    * @param request - The funding data request with symbol info
    * @returns FundingRateData or null if symbol not supported/data unavailable
    */
@@ -54,4 +54,3 @@ export interface IFundingDataProvider {
    */
   getExchangeSymbol(normalizedSymbol: string): string | number | undefined;
 }
-

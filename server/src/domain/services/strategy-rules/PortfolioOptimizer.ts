@@ -6,7 +6,8 @@ import {
 import { CostCalculator } from './CostCalculator';
 import type { IHistoricalFundingRateService } from '../../ports/IHistoricalFundingRateService';
 import type { IOptimalLeverageService } from '../../ports/IOptimalLeverageService';
-import type { IFundingRatePredictionService, MarketRegime } from '../../ports/IFundingRatePredictor';
+import type { IFundingRatePredictionService } from '../../ports/IFundingRatePredictor';
+import { MarketRegime } from '../../ports/IFundingRatePredictor';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
@@ -43,9 +44,9 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
    * Reduce position size in volatile/risky regimes
    */
   private readonly REGIME_SIZE_MULTIPLIERS: Record<MarketRegime, number> = {
-    [MarketRegime.MEAN_REVERTING]: 1.0,      // Full size in normal conditions
-    [MarketRegime.TRENDING]: 0.85,           // Slightly reduced for trending
-    [MarketRegime.HIGH_VOLATILITY]: 0.7,     // Reduced for volatility
+    [MarketRegime.MEAN_REVERTING]: 1.0, // Full size in normal conditions
+    [MarketRegime.TRENDING]: 0.85, // Slightly reduced for trending
+    [MarketRegime.HIGH_VOLATILITY]: 0.7, // Reduced for volatility
     [MarketRegime.EXTREME_DISLOCATION]: 0.5, // Half size in extreme conditions
   };
 
@@ -857,7 +858,10 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
       let sizeMultiplier = this.REGIME_SIZE_MULTIPLIERS[regime] ?? 1.0;
 
       // Further adjust based on prediction confidence
-      sizeMultiplier = this.adjustPositionForConfidence(sizeMultiplier, confidence);
+      sizeMultiplier = this.adjustPositionForConfidence(
+        sizeMultiplier,
+        confidence,
+      );
 
       // Apply multiplier to max portfolio
       const adjustedMaxPortfolio = baseResult.maxPortfolio * sizeMultiplier;

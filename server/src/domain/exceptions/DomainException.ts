@@ -26,7 +26,11 @@ export class DomainException extends Error {
 export class ExchangeException extends DomainException {
   public readonly exchange: string;
 
-  constructor(message: string, exchange: string, context?: Record<string, any>) {
+  constructor(
+    message: string,
+    exchange: string,
+    context?: Record<string, any>,
+  ) {
     super(`[${exchange}] ${message}`, 'EXCHANGE_ERROR', context);
     this.name = 'ExchangeException';
     this.exchange = exchange;
@@ -89,7 +93,11 @@ export class OrderExecutionException extends DomainException {
     exchange: string,
     context?: Record<string, any>,
   ) {
-    super(`Order execution failed: ${message}`, 'ORDER_EXECUTION_ERROR', context);
+    super(
+      `Order execution failed: ${message}`,
+      'ORDER_EXECUTION_ERROR',
+      context,
+    );
     this.name = 'OrderExecutionException';
     this.orderId = orderId;
     this.exchange = exchange;
@@ -103,11 +111,7 @@ export class PositionNotFoundException extends DomainException {
   public readonly symbol: string;
   public readonly exchange: string;
 
-  constructor(
-    symbol: string,
-    exchange: string,
-    context?: Record<string, any>,
-  ) {
+  constructor(symbol: string, exchange: string, context?: Record<string, any>) {
     super(
       `Position not found: ${symbol} on ${exchange}`,
       'POSITION_NOT_FOUND',

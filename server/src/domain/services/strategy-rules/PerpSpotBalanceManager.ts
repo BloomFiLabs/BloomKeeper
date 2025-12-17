@@ -8,14 +8,14 @@ import { SpotExchangeError } from '../../ports/ISpotExchangeAdapter';
 
 /**
  * PerpSpotBalanceManager - Manages automatic transfers between perp and spot accounts
- * 
+ *
  * CRITICAL: This service automatically transfers funds between perp margin and spot accounts
  * within the same exchange to optimize position sizing for perp-spot opportunities.
  */
 @Injectable()
 export class PerpSpotBalanceManager {
   private readonly logger = new Logger(PerpSpotBalanceManager.name);
-  
+
   // Configuration
   private readonly MIN_TRANSFER_AMOUNT = 10; // Minimum $10 to avoid dust
   private readonly REBALANCE_THRESHOLD = 0.1; // 10% improvement required
@@ -23,10 +23,10 @@ export class PerpSpotBalanceManager {
 
   /**
    * Ensure optimal balance distribution for perp-spot opportunity
-   * 
+   *
    * Calculates optimal distribution: spotBalance ≈ perpBalance * leverage
    * Transfers funds if current distribution is suboptimal and improvement is meaningful
-   * 
+   *
    * @param exchange Exchange type
    * @param perpAdapter Perp exchange adapter
    * @param spotAdapter Spot exchange adapter
@@ -45,17 +45,24 @@ export class PerpSpotBalanceManager {
       // Get current balances
       const [perpBalance, spotBalance] = await Promise.all([
         perpAdapter.getBalance(),
-        spotAdapter.getSpotBalance('USDC').catch(() => spotAdapter.getSpotBalance('USDT').catch(() => 0)),
+        spotAdapter
+          .getSpotBalance('USDC')
+          .catch(() => spotAdapter.getSpotBalance('USDT').catch(() => 0)),
       ]);
 
       this.logger.debug(
         `Balance check for ${exchange}: perp=$${perpBalance.toFixed(2)}, spot=$${spotBalance.toFixed(2)}, ` +
-        `target=$${targetPositionSize.toFixed(2)}, leverage=${leverage}x`
+          `target=$${targetPositionSize.toFixed(2)}, leverage=${leverage}x`,
       );
 
       // Check if rebalancing is needed
-      const rebalanceCheck = this.shouldRebalance(perpBalance, spotBalance, targetPositionSize, leverage);
-      
+      const rebalanceCheck = this.shouldRebalance(
+        perpBalance,
+        spotBalance,
+        targetPositionSize,
+        leverage,
+      );
+
       if (!rebalanceCheck.shouldRebalance) {
         return Result.success(false);
       }
@@ -66,35 +73,44 @@ export class PerpSpotBalanceManager {
 
       this.logger.log(
         `🔄 Rebalancing ${exchange}: Transferring $${transferAmount.toFixed(2)} ` +
-        `${toPerp ? 'spot → perp' : 'perp → spot'} to optimize position sizing`
+          `${toPerp ? 'spot → perp' : 'perp → spot'} to optimize position sizing`,
       );
 
       try {
-        const txHash = await spotAdapter.transferInternal(transferAmount, toPerp);
-        
+        const txHash = await spotAdapter.transferInternal(
+          transferAmount,
+          toPerp,
+        );
+
         // Wait for settlement
-        await new Promise(resolve => setTimeout(resolve, this.SETTLEMENT_DELAY_MS));
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.SETTLEMENT_DELAY_MS),
+        );
 
         // Verify balances after transfer
         const [newPerpBalance, newSpotBalance] = await Promise.all([
           perpAdapter.getBalance(),
-          spotAdapter.getSpotBalance('USDC').catch(() => spotAdapter.getSpotBalance('USDT').catch(() => 0)),
+          spotAdapter
+            .getSpotBalance('USDC')
+            .catch(() => spotAdapter.getSpotBalance('USDT').catch(() => 0)),
         ]);
 
         this.logger.log(
-          `✅ Rebalancing complete: perp=$${newPerpBalance.toFixed(2)}, spot=$${newSpotBalance.toFixed(2)}`
+          `✅ Rebalancing complete: perp=$${newPerpBalance.toFixed(2)}, spot=$${newSpotBalance.toFixed(2)}`,
         );
 
         return Result.success(true);
       } catch (error: any) {
         this.logger.warn(
-          `Transfer failed (continuing with original balances): ${error.message}`
+          `Transfer failed (continuing with original balances): ${error.message}`,
         );
         // Return success=false but don't throw - graceful fallback
         return Result.success(false);
       }
     } catch (error: any) {
-      this.logger.error(`Failed to ensure optimal balance distribution: ${error.message}`);
+      this.logger.error(
+        `Failed to ensure optimal balance distribution: ${error.message}`,
+      );
       return Result.failure(
         new DomainException(
           `Failed to ensure optimal balance distribution: ${error.message}`,
@@ -106,7 +122,7 @@ export class PerpSpotBalanceManager {
 
   /**
    * Calculate optimal balance distribution
-   * 
+   *
    * For position size P with leverage L:
    * - Perp margin needed: P / L
    * - Spot capital needed: P (1:1)
@@ -131,19 +147,19 @@ export class PerpSpotBalanceManager {
     // - And: spotBalance = totalCapital * leverage / (1 + leverage)
 
     const optimalPerpBalance = totalCapital / (1 + leverage);
-    const optimalSpotBalance = totalCapital * leverage / (1 + leverage);
+    const optimalSpotBalance = (totalCapital * leverage) / (1 + leverage);
 
     return { optimalPerpBalance, optimalSpotBalance };
   }
 
   /**
    * Determine if rebalancing is needed
-   * 
+   *
    * Only rebalance if:
    * 1. Current distribution is suboptimal (10%+ difference)
    * 2. Improvement is meaningful (10%+ larger position possible)
    * 3. Transfer amount is above minimum ($10)
-   * 
+   *
    * @returns { shouldRebalance, transferAmount?, toPerp? }
    */
   shouldRebalance(
@@ -153,25 +169,33 @@ export class PerpSpotBalanceManager {
     leverage: number,
   ): { shouldRebalance: boolean; transferAmount?: number; toPerp?: boolean } {
     // Calculate optimal distribution
-    const { optimalPerpBalance, optimalSpotBalance } = this.calculateOptimalDistribution(
-      perpBalance,
-      spotBalance,
-      targetPositionSize,
-      leverage,
-    );
+    const { optimalPerpBalance, optimalSpotBalance } =
+      this.calculateOptimalDistribution(
+        perpBalance,
+        spotBalance,
+        targetPositionSize,
+        leverage,
+      );
 
     // Calculate current position capacity
     const currentPerpCapacity = perpBalance * leverage;
     const currentSpotCapacity = spotBalance;
-    const currentMaxPosition = Math.min(currentPerpCapacity, currentSpotCapacity);
+    const currentMaxPosition = Math.min(
+      currentPerpCapacity,
+      currentSpotCapacity,
+    );
 
     // Calculate optimal position capacity
     const optimalPerpCapacity = optimalPerpBalance * leverage;
     const optimalSpotCapacity = optimalSpotBalance;
-    const optimalMaxPosition = Math.min(optimalPerpCapacity, optimalSpotCapacity);
+    const optimalMaxPosition = Math.min(
+      optimalPerpCapacity,
+      optimalSpotCapacity,
+    );
 
     // Check if improvement is meaningful (10%+)
-    const improvement = (optimalMaxPosition - currentMaxPosition) / currentMaxPosition;
+    const improvement =
+      (optimalMaxPosition - currentMaxPosition) / currentMaxPosition;
     if (improvement < this.REBALANCE_THRESHOLD) {
       return { shouldRebalance: false };
     }
@@ -205,8 +229,3 @@ export class PerpSpotBalanceManager {
     return { shouldRebalance: false };
   }
 }
-
-
-
-
-

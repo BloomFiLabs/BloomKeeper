@@ -3,7 +3,12 @@ import { PerpKeeperOrchestrator } from './PerpKeeperOrchestrator';
 import { FundingRateAggregator } from './FundingRateAggregator';
 import { FundingArbitrageStrategy } from './FundingArbitrageStrategy';
 import { ExchangeType } from '../value-objects/ExchangeConfig';
-import { PerpOrderRequest, OrderSide, OrderType, OrderStatus } from '../value-objects/PerpOrder';
+import {
+  PerpOrderRequest,
+  OrderSide,
+  OrderType,
+  OrderStatus,
+} from '../value-objects/PerpOrder';
 import { IPerpExchangeAdapter } from '../ports/IPerpExchangeAdapter';
 
 describe('PerpKeeperOrchestrator', () => {
@@ -75,7 +80,10 @@ describe('PerpKeeperOrchestrator', () => {
         1.0,
       );
 
-      const result = await orchestrator.placeAndTrackOrder(ExchangeType.ASTER, request);
+      const result = await orchestrator.placeAndTrackOrder(
+        ExchangeType.ASTER,
+        request,
+      );
 
       expect(result.order).toBeDefined();
       expect(result.response.orderId).toBe('order123');
@@ -114,7 +122,9 @@ describe('PerpKeeperOrchestrator', () => {
         },
       ]);
 
-      const opportunities = await orchestrator.findArbitrageOpportunities(['ETHUSDT']);
+      const opportunities = await orchestrator.findArbitrageOpportunities([
+        'ETHUSDT',
+      ]);
 
       expect(opportunities.length).toBe(1);
     });
@@ -142,4 +152,3 @@ describe('PerpKeeperOrchestrator', () => {
     });
   });
 });
-

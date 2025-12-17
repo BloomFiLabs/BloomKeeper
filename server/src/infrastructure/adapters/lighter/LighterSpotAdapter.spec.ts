@@ -54,50 +54,68 @@ describe('LighterSpotAdapter', () => {
         1.0,
       );
 
-      await expect(adapter.placeSpotOrder(request)).rejects.toThrow(SpotExchangeError);
-      await expect(adapter.placeSpotOrder(request)).rejects.toThrow('Spot trading is not supported');
+      await expect(adapter.placeSpotOrder(request)).rejects.toThrow(
+        SpotExchangeError,
+      );
+      await expect(adapter.placeSpotOrder(request)).rejects.toThrow(
+        'Spot trading is not supported',
+      );
     });
   });
 
   describe('getSpotPosition', () => {
     it('should throw SpotExchangeError (not supported)', async () => {
-      await expect(adapter.getSpotPosition('ETH')).rejects.toThrow(SpotExchangeError);
+      await expect(adapter.getSpotPosition('ETH')).rejects.toThrow(
+        SpotExchangeError,
+      );
     });
   });
 
   describe('getSpotPositions', () => {
     it('should throw SpotExchangeError (not supported)', async () => {
-      await expect(adapter.getSpotPositions()).rejects.toThrow(SpotExchangeError);
+      await expect(adapter.getSpotPositions()).rejects.toThrow(
+        SpotExchangeError,
+      );
     });
   });
 
   describe('cancelSpotOrder', () => {
     it('should throw SpotExchangeError (not supported)', async () => {
-      await expect(adapter.cancelSpotOrder('12345')).rejects.toThrow(SpotExchangeError);
+      await expect(adapter.cancelSpotOrder('12345')).rejects.toThrow(
+        SpotExchangeError,
+      );
     });
   });
 
   describe('getSpotOrderStatus', () => {
     it('should throw SpotExchangeError (not supported)', async () => {
-      await expect(adapter.getSpotOrderStatus('12345')).rejects.toThrow(SpotExchangeError);
+      await expect(adapter.getSpotOrderStatus('12345')).rejects.toThrow(
+        SpotExchangeError,
+      );
     });
   });
 
   describe('getSpotBalance', () => {
     it('should throw SpotExchangeError (not supported)', async () => {
-      await expect(adapter.getSpotBalance('ETH')).rejects.toThrow(SpotExchangeError);
+      await expect(adapter.getSpotBalance('ETH')).rejects.toThrow(
+        SpotExchangeError,
+      );
     });
   });
 
   describe('getSpotPrice', () => {
     it('should throw SpotExchangeError (not supported)', async () => {
-      await expect(adapter.getSpotPrice('ETH')).rejects.toThrow(SpotExchangeError);
+      await expect(adapter.getSpotPrice('ETH')).rejects.toThrow(
+        SpotExchangeError,
+      );
     });
   });
 
   describe('transferInternal', () => {
     it('should throw SpotExchangeError (not supported)', async () => {
-      await expect(adapter.transferInternal(1000, true)).rejects.toThrow(SpotExchangeError);
+      await expect(adapter.transferInternal(1000, true)).rejects.toThrow(
+        SpotExchangeError,
+      );
     });
   });
 
@@ -134,4 +152,3 @@ describe('LighterSpotAdapter', () => {
     });
   });
 });
-

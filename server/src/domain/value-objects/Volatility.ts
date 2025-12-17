@@ -9,4 +9,3 @@ export class Volatility {
     return `${(this.value * 100).toFixed(2)}%`;
   }
 }
-

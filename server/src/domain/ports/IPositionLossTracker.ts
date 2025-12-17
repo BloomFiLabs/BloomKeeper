@@ -8,6 +8,7 @@ import { PerpPosition } from '../entities/PerpPosition';
 export interface IPositionLossTracker {
   /**
    * Record a position entry (when opening a position)
+   * Protected by mutex to prevent race conditions
    */
   recordPositionEntry(
     symbol: string,
@@ -15,7 +16,7 @@ export interface IPositionLossTracker {
     entryCost: number,
     positionSizeUsd: number,
     timestamp?: Date,
-  ): void;
+  ): Promise<void>;
 
   /**
    * Get remaining break-even hours for a position

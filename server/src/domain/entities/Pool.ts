@@ -6,4 +6,3 @@ export class Pool {
     public readonly feeTier: number,
   ) {}
 }
-

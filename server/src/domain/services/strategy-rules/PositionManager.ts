@@ -33,7 +33,7 @@ export class PositionManager implements IPositionManager {
   // Track positions currently being closed to prevent double-close attempts
   // Key format: "EXCHANGE:SYMBOL" (e.g., "LIGHTER:ETHUSDC")
   private readonly closingPositions: Set<string> = new Set();
-  
+
   // Track recently closed positions to prevent immediate re-close attempts
   // Key format: "EXCHANGE:SYMBOL", Value: timestamp when closed
   private readonly recentlyClosedPositions: Map<string, number> = new Map();
@@ -61,18 +61,24 @@ export class PositionManager implements IPositionManager {
   /**
    * Check if a position is currently being closed
    */
-  private isPositionBeingClosed(exchangeType: ExchangeType, symbol: string): boolean {
+  private isPositionBeingClosed(
+    exchangeType: ExchangeType,
+    symbol: string,
+  ): boolean {
     return this.closingPositions.has(this.getPositionKey(exchangeType, symbol));
   }
 
   /**
    * Check if a position was recently closed
    */
-  private wasRecentlyClosed(exchangeType: ExchangeType, symbol: string): boolean {
+  private wasRecentlyClosed(
+    exchangeType: ExchangeType,
+    symbol: string,
+  ): boolean {
     const key = this.getPositionKey(exchangeType, symbol);
     const closedAt = this.recentlyClosedPositions.get(key);
     if (!closedAt) return false;
-    
+
     const elapsed = Date.now() - closedAt;
     if (elapsed > this.RECENTLY_CLOSED_TTL_MS) {
       // Expired, remove from map
@@ -168,7 +174,12 @@ export class PositionManager implements IPositionManager {
     positions: PerpPosition[],
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
     result: ArbitrageExecutionResult,
-  ): Promise<Result<{ closed: PerpPosition[]; stillOpen: PerpPosition[] }, DomainException>> {
+  ): Promise<
+    Result<
+      { closed: PerpPosition[]; stillOpen: PerpPosition[] },
+      DomainException
+    >
+  > {
     const closed: PerpPosition[] = [];
     const stillOpen: PerpPosition[] = [];
 
@@ -182,15 +193,15 @@ export class PositionManager implements IPositionManager {
           this.logger.warn(
             `No adapter found for ${position.exchangeType}, cannot close position`,
           );
-          result.errors.push(
-            `No adapter found for ${position.exchangeType}`,
-          );
+          result.errors.push(`No adapter found for ${position.exchangeType}`);
           stillOpen.push(position);
           continue;
         }
 
         // IDEMPOTENT CHECK: Skip if position is already being closed
-        if (this.isPositionBeingClosed(position.exchangeType, position.symbol)) {
+        if (
+          this.isPositionBeingClosed(position.exchangeType, position.symbol)
+        ) {
           this.logger.warn(
             `⚠️ Position ${position.symbol} on ${position.exchangeType} is already being closed, skipping`,
           );
@@ -219,20 +230,24 @@ export class PositionManager implements IPositionManager {
         try {
           const freshPositions = await adapter.getPositions();
           const freshPosition = freshPositions.find(
-            (p) => p.symbol === position.symbol && p.exchangeType === position.exchangeType
+            (p) =>
+              p.symbol === position.symbol &&
+              p.exchangeType === position.exchangeType,
           );
           if (freshPosition) {
             currentPositionSize = Math.abs(freshPosition.size);
-            if (Math.abs(currentPositionSize - Math.abs(position.size)) > 0.0001) {
+            if (
+              Math.abs(currentPositionSize - Math.abs(position.size)) > 0.0001
+            ) {
               this.logger.warn(
                 `⚠️ Position size changed: expected ${Math.abs(position.size).toFixed(4)}, ` +
-                `actual ${currentPositionSize.toFixed(4)} for ${position.symbol} on ${position.exchangeType}`
+                  `actual ${currentPositionSize.toFixed(4)} for ${position.symbol} on ${position.exchangeType}`,
               );
             }
           } else {
             // Position no longer exists - mark as closed and continue
             this.logger.log(
-              `✅ Position ${position.symbol} on ${position.exchangeType} no longer exists - already closed`
+              `✅ Position ${position.symbol} on ${position.exchangeType} no longer exists - already closed`,
             );
             this.markAsClosed(position.exchangeType, position.symbol);
             closed.push(position);
@@ -241,14 +256,14 @@ export class PositionManager implements IPositionManager {
         } catch (fetchError: any) {
           this.logger.warn(
             `⚠️ Failed to fetch fresh position for ${position.symbol}: ${fetchError.message}. ` +
-            `Using original size: ${currentPositionSize.toFixed(4)}`
+              `Using original size: ${currentPositionSize.toFixed(4)}`,
           );
         }
 
         // Skip if position size is negligible
         if (currentPositionSize < 0.0001) {
           this.logger.log(
-            `✅ Position ${position.symbol} on ${position.exchangeType} has negligible size - treating as closed`
+            `✅ Position ${position.symbol} on ${position.exchangeType} has negligible size - treating as closed`,
           );
           this.markAsClosed(position.exchangeType, position.symbol);
           closed.push(position);
@@ -257,18 +272,19 @@ export class PositionManager implements IPositionManager {
 
         // Close position with progressive price improvement (especially for Lighter)
         // Try progressively worse prices to ensure fill
-        const closeSide = position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
+        const closeSide =
+          position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
         const positionSize = currentPositionSize;
-        
+
         // Progressive price improvement: start with market, then try worse prices
         const priceImprovements = [0, 0.001, 0.005, 0.01, 0.02, 0.05]; // 0%, 0.1%, 0.5%, 1%, 2%, 5% worse
-        
+
         let finalResponse: PerpOrderResponse | null = null;
         let positionClosed = false;
-        
+
         for (let attempt = 0; attempt < priceImprovements.length; attempt++) {
           const priceImprovement = priceImprovements[attempt];
-          
+
           try {
             // Get current market price for limit orders (if not first attempt)
             let limitPrice: number | undefined = undefined;
@@ -288,15 +304,17 @@ export class PositionManager implements IPositionManager {
                   }
                   this.logger.debug(
                     `Attempt ${attempt + 1}/${priceImprovements.length}: Using limit price ${limitPrice.toFixed(6)} ` +
-                    `(${(priceImprovement * 100).toFixed(2)}% ${position.side === OrderSide.LONG ? 'worse' : 'worse'} than market)`,
+                      `(${(priceImprovement * 100).toFixed(2)}% ${position.side === OrderSide.LONG ? 'worse' : 'worse'} than market)`,
                   );
                 }
               } catch (priceError: any) {
-                this.logger.debug(`Failed to get market price for progressive close: ${priceError.message}`);
+                this.logger.debug(
+                  `Failed to get market price for progressive close: ${priceError.message}`,
+                );
                 // Fall back to market order
               }
             }
-            
+
             const closeOrder = new PerpOrderRequest(
               position.symbol,
               closeSide,
@@ -314,7 +332,7 @@ export class PositionManager implements IPositionManager {
             } else {
               this.logger.warn(
                 `🔄 Retry ${attempt}/${priceImprovements.length - 1}: Closing ${position.symbol} with ` +
-                `${(priceImprovement * 100).toFixed(2)}% worse price (${limitPrice?.toFixed(6)})`,
+                  `${(priceImprovement * 100).toFixed(2)}% worse price (${limitPrice?.toFixed(6)})`,
               );
             }
 
@@ -324,7 +342,8 @@ export class PositionManager implements IPositionManager {
             let response = closeResponse;
             if (!closeResponse.isFilled() && closeResponse.orderId) {
               // Determine the order side for the close order (opposite of position side)
-              const closeSide: 'LONG' | 'SHORT' = position.side === OrderSide.LONG ? 'SHORT' : 'LONG';
+              const closeSide: 'LONG' | 'SHORT' =
+                position.side === OrderSide.LONG ? 'SHORT' : 'LONG';
               response = await this.orderExecutor.waitForOrderFill(
                 adapter,
                 closeResponse.orderId,
@@ -337,9 +356,9 @@ export class PositionManager implements IPositionManager {
                 closeSide,
               );
             }
-            
+
             finalResponse = response;
-            
+
             // Check if position is actually closed
             await new Promise((resolve) => setTimeout(resolve, 500)); // Small delay for position to update
             const currentPositions = await adapter.getPositions();
@@ -349,22 +368,22 @@ export class PositionManager implements IPositionManager {
                 p.exchangeType === position.exchangeType &&
                 Math.abs(p.size) > 0.0001,
             );
-            
+
             if (response.isFilled() && !positionStillExists) {
               positionClosed = true;
               if (attempt > 0) {
                 this.logger.log(
                   `✅ Successfully closed position ${position.symbol} on attempt ${attempt + 1} ` +
-                  `with ${(priceImprovement * 100).toFixed(2)}% worse price`,
+                    `with ${(priceImprovement * 100).toFixed(2)}% worse price`,
                 );
               }
               break; // Position closed successfully
             }
-            
+
             if (attempt < priceImprovements.length - 1) {
               this.logger.warn(
                 `⚠️ Close order for ${position.symbol} didn't fill on attempt ${attempt + 1}, ` +
-                `trying with worse price...`,
+                  `trying with worse price...`,
               );
               await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait before next attempt
             }
@@ -396,7 +415,7 @@ export class PositionManager implements IPositionManager {
         if (positionClosed) {
           // Mark as closed (release lock and record)
           this.markAsClosed(position.exchangeType, position.symbol);
-          
+
           if (!finalResponse || finalResponse.isSuccess()) {
             this.logger.log(
               `✅ Successfully closed position: ${position.symbol} on ${position.exchangeType}`,
@@ -418,7 +437,7 @@ export class PositionManager implements IPositionManager {
               p.exchangeType === position.exchangeType &&
               Math.abs(p.size) > 0.0001,
           );
-          
+
           if (positionStillExists) {
             this.logger.warn(
               `⚠️ Position ${position.symbol} on ${position.exchangeType} still exists after close attempt. ` +
@@ -452,7 +471,8 @@ export class PositionManager implements IPositionManager {
                   `🔄 Final fallback: Force closing ${currentPosition.symbol} ${currentPosition.side} ${Math.abs(currentPosition.size).toFixed(4)} on ${currentPosition.exchangeType} with market order...`,
                 );
 
-                const fallbackResponse = await adapter.placeOrder(finalCloseOrder);
+                const fallbackResponse =
+                  await adapter.placeOrder(finalCloseOrder);
 
                 // Wait a bit for the order to fill
                 await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -475,7 +495,10 @@ export class PositionManager implements IPositionManager {
                   closed.push(position);
                 } else {
                   // Release lock without marking as closed
-                  this.releaseClosingLock(position.exchangeType, position.symbol);
+                  this.releaseClosingLock(
+                    position.exchangeType,
+                    position.symbol,
+                  );
                   this.logger.error(
                     `❌ Final fallback market order failed: ${position.symbol} on ${position.exchangeType}. ` +
                       `Position still exists. Margin remains locked.`,
@@ -629,7 +652,7 @@ export class PositionManager implements IPositionManager {
           const priceImprovements = [0.001, 0.002, 0.005]; // 0.1%, 0.2%, 0.5% worse
           let improvedOrderFilled = false;
           const unfilledSide = longFilled ? OrderSide.SHORT : OrderSide.LONG;
-          
+
           // Get current mark price for the unfilled exchange
           let currentMarkPrice: number;
           try {
@@ -637,7 +660,7 @@ export class PositionManager implements IPositionManager {
           } catch (error: any) {
             this.logger.warn(
               `Failed to get mark price for ${symbol} on ${unfilledExchange}: ${error.message}. ` +
-              `Skipping price improvement, going straight to market order.`,
+                `Skipping price improvement, going straight to market order.`,
             );
             currentMarkPrice = markPrice; // Fallback to opportunity mark price
           }
@@ -645,22 +668,27 @@ export class PositionManager implements IPositionManager {
           // Try progressive price improvement if order still exists
           // This helps fill orders faster in both immediate and timeout-based handling
           if (unfilledOrderId) {
-            for (let i = 0; i < priceImprovements.length && !improvedOrderFilled; i++) {
+            for (
+              let i = 0;
+              i < priceImprovements.length && !improvedOrderFilled;
+              i++
+            ) {
               const improvement = priceImprovements[i];
-              
+
               // Calculate improved price (worse = more aggressive)
               // For LONG: improve by making price higher (pay more)
               // For SHORT: improve by making price lower (sell for less)
-              const improvedPrice = unfilledSide === OrderSide.LONG
-                ? currentMarkPrice * (1 + improvement)  // Pay more for LONG
-                : currentMarkPrice * (1 - improvement);  // Sell for less for SHORT
+              const improvedPrice =
+                unfilledSide === OrderSide.LONG
+                  ? currentMarkPrice * (1 + improvement) // Pay more for LONG
+                  : currentMarkPrice * (1 - improvement); // Sell for less for SHORT
 
               try {
                 // Cancel existing order
                 await unfilledAdapter.cancelOrder(unfilledOrderId, symbol);
                 this.logger.debug(
                   `🔄 ${symbol}: Cancelled order ${unfilledOrderId}, replacing with improved price ` +
-                  `${improvedPrice.toFixed(4)} (${(improvement * 100).toFixed(2)}% ${unfilledSide === OrderSide.LONG ? 'worse' : 'worse'})`,
+                    `${improvedPrice.toFixed(4)} (${(improvement * 100).toFixed(2)}% ${unfilledSide === OrderSide.LONG ? 'worse' : 'worse'})`,
                 );
 
                 // Place new limit order with improved price
@@ -673,22 +701,29 @@ export class PositionManager implements IPositionManager {
                   TimeInForce.IOC, // Use IOC for faster execution
                 );
 
-                const improvedResponse = await unfilledAdapter.placeOrder(improvedOrder);
+                const improvedResponse =
+                  await unfilledAdapter.placeOrder(improvedOrder);
 
-                if (improvedResponse.isSuccess() && improvedResponse.isFilled()) {
+                if (
+                  improvedResponse.isSuccess() &&
+                  improvedResponse.isFilled()
+                ) {
                   this.logger.log(
                     `✅ ${symbol}: Improved limit order filled at ${improvedPrice.toFixed(4)}. ` +
-                    `Arbitrage pair complete. Net return: $${profitability.expectedNetReturn.toFixed(4)}/period`,
+                      `Arbitrage pair complete. Net return: $${profitability.expectedNetReturn.toFixed(4)}/period`,
                   );
                   improvedOrderFilled = true;
                   break;
-                } else if (improvedResponse.isSuccess() && improvedResponse.status === OrderStatus.SUBMITTED) {
+                } else if (
+                  improvedResponse.isSuccess() &&
+                  improvedResponse.status === OrderStatus.SUBMITTED
+                ) {
                   // Order placed but not filled - wait briefly then check
                   this.logger.debug(
                     `⏳ ${symbol}: Improved order placed but not immediately filled. Waiting 3 seconds...`,
                   );
-                  await new Promise(resolve => setTimeout(resolve, 3000));
-                  
+                  await new Promise((resolve) => setTimeout(resolve, 3000));
+
                   // Check if order filled
                   try {
                     const orderStatus = await unfilledAdapter.getOrderStatus(
@@ -703,7 +738,10 @@ export class PositionManager implements IPositionManager {
                       break;
                     }
                     // Cancel the improved order if it didn't fill
-                    await unfilledAdapter.cancelOrder(improvedResponse.orderId, symbol);
+                    await unfilledAdapter.cancelOrder(
+                      improvedResponse.orderId,
+                      symbol,
+                    );
                   } catch (statusError: any) {
                     this.logger.debug(
                       `Could not check order status: ${statusError.message}. Continuing to next improvement.`,
@@ -747,7 +785,8 @@ export class PositionManager implements IPositionManager {
               positionSize,
             );
 
-            const marketResponse = await unfilledAdapter.placeOrder(marketOrder);
+            const marketResponse =
+              await unfilledAdapter.placeOrder(marketOrder);
 
             if (marketResponse.isSuccess() && marketResponse.isFilled()) {
               this.logger.log(
@@ -836,30 +875,31 @@ export class PositionManager implements IPositionManager {
       try {
         const positions = await adapter.getPositions();
         const position = positions.find(
-          (p) => p.symbol === symbol && 
-                 p.exchangeType === exchangeType &&
-                 ((side === 'LONG' && p.side === OrderSide.LONG) || 
-                  (side === 'SHORT' && p.side === OrderSide.SHORT))
+          (p) =>
+            p.symbol === symbol &&
+            p.exchangeType === exchangeType &&
+            ((side === 'LONG' && p.side === OrderSide.LONG) ||
+              (side === 'SHORT' && p.side === OrderSide.SHORT)),
         );
-        
+
         if (!position || Math.abs(position.size) < 0.0001) {
           this.logger.log(
-            `✅ Position ${symbol} ${side} on ${exchangeType} no longer exists - already closed`
+            `✅ Position ${symbol} ${side} on ${exchangeType} no longer exists - already closed`,
           );
           return Result.success(undefined);
         }
-        
+
         actualSize = Math.abs(position.size);
         if (Math.abs(actualSize - size) > 0.0001) {
           this.logger.warn(
             `⚠️ Position size changed: expected ${size.toFixed(4)}, ` +
-            `actual ${actualSize.toFixed(4)} for ${symbol} ${side} on ${exchangeType}`
+              `actual ${actualSize.toFixed(4)} for ${symbol} ${side} on ${exchangeType}`,
           );
         }
       } catch (fetchError: any) {
         this.logger.warn(
           `⚠️ Failed to fetch fresh position for ${symbol}: ${fetchError.message}. ` +
-          `Using original size: ${size.toFixed(4)}`
+            `Using original size: ${size.toFixed(4)}`,
         );
       }
 
@@ -902,11 +942,11 @@ export class PositionManager implements IPositionManager {
         this.logger.warn(`⚠️ Failed to close ${side} position: ${symbol}`);
         result.errors.push(`Failed to close ${side} position ${symbol}`);
         return Result.failure(
-          new PositionNotFoundException(
-            symbol,
-            exchangeType,
-            { side, size, error: closeResponse.error || 'order not filled' },
-          ),
+          new PositionNotFoundException(symbol, exchangeType, {
+            side,
+            size,
+            error: closeResponse.error || 'order not filled',
+          }),
         );
       }
     } catch (error: any) {
@@ -930,7 +970,7 @@ export class PositionManager implements IPositionManager {
    * Detect single-leg positions (positions without a matching pair on another exchange)
    * A single-leg position is one where we have LONG on one exchange but no SHORT on another,
    * or SHORT on one exchange but no LONG on another.
-   * 
+   *
    * Returns positions that are single-leg and should be closed immediately to prevent price exposure.
    */
   detectSingleLegPositions(positions: PerpPosition[]): PerpPosition[] {
@@ -938,10 +978,12 @@ export class PositionManager implements IPositionManager {
       return [];
     }
 
-    this.logger.debug(`🔍 detectSingleLegPositions: Analyzing ${positions.length} total positions`);
+    this.logger.debug(
+      `🔍 detectSingleLegPositions: Analyzing ${positions.length} total positions`,
+    );
     for (const pos of positions) {
       this.logger.debug(
-        `  Position: symbol="${pos.symbol}", exchange=${pos.exchangeType}, side=${pos.side}, size=${pos.size}`
+        `  Position: symbol="${pos.symbol}", exchange=${pos.exchangeType}, side=${pos.side}, size=${pos.size}`,
       );
     }
 
@@ -960,7 +1002,7 @@ export class PositionManager implements IPositionManager {
     for (const position of positions) {
       const normalizedSymbol = normalizeSymbol(position.symbol);
       this.logger.debug(
-        `  Normalizing: "${position.symbol}" -> "${normalizedSymbol}" (exchange=${position.exchangeType}, side=${position.side})`
+        `  Normalizing: "${position.symbol}" -> "${normalizedSymbol}" (exchange=${position.exchangeType}, side=${position.side})`,
       );
       if (!positionsBySymbol.has(normalizedSymbol)) {
         positionsBySymbol.set(normalizedSymbol, []);
@@ -968,28 +1010,43 @@ export class PositionManager implements IPositionManager {
       positionsBySymbol.get(normalizedSymbol)!.push(position);
     }
 
-    this.logger.debug(`📊 Grouped into ${positionsBySymbol.size} normalized symbols: ${Array.from(positionsBySymbol.keys()).join(', ')}`);
+    this.logger.debug(
+      `📊 Grouped into ${positionsBySymbol.size} normalized symbols: ${Array.from(positionsBySymbol.keys()).join(', ')}`,
+    );
 
     const singleLegPositions: PerpPosition[] = [];
 
     for (const [symbol, symbolPositions] of positionsBySymbol) {
-      this.logger.debug(`\n🔍 Analyzing symbol "${symbol}" with ${symbolPositions.length} position(s):`);
+      this.logger.debug(
+        `\n🔍 Analyzing symbol "${symbol}" with ${symbolPositions.length} position(s):`,
+      );
       for (const pos of symbolPositions) {
-        this.logger.debug(`    - ${pos.exchangeType}: ${pos.side}, size=${pos.size}, symbol="${pos.symbol}"`);
+        this.logger.debug(
+          `    - ${pos.exchangeType}: ${pos.side}, size=${pos.size}, symbol="${pos.symbol}"`,
+        );
       }
-      
-      // For arbitrage, we need both LONG and SHORT positions on DIFFERENT exchanges
-      const longPositions = symbolPositions.filter((p) => p.side === OrderSide.LONG);
-      const shortPositions = symbolPositions.filter((p) => p.side === OrderSide.SHORT);
 
-      this.logger.debug(`  LONG positions: ${longPositions.length} (${longPositions.map(p => `${p.exchangeType}`).join(', ')})`);
-      this.logger.debug(`  SHORT positions: ${shortPositions.length} (${shortPositions.map(p => `${p.exchangeType}`).join(', ')})`);
+      // For arbitrage, we need both LONG and SHORT positions on DIFFERENT exchanges
+      const longPositions = symbolPositions.filter(
+        (p) => p.side === OrderSide.LONG,
+      );
+      const shortPositions = symbolPositions.filter(
+        (p) => p.side === OrderSide.SHORT,
+      );
+
+      this.logger.debug(
+        `  LONG positions: ${longPositions.length} (${longPositions.map((p) => `${p.exchangeType}`).join(', ')})`,
+      );
+      this.logger.debug(
+        `  SHORT positions: ${shortPositions.length} (${shortPositions.map((p) => `${p.exchangeType}`).join(', ')})`,
+      );
 
       // Check if we have a matched arbitrage pair: LONG on one exchange and SHORT on a DIFFERENT exchange
       // This is the CORRECT arbitrage setup - both positions exist and are on different exchanges
-      const matchedPairs: Array<{ long: PerpPosition; short: PerpPosition }> = [];
+      const matchedPairs: Array<{ long: PerpPosition; short: PerpPosition }> =
+        [];
       const unmatchedPositions: PerpPosition[] = [];
-      
+
       for (const longPos of longPositions) {
         const matchingShort = shortPositions.find(
           (shortPos) => shortPos.exchangeType !== longPos.exchangeType,
@@ -1002,7 +1059,7 @@ export class PositionManager implements IPositionManager {
           unmatchedPositions.push(longPos);
         }
       }
-      
+
       // Check for unmatched SHORT positions (SHORT without a LONG on a different exchange)
       for (const shortPos of shortPositions) {
         const matchingLong = longPositions.find(
@@ -1015,7 +1072,7 @@ export class PositionManager implements IPositionManager {
           }
         }
       }
-      
+
       // Also check for same-exchange pairs (LONG and SHORT on same exchange - not arbitrage)
       const sameExchangePairs: PerpPosition[] = [];
       for (const longPos of longPositions) {
@@ -1034,13 +1091,13 @@ export class PositionManager implements IPositionManager {
       }
 
       this.logger.debug(
-        `  Matched pairs: ${matchedPairs.length} (${matchedPairs.map(p => `${p.long.exchangeType} LONG + ${p.short.exchangeType} SHORT`).join(', ')})`,
+        `  Matched pairs: ${matchedPairs.length} (${matchedPairs.map((p) => `${p.long.exchangeType} LONG + ${p.short.exchangeType} SHORT`).join(', ')})`,
       );
       this.logger.debug(
-        `  Unmatched positions: ${unmatchedPositions.length} (${unmatchedPositions.map(p => `${p.side} on ${p.exchangeType}`).join(', ')})`,
+        `  Unmatched positions: ${unmatchedPositions.length} (${unmatchedPositions.map((p) => `${p.side} on ${p.exchangeType}`).join(', ')})`,
       );
       this.logger.debug(
-        `  Same-exchange pairs: ${sameExchangePairs.length} (${sameExchangePairs.map(p => `${p.side} on ${p.exchangeType}`).join(', ')})`,
+        `  Same-exchange pairs: ${sameExchangePairs.length} (${sameExchangePairs.map((p) => `${p.side} on ${p.exchangeType}`).join(', ')})`,
       );
 
       if (matchedPairs.length > 0) {
@@ -1053,7 +1110,7 @@ export class PositionManager implements IPositionManager {
       if (unmatchedPositions.length > 0) {
         this.logger.warn(
           `⚠️ Single-leg position(s) detected for ${symbol}: ` +
-            `${unmatchedPositions.map(p => `${p.side} on ${p.exchangeType}`).join(', ')} ` +
+            `${unmatchedPositions.map((p) => `${p.side} on ${p.exchangeType}`).join(', ')} ` +
             `have no matching position on a different exchange. These have price exposure and should be closed.`,
         );
         singleLegPositions.push(...unmatchedPositions);
@@ -1062,10 +1119,10 @@ export class PositionManager implements IPositionManager {
       if (sameExchangePairs.length > 0) {
         this.logger.warn(
           `⚠️ Same-exchange position(s) detected for ${symbol}: ` +
-            `${sameExchangePairs.map(p => `${p.side} on ${p.exchangeType}`).join(', ')} ` +
+            `${sameExchangePairs.map((p) => `${p.side} on ${p.exchangeType}`).join(', ')} ` +
             `are on the same exchange - not arbitrage pairs. These should be closed.`,
         );
-        sameExchangePairs.forEach(pos => {
+        sameExchangePairs.forEach((pos) => {
           if (!singleLegPositions.includes(pos)) {
             singleLegPositions.push(pos);
           }
@@ -1119,7 +1176,8 @@ export class PositionManager implements IPositionManager {
     const periodsPerDay = 24;
     const periodsPerYear = periodsPerDay * 365;
     const expectedReturnPerPeriod =
-      ((opportunity.expectedReturn?.toAPY() || 0) / periodsPerYear) * positionSizeUsd;
+      ((opportunity.expectedReturn?.toAPY() || 0) / periodsPerYear) *
+      positionSizeUsd;
 
     if (expectedReturnPerPeriod > 0) {
       const breakEvenHours = totalCosts / expectedReturnPerPeriod;

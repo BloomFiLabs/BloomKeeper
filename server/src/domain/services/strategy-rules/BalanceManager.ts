@@ -72,9 +72,8 @@ export class BalanceManager implements IBalanceManager {
         // This handles edge cases where balance might have changed
         // SAFETY: If deployable is 0 but we have balance, use total balance
         // This handles cases where ProfitTracker hasn't synced deployedCapital yet
-        const result = deployable > 0 
-          ? Math.min(totalBalance, deployable)
-          : totalBalance; // Fallback to full balance if deployable is 0
+        const result =
+          deployable > 0 ? Math.min(totalBalance, deployable) : totalBalance; // Fallback to full balance if deployable is 0
         this.logger.debug(
           `Deployable capital for ${exchangeType}: $${result.toFixed(2)} ` +
             `(total: $${totalBalance.toFixed(2)}, profit-adjusted: $${deployable.toFixed(2)})`,
@@ -456,7 +455,7 @@ export class BalanceManager implements IBalanceManager {
                 longExchange,
                 transferAmount,
                 adapters.get(unusedExchange)!,
-                adapters.get(longExchange)!,
+                adapters.get(longExchange),
               );
             const success = !!txHash;
             if (success) {
@@ -480,10 +479,10 @@ export class BalanceManager implements IBalanceManager {
             const txHash =
               await this.balanceRebalancer.transferBetweenExchanges(
                 unusedExchange,
-                shortExchange!,
+                shortExchange,
                 transferAmount,
                 adapters.get(unusedExchange)!,
-                adapters.get(shortExchange)!,
+                adapters.get(shortExchange),
               );
             const success = !!txHash;
             if (success) {
@@ -519,7 +518,7 @@ export class BalanceManager implements IBalanceManager {
           shortExchange,
           transferAmount,
           adapters.get(longExchange)!,
-          adapters.get(shortExchange)!,
+          adapters.get(shortExchange),
         );
         const success = !!txHash;
         if (success) {
@@ -546,7 +545,7 @@ export class BalanceManager implements IBalanceManager {
           longExchange,
           transferAmount,
           adapters.get(shortExchange)!,
-          adapters.get(longExchange)!,
+          adapters.get(longExchange),
         );
         const success = !!txHash;
         if (success) {

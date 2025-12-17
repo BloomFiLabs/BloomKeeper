@@ -1,6 +1,13 @@
 import { Logger } from '@nestjs/common';
-import { IExecutableStrategy, StrategyExecutionResult } from './IExecutableStrategy';
-import { MarketDataContext, MarketDataAggregator, createEmptyContext } from '../services/MarketDataContext';
+import {
+  IExecutableStrategy,
+  StrategyExecutionResult,
+} from './IExecutableStrategy';
+import {
+  MarketDataContext,
+  MarketDataAggregator,
+  createEmptyContext,
+} from '../services/MarketDataContext';
 
 /**
  * Allowed assets with high liquidity - orchestrator will only process these
@@ -97,9 +104,9 @@ const ALLOWED_ASSETS = new Set([
 
 /**
  * StrategyOrchestrator - Manages and executes multiple strategies
- * 
+ *
  * KEY PRINCIPLE: Fetch data ONCE, pass to ALL strategies
- * 
+ *
  * Responsibilities:
  * - Register/unregister strategies
  * - Aggregate required assets/pools from all strategies
@@ -112,19 +119,17 @@ export class StrategyOrchestrator {
   private readonly strategies: Map<string, IExecutableStrategy> = new Map();
   private lastContext: MarketDataContext | null = null;
 
-  constructor(
-    private readonly dataAggregator?: MarketDataAggregator,
-  ) {}
+  constructor(private readonly dataAggregator?: MarketDataAggregator) {}
 
   /**
    * Register a strategy for execution
    */
   registerStrategy(strategy: IExecutableStrategy): boolean {
     const key = strategy.id || strategy.contractAddress;
-    
+
     if (this.strategies.has(key)) {
       this.logger.warn(
-        `Strategy ${key} already registered. Skipping duplicate "${strategy.name}"`
+        `Strategy ${key} already registered. Skipping duplicate "${strategy.name}"`,
       );
       return false;
     }
@@ -132,7 +137,7 @@ export class StrategyOrchestrator {
     this.strategies.set(key, strategy);
     this.logger.log(
       `✅ Registered strategy: ${strategy.name} ` +
-      `(Chain: ${strategy.chainId}, Address: ${strategy.contractAddress})`
+        `(Chain: ${strategy.chainId}, Address: ${strategy.contractAddress})`,
     );
     return true;
   }
@@ -176,7 +181,9 @@ export class StrategyOrchestrator {
         if (ALLOWED_ASSETS.has(asset.toUpperCase())) {
           assets.add(asset);
         } else {
-          this.logger.debug(`Filtering out asset ${asset} (not in allowed high-liquidity list)`);
+          this.logger.debug(
+            `Filtering out asset ${asset} (not in allowed high-liquidity list)`,
+          );
         }
       }
     }
@@ -209,24 +216,30 @@ export class StrategyOrchestrator {
 
   /**
    * Execute all registered strategies
-   * 
+   *
    * 1. Fetch ALL market data ONCE
    * 2. Pass shared context to each strategy
    * 3. Each strategy uses the same data snapshot
    */
   async executeAll(): Promise<StrategyExecutionResult[]> {
     const results: StrategyExecutionResult[] = [];
-    
+
     this.logger.log('');
-    this.logger.log('🔄 ═══════════════════════════════════════════════════════════');
+    this.logger.log(
+      '🔄 ═══════════════════════════════════════════════════════════',
+    );
     this.logger.log(`🔄 Executing ${this.strategies.size} strategies...`);
-    this.logger.log('🔄 ═══════════════════════════════════════════════════════════');
+    this.logger.log(
+      '🔄 ═══════════════════════════════════════════════════════════',
+    );
 
     // Step 1: Fetch ALL market data ONCE
     const context = await this.fetchMarketData();
     this.lastContext = context;
-    
-    this.logger.log(`📊 Market data fetched: ${context.funding.size} funding, ${context.prices.size} prices, ${context.volatility.size} vol`);
+
+    this.logger.log(
+      `📊 Market data fetched: ${context.funding.size} funding, ${context.prices.size} prices, ${context.volatility.size} vol`,
+    );
 
     // Step 2: Execute each strategy with shared context
     for (const [id, strategy] of this.strategies) {
@@ -243,16 +256,17 @@ export class StrategyOrchestrator {
       try {
         this.logger.log(`\n📊 [${strategy.name}] Starting execution...`);
         const startTime = Date.now();
-        
+
         // Pass shared context to strategy
         const result = await strategy.execute(context);
-        
+
         const duration = Date.now() - startTime;
         this.logResult(result, duration);
         results.push(result);
-        
       } catch (error) {
-        this.logger.error(`❌ [${strategy.name}] Fatal error: ${error.message}`);
+        this.logger.error(
+          `❌ [${strategy.name}] Fatal error: ${error.message}`,
+        );
         results.push({
           strategyName: strategy.name,
           executed: false,
@@ -271,10 +285,10 @@ export class StrategyOrchestrator {
    */
   async executeByChain(chainId: number): Promise<StrategyExecutionResult[]> {
     const results: StrategyExecutionResult[] = [];
-    
+
     // Filter strategies by chain
     const chainStrategies = Array.from(this.strategies.values()).filter(
-      (strategy) => strategy.chainId === chainId
+      (strategy) => strategy.chainId === chainId,
     );
 
     if (chainStrategies.length === 0) {
@@ -282,7 +296,9 @@ export class StrategyOrchestrator {
       return results;
     }
 
-    this.logger.log(`Executing ${chainStrategies.length} strategies on chain ${chainId}`);
+    this.logger.log(
+      `Executing ${chainStrategies.length} strategies on chain ${chainId}`,
+    );
 
     // Fetch market data once
     const context = await this.fetchMarketData();
@@ -303,15 +319,16 @@ export class StrategyOrchestrator {
       try {
         this.logger.log(`\n📊 [${strategy.name}] Starting execution...`);
         const startTime = Date.now();
-        
+
         const result = await strategy.execute(context);
-        
+
         const duration = Date.now() - startTime;
         this.logResult(result, duration);
         results.push(result);
-        
       } catch (error) {
-        this.logger.error(`❌ [${strategy.name}] Fatal error: ${error.message}`);
+        this.logger.error(
+          `❌ [${strategy.name}] Fatal error: ${error.message}`,
+        );
         results.push({
           strategyName: strategy.name,
           executed: false,
@@ -340,7 +357,7 @@ export class StrategyOrchestrator {
     const pools = this.getRequiredPools();
 
     this.logger.debug(
-      `Fetching data for: ${assets.length} assets, ${chains.length} chains, ${pools.length} pools`
+      `Fetching data for: ${assets.length} assets, ${chains.length} chains, ${pools.length} pools`,
     );
 
     return this.dataAggregator.fetchAll(assets, chains, pools);
@@ -356,27 +373,33 @@ export class StrategyOrchestrator {
   /**
    * Emergency exit all strategies
    */
-  async emergencyExitAll(): Promise<{ strategy: string; result: StrategyExecutionResult }[]> {
+  async emergencyExitAll(): Promise<
+    { strategy: string; result: StrategyExecutionResult }[]
+  > {
     this.logger.warn('🚨 EMERGENCY EXIT ALL STRATEGIES');
-    
+
     const results: { strategy: string; result: StrategyExecutionResult }[] = [];
 
     for (const [id, strategy] of this.strategies) {
       try {
         const result = await strategy.emergencyExit();
         results.push({ strategy: strategy.name, result });
-        this.logger.log(`✅ [${strategy.name}] Emergency exit: ${result.action}`);
+        this.logger.log(
+          `✅ [${strategy.name}] Emergency exit: ${result.action}`,
+        );
       } catch (error) {
-        results.push({ 
-          strategy: strategy.name, 
+        results.push({
+          strategy: strategy.name,
           result: {
             strategyName: strategy.name,
             executed: false,
             reason: `Emergency exit failed: ${error.message}`,
             error: error.message,
-          }
+          },
         });
-        this.logger.error(`❌ [${strategy.name}] Emergency exit failed: ${error.message}`);
+        this.logger.error(
+          `❌ [${strategy.name}] Emergency exit failed: ${error.message}`,
+        );
       }
     }
 
@@ -386,7 +409,9 @@ export class StrategyOrchestrator {
   /**
    * Get metrics from all strategies
    */
-  async getAllMetrics(): Promise<Record<string, Record<string, number | string>>> {
+  async getAllMetrics(): Promise<
+    Record<string, Record<string, number | string>>
+  > {
     const metrics: Record<string, Record<string, number | string>> = {};
 
     for (const [id, strategy] of this.strategies) {
@@ -415,9 +440,9 @@ export class StrategyOrchestrator {
   private logResult(result: StrategyExecutionResult, durationMs: number): void {
     const status = result.executed ? '✅ EXECUTED' : '⏸️  SKIPPED';
     const action = result.action ? ` | Action: ${result.action}` : '';
-    
+
     this.logger.log(
-      `   ${status}${action} | ${result.reason} (${durationMs}ms)`
+      `   ${status}${action} | ${result.reason} (${durationMs}ms)`,
     );
 
     if (result.txHash) {
@@ -430,14 +455,20 @@ export class StrategyOrchestrator {
   }
 
   private logSummary(results: StrategyExecutionResult[]): void {
-    const executed = results.filter(r => r.executed).length;
-    const skipped = results.filter(r => !r.executed && !r.error).length;
-    const errors = results.filter(r => r.error).length;
+    const executed = results.filter((r) => r.executed).length;
+    const skipped = results.filter((r) => !r.executed && !r.error).length;
+    const errors = results.filter((r) => r.error).length;
 
     this.logger.log('');
-    this.logger.log('📋 ═══════════════════════════════════════════════════════════');
-    this.logger.log(`📋 Summary: ${executed} executed, ${skipped} skipped, ${errors} errors`);
-    this.logger.log('📋 ═══════════════════════════════════════════════════════════');
+    this.logger.log(
+      '📋 ═══════════════════════════════════════════════════════════',
+    );
+    this.logger.log(
+      `📋 Summary: ${executed} executed, ${skipped} skipped, ${errors} errors`,
+    );
+    this.logger.log(
+      '📋 ═══════════════════════════════════════════════════════════',
+    );
     this.logger.log('');
   }
 }

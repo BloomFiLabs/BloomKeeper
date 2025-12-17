@@ -29,7 +29,9 @@ export class PostgresBotStateRepository implements IBotStateRepository {
       entity.priceUpper,
       entity.lastRebalancePrice,
       entity.lastRebalanceAt,
-      entity.currentVolatility ? new Volatility(entity.currentVolatility) : undefined,
+      entity.currentVolatility
+        ? new Volatility(entity.currentVolatility)
+        : undefined,
       entity.currentHurst ? new HurstExponent(entity.currentHurst) : undefined,
       entity.isActive,
     );
@@ -77,8 +79,8 @@ export class PostgresBotStateRepository implements IBotStateRepository {
     return entities
       .reverse()
       .map(
-        (e) => new Candle(e.timestamp, e.open, e.high, e.low, e.close, e.volume),
+        (e) =>
+          new Candle(e.timestamp, e.open, e.high, e.low, e.close, e.volume),
       );
   }
 }
-

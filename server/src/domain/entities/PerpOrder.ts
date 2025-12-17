@@ -1,5 +1,11 @@
 import { ExchangeType } from '../value-objects/ExchangeConfig';
-import { OrderSide, OrderStatus, OrderType, PerpOrderRequest, PerpOrderResponse } from '../value-objects/PerpOrder';
+import {
+  OrderSide,
+  OrderStatus,
+  OrderType,
+  PerpOrderRequest,
+  PerpOrderResponse,
+} from '../value-objects/PerpOrder';
 
 /**
  * PerpOrder entity - tracks order lifecycle across exchanges
@@ -132,7 +138,8 @@ export class PerpOrder {
     const newFilledSize = filledSize ?? this.filledSize;
     const newAverageFillPrice = averageFillPrice ?? this.averageFillPrice;
     const filledAt = status === OrderStatus.FILLED ? new Date() : this.filledAt;
-    const cancelledAt = status === OrderStatus.CANCELLED ? new Date() : this.cancelledAt;
+    const cancelledAt =
+      status === OrderStatus.CANCELLED ? new Date() : this.cancelledAt;
 
     return new PerpOrder(
       this.id,
@@ -155,4 +162,3 @@ export class PerpOrder {
     );
   }
 }
-

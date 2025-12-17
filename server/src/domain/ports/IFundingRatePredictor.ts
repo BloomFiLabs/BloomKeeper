@@ -238,4 +238,3 @@ export interface IFundingRatePredictionService {
     predictedRate: number,
   ): void;
 }
-

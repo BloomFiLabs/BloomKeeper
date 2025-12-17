@@ -87,7 +87,7 @@ export class KalmanFilterEstimator {
     deltaHours: number = 1,
   ): KalmanState {
     const key = this.getKey(symbol, exchange);
-    let state = this.filterStates.get(key);
+    const state = this.filterStates.get(key);
 
     if (!state) {
       return this.initializeState(symbol, exchange, observedRate);
@@ -176,9 +176,15 @@ export class KalmanFilterEstimator {
 
     // State transition matrix F (3x3)
     const F = [
-      1, dt, 0,              // rate row
-      0, velocityDecay, 0,   // velocity row
-      0, 0, 1,               // volatility row
+      1,
+      dt,
+      0, // rate row
+      0,
+      velocityDecay,
+      0, // velocity row
+      0,
+      0,
+      1, // volatility row
     ];
 
     // Process noise covariance Q (3x3 diagonal)
@@ -205,7 +211,10 @@ export class KalmanFilterEstimator {
    * Observation model: z = H * x + v
    * where H = [1, 0, 0] (we only observe the rate)
    */
-  private correct(predictedState: KalmanState, observedRate: number): KalmanState {
+  private correct(
+    predictedState: KalmanState,
+    observedRate: number,
+  ): KalmanState {
     const H = [1, 0, 0]; // Observation matrix
     const R = KALMAN_CONFIG.MEASUREMENT_NOISE; // Measurement noise
 
@@ -261,9 +270,15 @@ export class KalmanFilterEstimator {
   private initializeCovarianceMatrix(): number[] {
     const c = KALMAN_CONFIG.INITIAL_COVARIANCE;
     return [
-      c, 0, 0,    // row 0
-      0, c, 0,    // row 1
-      0, 0, c,    // row 2
+      c,
+      0,
+      0, // row 0
+      0,
+      c,
+      0, // row 1
+      0,
+      0,
+      c, // row 2
     ];
   }
 
@@ -274,11 +289,7 @@ export class KalmanFilterEstimator {
     const qr = KALMAN_CONFIG.PROCESS_NOISE_RATE * dt;
     const qv = KALMAN_CONFIG.PROCESS_NOISE_VELOCITY * dt;
     const qs = KALMAN_CONFIG.PROCESS_NOISE_VOLATILITY * dt;
-    return [
-      qr, 0, 0,
-      0, qv, 0,
-      0, 0, qs,
-    ];
+    return [qr, 0, 0, 0, qv, 0, 0, 0, qs];
   }
 
   /**
@@ -321,11 +332,7 @@ export class KalmanFilterEstimator {
    */
   private updateCovariance(P: number[], K: number[], H: number[]): number[] {
     // (I - K * H) for H = [1, 0, 0]
-    const IKH = [
-      1 - K[0], 0, 0,
-      -K[1], 1, 0,
-      -K[2], 0, 1,
-    ];
+    const IKH = [1 - K[0], 0, 0, -K[1], 1, 0, -K[2], 0, 1];
     return this.matMul3x3(IKH, P).map((v) =>
       Math.max(v, KALMAN_CONFIG.MIN_VARIANCE),
     );
@@ -350,11 +357,7 @@ export class KalmanFilterEstimator {
    * Transpose 3x3 matrix
    */
   private transpose3x3(M: number[]): number[] {
-    return [
-      M[0], M[3], M[6],
-      M[1], M[4], M[7],
-      M[2], M[5], M[8],
-    ];
+    return [M[0], M[3], M[6], M[1], M[4], M[7], M[2], M[5], M[8]];
   }
 
   /**
@@ -378,4 +381,3 @@ export class KalmanFilterEstimator {
     this.filterStates.delete(this.getKey(symbol, exchange));
   }
 }
-

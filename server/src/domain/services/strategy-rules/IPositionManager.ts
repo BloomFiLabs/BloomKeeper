@@ -29,7 +29,12 @@ export interface IPositionManager {
     positions: PerpPosition[],
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
     result: ArbitrageExecutionResult,
-  ): Promise<Result<{ closed: PerpPosition[]; stillOpen: PerpPosition[] }, DomainException>>;
+  ): Promise<
+    Result<
+      { closed: PerpPosition[]; stillOpen: PerpPosition[] },
+      DomainException
+    >
+  >;
 
   handleAsymmetricFills(
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
@@ -51,7 +56,5 @@ export interface IPositionManager {
    * Detect and close single-leg positions (positions without a matching pair on another exchange)
    * Returns positions that were identified as single-leg and should be closed
    */
-  detectSingleLegPositions(
-    positions: PerpPosition[],
-  ): PerpPosition[];
+  detectSingleLegPositions(positions: PerpPosition[]): PerpPosition[];
 }

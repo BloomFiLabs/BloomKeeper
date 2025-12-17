@@ -13,9 +13,9 @@ export class DeribitAdapter implements IVolatilityDataProvider {
       // Using resolution '1D' to get the latest daily candle which represents the index value
       const end = Date.now();
       const start = end - 24 * 60 * 60 * 1000; // Last 24 hours
-      
+
       const url = `${this.BASE_URL}/public/get_volatility_index_data?currency=${currency}&start_timestamp=${start}&end_timestamp=${end}&resolution=1D`;
-      
+
       const response = await fetch(url);
       const data = await response.json();
 
@@ -32,7 +32,9 @@ export class DeribitAdapter implements IVolatilityDataProvider {
       // We convert it to decimal (0.505)
       return closeIv / 100;
     } catch (error) {
-      this.logger.error(`Failed to fetch IV from Deribit for ${asset}: ${error.message}`);
+      this.logger.error(
+        `Failed to fetch IV from Deribit for ${asset}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -46,4 +48,3 @@ export class DeribitAdapter implements IVolatilityDataProvider {
     return 'ETH';
   }
 }
-

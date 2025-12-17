@@ -38,7 +38,9 @@ describe('Result', () => {
 
     it('should flatMap to failure', () => {
       const result = Result.success(5);
-      const flatMapped = result.flatMap(() => Result.failure(new Error('test')));
+      const flatMapped = result.flatMap(() =>
+        Result.failure(new Error('test')),
+      );
       expect(flatMapped.isFailure).toBe(true);
       if (flatMapped.isFailure) {
         expect(flatMapped.error.message).toBe('test');
@@ -188,11 +190,7 @@ describe('Result', () => {
 
   describe('combine', () => {
     it('should combine multiple successes', () => {
-      const results = [
-        Result.success(1),
-        Result.success(2),
-        Result.success(3),
-      ];
+      const results = [Result.success(1), Result.success(2), Result.success(3)];
       const combined = Result.combine(results);
       expect(combined.isSuccess).toBe(true);
       if (combined.isSuccess) {

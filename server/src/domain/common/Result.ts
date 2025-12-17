@@ -37,10 +37,7 @@ export class Success<T, E = Error> {
   /**
    * Fold - transform both success and failure cases
    */
-  fold<U>(
-    onSuccess: (value: T) => U,
-    onFailure: (error: E) => U,
-  ): U {
+  fold<U>(onSuccess: (value: T) => U, onFailure: (error: E) => U): U {
     return onSuccess(this.value);
   }
 
@@ -92,10 +89,7 @@ export class Failure<T, E = Error> {
   /**
    * Fold - transform both success and failure cases
    */
-  fold<U>(
-    onSuccess: (value: T) => U,
-    onFailure: (error: E) => U,
-  ): U {
+  fold<U>(onSuccess: (value: T) => U, onFailure: (error: E) => U): U {
     return onFailure(this.error);
   }
 

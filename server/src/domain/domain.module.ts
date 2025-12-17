@@ -7,4 +7,3 @@ import { GarchService } from './services/GarchService';
   exports: [StatisticalAnalyst, GarchService],
 })
 export class DomainModule {}
-

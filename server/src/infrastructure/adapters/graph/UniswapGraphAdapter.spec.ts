@@ -26,7 +26,7 @@ describe('UniswapGraphAdapter', () => {
 
     adapter = module.get<UniswapGraphAdapter>(UniswapGraphAdapter);
     configService = module.get<ConfigService>(ConfigService);
-    
+
     // Get the mocked client instance
     mockClient = (adapter as any).client as jest.Mocked<GraphQLClient>;
   });
@@ -96,7 +96,7 @@ describe('UniswapGraphAdapter', () => {
 
     it('should convert pool address to lowercase', async () => {
       const upperCaseAddress = '0x4F8D9A26AE95F14A179439A2A0B3431E52940496';
-      
+
       mockClient.request.mockResolvedValueOnce({
         pool: {
           feeTier: 10000,
@@ -104,7 +104,7 @@ describe('UniswapGraphAdapter', () => {
       });
 
       await adapter.getPoolFeeTier(upperCaseAddress);
-      
+
       // Check that the request was called with lowercase address
       const callArgs = mockClient.request.mock.calls[0];
       expect(callArgs).toBeDefined();
@@ -114,12 +114,3 @@ describe('UniswapGraphAdapter', () => {
     });
   });
 });
-
-
-
-
-
-
-
-
-

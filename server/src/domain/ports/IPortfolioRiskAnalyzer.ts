@@ -42,14 +42,18 @@ export interface DataQualityAssessment {
 export interface PortfolioRiskMetrics {
   // Expected returns
   expectedAPY: number;
-  expectedAPYConfidenceInterval: { lower: number; upper: number; confidence: number };
-  
+  expectedAPYConfidenceInterval: {
+    lower: number;
+    upper: number;
+    confidence: number;
+  };
+
   // Risk metrics
   worstCaseAPY: number; // If all spreads reverse
   valueAtRisk95: number; // 95% VaR in USD (worst month)
   maximumDrawdown: number; // Maximum drawdown in USD
   sharpeRatio: number;
-  
+
   // Historical validation
   historicalBacktest: {
     last30Days: { apy: number; realized: boolean };
@@ -57,7 +61,7 @@ export interface PortfolioRiskMetrics {
     worstMonth: { apy: number; month: string };
     bestMonth: { apy: number; month: string };
   };
-  
+
   // Stress tests
   stressTests: Array<{
     scenario: string;
@@ -66,12 +70,16 @@ export interface PortfolioRiskMetrics {
     timeToRecover: string;
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   }>;
-  
+
   // Correlation & concentration
   correlationRisk: {
     averageCorrelation: number;
     maxCorrelation: number;
-    correlatedPairs: Array<{ pair1: string; pair2: string; correlation: number }>;
+    correlatedPairs: Array<{
+      pair1: string;
+      pair2: string;
+      correlation: number;
+    }>;
   };
   concentrationRisk: {
     maxAllocationPercent: number;
@@ -79,7 +87,7 @@ export interface PortfolioRiskMetrics {
     herfindahlIndex: number; // Concentration index (0-1, higher = more concentrated)
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
   };
-  
+
   // Volatility breakdown
   volatilityBreakdown: Array<{
     symbol: string;

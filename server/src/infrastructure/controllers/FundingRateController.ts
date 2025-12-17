@@ -1,8 +1,25 @@
-import { Controller, Get, Param, Query, Optional, Inject } from '@nestjs/common';
-import { FundingRateAggregator, FundingRateComparison, ArbitrageOpportunity } from '../../domain/services/FundingRateAggregator';
+import {
+  Controller,
+  Get,
+  Param,
+  Query,
+  Optional,
+  Inject,
+} from '@nestjs/common';
+import {
+  FundingRateAggregator,
+  FundingRateComparison,
+  ArbitrageOpportunity,
+} from '../../domain/services/FundingRateAggregator';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
-import { PredictionBacktester, BacktestResults } from '../../domain/services/prediction/PredictionBacktester';
-import type { IFundingRatePredictionService, EnsemblePredictionResult } from '../../domain/ports/IFundingRatePredictor';
+import {
+  PredictionBacktester,
+  BacktestResults,
+} from '../../domain/services/prediction/PredictionBacktester';
+import type {
+  IFundingRatePredictionService,
+  EnsemblePredictionResult,
+} from '../../domain/ports/IFundingRatePredictor';
 
 @Controller('funding-rates')
 export class FundingRateController {
@@ -40,7 +57,9 @@ export class FundingRateController {
    * GET /funding-rates/comparison/:symbol
    */
   @Get('comparison/:symbol')
-  async compareFundingRates(@Param('symbol') symbol: string): Promise<FundingRateComparison> {
+  async compareFundingRates(
+    @Param('symbol') symbol: string,
+  ): Promise<FundingRateComparison> {
     return await this.aggregator.compareFundingRates(symbol);
   }
 
@@ -56,7 +75,10 @@ export class FundingRateController {
     const symbolList = symbols ? symbols.split(',') : ['ETH', 'BTC']; // Default symbols
     const minSpreadValue = minSpread ? parseFloat(minSpread) : 0.0001;
 
-    const opportunities = await this.aggregator.findArbitrageOpportunities(symbolList, minSpreadValue);
+    const opportunities = await this.aggregator.findArbitrageOpportunities(
+      symbolList,
+      minSpreadValue,
+    );
 
     return { opportunities };
   }
@@ -71,7 +93,9 @@ export class FundingRateController {
     @Param('symbol') symbol: string,
   ) {
     const rates = await this.aggregator.getFundingRates(symbol);
-    const exchangeRate = rates.find((r) => r.exchange === exchange.toUpperCase() as ExchangeType);
+    const exchangeRate = rates.find(
+      (r) => r.exchange === (exchange.toUpperCase() as ExchangeType),
+    );
 
     if (!exchangeRate) {
       return {
@@ -124,12 +148,15 @@ export class FundingRateController {
     @Param('symbol') symbol: string,
     @Query('long') longExchange: string,
     @Query('short') shortExchange: string,
-  ): Promise<{
-    predictedSpread: number;
-    confidence: number;
-    longPrediction: EnsemblePredictionResult;
-    shortPrediction: EnsemblePredictionResult;
-  } | { error: string }> {
+  ): Promise<
+    | {
+        predictedSpread: number;
+        confidence: number;
+        longPrediction: EnsemblePredictionResult;
+        shortPrediction: EnsemblePredictionResult;
+      }
+    | { error: string }
+  > {
     if (!this.predictionService) {
       return { error: 'Prediction service not available' };
     }
@@ -170,7 +197,9 @@ export class FundingRateController {
         symbol.toUpperCase(),
         exchange.toUpperCase() as ExchangeType,
         {
-          trainingWindowHours: trainingWindow ? parseInt(trainingWindow, 10) : 168,
+          trainingWindowHours: trainingWindow
+            ? parseInt(trainingWindow, 10)
+            : 168,
           includeDetailedPredictions: includeDetails === 'true',
         },
       );
@@ -189,19 +218,22 @@ export class FundingRateController {
   async runBatchBacktest(
     @Param('exchange') exchange: string,
     @Query('window') trainingWindow?: string,
-  ): Promise<{
-    results: Array<{
-      symbol: string;
-      mae: number;
-      directionalAccuracy: number;
-      totalPredictions: number;
-    }>;
-    summary: {
-      avgMae: number;
-      avgDirectionalAccuracy: number;
-      totalSymbols: number;
-    };
-  } | { error: string }> {
+  ): Promise<
+    | {
+        results: Array<{
+          symbol: string;
+          mae: number;
+          directionalAccuracy: number;
+          totalPredictions: number;
+        }>;
+        summary: {
+          avgMae: number;
+          avgDirectionalAccuracy: number;
+          totalSymbols: number;
+        };
+      }
+    | { error: string }
+  > {
     if (!this.backtester) {
       return { error: 'Backtester not available' };
     }
@@ -214,7 +246,9 @@ export class FundingRateController {
         exchange.toUpperCase() as ExchangeType,
         symbols,
         {
-          trainingWindowHours: trainingWindow ? parseInt(trainingWindow, 10) : 168,
+          trainingWindowHours: trainingWindow
+            ? parseInt(trainingWindow, 10)
+            : 168,
         },
       );
 

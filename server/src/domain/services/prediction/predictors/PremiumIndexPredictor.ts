@@ -67,7 +67,8 @@ export class PremiumIndexPredictor implements IFundingRatePredictor {
       return this.createFailedPrediction('No mark price available');
     }
 
-    const { premium, confidence, hasIndexPrice } = this.calculatePremium(context);
+    const { premium, confidence, hasIndexPrice } =
+      this.calculatePremium(context);
 
     // Funding Rate = Premium Index + Interest Rate
     const rawPrediction = premium + PI_CONFIG.BASE_INTEREST_RATE;
@@ -106,11 +107,13 @@ export class PremiumIndexPredictor implements IFundingRatePredictor {
     confidence: number;
     hasIndexPrice: boolean;
   } {
-    const hasIndexPrice = context.indexPrice !== undefined && context.indexPrice > 0;
+    const hasIndexPrice =
+      context.indexPrice !== undefined && context.indexPrice > 0;
 
     if (hasIndexPrice) {
       // Direct calculation: Premium = (Mark - Index) / Index
-      const premium = (context.markPrice - context.indexPrice!) / context.indexPrice!;
+      const premium =
+        (context.markPrice - context.indexPrice!) / context.indexPrice!;
       return {
         premium: this.clampPremium(premium),
         confidence: PI_CONFIG.BASE_CONFIDENCE,
@@ -182,7 +185,10 @@ export class PremiumIndexPredictor implements IFundingRatePredictor {
    * Clamp premium to configured bounds
    */
   private clampPremium(premium: number): number {
-    return Math.max(PI_CONFIG.MIN_PREMIUM, Math.min(PI_CONFIG.MAX_PREMIUM, premium));
+    return Math.max(
+      PI_CONFIG.MIN_PREMIUM,
+      Math.min(PI_CONFIG.MAX_PREMIUM, premium),
+    );
   }
 
   /**
@@ -218,4 +224,3 @@ export class PremiumIndexPredictor implements IFundingRatePredictor {
     return Math.sqrt(variance);
   }
 }
-

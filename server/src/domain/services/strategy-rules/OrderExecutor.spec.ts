@@ -290,10 +290,26 @@ describe('OrderExecutor', () => {
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
 
       lighterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('long-123', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'long-123',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('short-123', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'short-123',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
 
       const result: ArbitrageExecutionResult = {
@@ -327,10 +343,27 @@ describe('OrderExecutor', () => {
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
 
       lighterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('long-123', OrderStatus.REJECTED, 'ETHUSDT', OrderSide.LONG, undefined, undefined, undefined, 'Insufficient balance'),
+        new PerpOrderResponse(
+          'long-123',
+          OrderStatus.REJECTED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          undefined,
+          undefined,
+          undefined,
+          'Insufficient balance',
+        ),
       );
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('short-123', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'short-123',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
 
       const result: ArbitrageExecutionResult = {
@@ -352,7 +385,9 @@ describe('OrderExecutor', () => {
       expect(executionResult.isFailure).toBe(true);
       if (executionResult.isFailure) {
         expect(executionResult.error.code).toBe('ORDER_EXECUTION_ERROR');
-        expect(executionResult.error.message).toContain('Order execution failed');
+        expect(executionResult.error.message).toContain(
+          'Order execution failed',
+        );
       }
     });
 
@@ -402,8 +437,22 @@ describe('OrderExecutor', () => {
       } as ArbitrageOpportunity,
       plan: {
         opportunity: {} as ArbitrageOpportunity,
-        longOrder: new PerpOrderRequest('ETHUSDT', OrderSide.LONG, OrderType.LIMIT, 1.0, 3000, TimeInForce.GTC),
-        shortOrder: new PerpOrderRequest('ETHUSDT', OrderSide.SHORT, OrderType.LIMIT, 1.0, 3001, TimeInForce.GTC),
+        longOrder: new PerpOrderRequest(
+          'ETHUSDT',
+          OrderSide.LONG,
+          OrderType.LIMIT,
+          1.0,
+          3000,
+          TimeInForce.GTC,
+        ),
+        shortOrder: new PerpOrderRequest(
+          'ETHUSDT',
+          OrderSide.SHORT,
+          OrderType.LIMIT,
+          1.0,
+          3001,
+          TimeInForce.GTC,
+        ),
         positionSize: PositionSize.fromBaseAsset(1.0, 2.0),
         estimatedCosts: { fees: 10, slippage: 5, total: 15 },
         expectedNetReturn: 0.5,
@@ -430,18 +479,50 @@ describe('OrderExecutor', () => {
 
       // Mock placeOrder to return immediately filled orders
       lighterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
-      
+
       // Mock getOrderStatus for waitForOrderFill (shouldn't be called since orders are filled)
       lighterAdapter.getOrderStatus.mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       asterAdapter.getOrderStatus.mockResolvedValue(
-        new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
 
       const result: ArbitrageExecutionResult = {
@@ -482,18 +563,50 @@ describe('OrderExecutor', () => {
 
       // Mock placeOrder to return immediately filled orders
       lighterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
-      
+
       // Mock getOrderStatus for waitForOrderFill (shouldn't be called since orders are filled)
       lighterAdapter.getOrderStatus.mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       asterAdapter.getOrderStatus.mockResolvedValue(
-        new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
 
       const result: ArbitrageExecutionResult = {
@@ -516,7 +629,9 @@ describe('OrderExecutor', () => {
       // Should only execute the one with a plan
       expect(executionResult.isSuccess).toBe(true);
       if (executionResult.isSuccess) {
-        expect(executionResult.value.successfulExecutions).toBeGreaterThanOrEqual(0);
+        expect(
+          executionResult.value.successfulExecutions,
+        ).toBeGreaterThanOrEqual(0);
       }
     });
 
@@ -533,19 +648,51 @@ describe('OrderExecutor', () => {
           return Promise.reject(new Error('Network error'));
         }
         return Promise.resolve(
-          new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
+          new PerpOrderResponse(
+            'order-1',
+            OrderStatus.FILLED,
+            'ETHUSDT',
+            OrderSide.LONG,
+            1.0,
+            1.0,
+            3000,
+          ),
         );
       });
       asterAdapter.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
-      
+
       // Mock getOrderStatus for waitForOrderFill
       lighterAdapter.getOrderStatus.mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000),
+        new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        ),
       );
       asterAdapter.getOrderStatus.mockResolvedValue(
-        new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001),
+        new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        ),
       );
 
       // Override config to use faster retries for test
@@ -588,21 +735,37 @@ describe('OrderExecutor', () => {
     it('should execute sequentially when long exchange is Lighter', async () => {
       const lighterAdapter = mockAdapters.get(ExchangeType.LIGHTER)!;
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
-      
+
       const callOrder: string[] = [];
-      
+
       lighterAdapter.placeOrder.mockImplementation(async () => {
         callOrder.push('lighter-start');
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         callOrder.push('lighter-end');
-        return new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000);
+        return new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        );
       });
-      
+
       asterAdapter.placeOrder.mockImplementation(async () => {
         callOrder.push('aster-start');
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         callOrder.push('aster-end');
-        return new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001);
+        return new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        );
       });
 
       const opportunity = {
@@ -656,27 +819,48 @@ describe('OrderExecutor', () => {
       await executor.executeSinglePosition(opportunity, mockAdapters, result);
 
       // Sequential execution: lighter should complete before aster starts
-      expect(callOrder).toEqual(['lighter-start', 'lighter-end', 'aster-start', 'aster-end']);
+      expect(callOrder).toEqual([
+        'lighter-start',
+        'lighter-end',
+        'aster-start',
+        'aster-end',
+      ]);
     });
 
     it('should execute sequentially when short exchange is Lighter', async () => {
       const lighterAdapter = mockAdapters.get(ExchangeType.LIGHTER)!;
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
-      
+
       const callOrder: string[] = [];
-      
+
       asterAdapter.placeOrder.mockImplementation(async () => {
         callOrder.push('aster-start');
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         callOrder.push('aster-end');
-        return new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000);
+        return new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        );
       });
-      
+
       lighterAdapter.placeOrder.mockImplementation(async () => {
         callOrder.push('lighter-start');
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         callOrder.push('lighter-end');
-        return new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001);
+        return new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        );
       });
 
       const opportunity = {
@@ -730,7 +914,12 @@ describe('OrderExecutor', () => {
       await executor.executeSinglePosition(opportunity, mockAdapters, result);
 
       // Sequential execution: aster (long) should complete before lighter (short) starts
-      expect(callOrder).toEqual(['aster-start', 'aster-end', 'lighter-start', 'lighter-end']);
+      expect(callOrder).toEqual([
+        'aster-start',
+        'aster-end',
+        'lighter-start',
+        'lighter-end',
+      ]);
     });
 
     it('should execute in parallel when neither exchange is Lighter', async () => {
@@ -745,21 +934,37 @@ describe('OrderExecutor', () => {
       mockAdapters.set(ExchangeType.HYPERLIQUID, hyperliquidAdapter);
 
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
-      
+
       const callOrder: string[] = [];
-      
+
       asterAdapter.placeOrder.mockImplementation(async () => {
         callOrder.push('aster-start');
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 50));
         callOrder.push('aster-end');
-        return new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG, 1.0, 1.0, 3000);
+        return new PerpOrderResponse(
+          'order-1',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.LONG,
+          1.0,
+          1.0,
+          3000,
+        );
       });
-      
+
       hyperliquidAdapter.placeOrder.mockImplementation(async () => {
         callOrder.push('hyperliquid-start');
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 50));
         callOrder.push('hyperliquid-end');
-        return new PerpOrderResponse('order-2', OrderStatus.FILLED, 'ETHUSDT', OrderSide.SHORT, 1.0, 1.0, 3001);
+        return new PerpOrderResponse(
+          'order-2',
+          OrderStatus.FILLED,
+          'ETHUSDT',
+          OrderSide.SHORT,
+          1.0,
+          1.0,
+          3001,
+        );
       });
 
       const opportunity = {

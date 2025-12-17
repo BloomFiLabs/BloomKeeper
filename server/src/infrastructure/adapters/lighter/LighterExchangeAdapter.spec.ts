@@ -2,7 +2,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { LighterExchangeAdapter } from './LighterExchangeAdapter';
 import { DiagnosticsService } from '../../services/DiagnosticsService';
-import { OrderSide, OrderType, PerpOrderRequest, TimeInForce } from '../../../domain/value-objects/PerpOrder';
+import {
+  OrderSide,
+  OrderType,
+  PerpOrderRequest,
+  TimeInForce,
+} from '../../../domain/value-objects/PerpOrder';
 
 // Mock the lighter-ts-sdk
 jest.mock('@reservoir0x/lighter-ts-sdk', () => ({
@@ -39,14 +44,15 @@ describe('LighterExchangeAdapter Nonce Handling', () => {
 
   beforeEach(async () => {
     jest.useFakeTimers();
-    
+
     mockConfigService = {
       get: jest.fn((key: string, defaultValue?: any) => {
         const config: Record<string, any> = {
-          'LIGHTER_API_BASE_URL': 'https://test.lighter.xyz',
-          'LIGHTER_API_KEY': '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-          'LIGHTER_ACCOUNT_INDEX': '1000',
-          'LIGHTER_API_KEY_INDEX': '1',
+          LIGHTER_API_BASE_URL: 'https://test.lighter.xyz',
+          LIGHTER_API_KEY:
+            '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+          LIGHTER_ACCOUNT_INDEX: '1000',
+          LIGHTER_API_KEY_INDEX: '1',
         };
         return config[key] ?? defaultValue;
       }),
@@ -61,7 +67,11 @@ describe('LighterExchangeAdapter Nonce Handling', () => {
       providers: [
         {
           provide: LighterExchangeAdapter,
-          useFactory: () => new LighterExchangeAdapter(mockConfigService, mockDiagnosticsService),
+          useFactory: () =>
+            new LighterExchangeAdapter(
+              mockConfigService,
+              mockDiagnosticsService,
+            ),
         },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: DiagnosticsService, useValue: mockDiagnosticsService },
@@ -85,7 +95,7 @@ describe('LighterExchangeAdapter Nonce Handling', () => {
   describe('mutex serialization', () => {
     it('should serialize concurrent placeOrder calls', async () => {
       const callOrder: string[] = [];
-      
+
       // Create a mock order
       const mockOrder: PerpOrderRequest = {
         symbol: 'ETHUSDC',
@@ -130,7 +140,7 @@ describe('LighterExchangeAdapter Nonce Lock Integration', () => {
    * These tests verify the nonce lock behavior conceptually.
    * Full integration tests would require mocking the SignerClient more extensively.
    */
-  
+
   it('should have nonce reset timeout configured', () => {
     // The adapter should have a reasonable timeout for nonce reset
     // This is a design verification test
@@ -159,10 +169,11 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
     mockConfigService = {
       get: jest.fn((key: string, defaultValue?: any) => {
         const config: Record<string, any> = {
-          'LIGHTER_API_BASE_URL': 'https://test.lighter.xyz',
-          'LIGHTER_API_KEY': '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-          'LIGHTER_ACCOUNT_INDEX': '1000',
-          'LIGHTER_API_KEY_INDEX': '1',
+          LIGHTER_API_BASE_URL: 'https://test.lighter.xyz',
+          LIGHTER_API_KEY:
+            '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+          LIGHTER_ACCOUNT_INDEX: '1000',
+          LIGHTER_API_KEY_INDEX: '1',
         };
         return config[key] ?? defaultValue;
       }),
@@ -177,7 +188,11 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
       providers: [
         {
           provide: LighterExchangeAdapter,
-          useFactory: () => new LighterExchangeAdapter(mockConfigService, mockDiagnosticsService),
+          useFactory: () =>
+            new LighterExchangeAdapter(
+              mockConfigService,
+              mockDiagnosticsService,
+            ),
         },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: DiagnosticsService, useValue: mockDiagnosticsService },
@@ -206,14 +221,14 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
       };
 
       await expect(adapter.placeOrder(reduceOnlyOrder)).rejects.toThrow(
-        'Cannot place reduceOnly order: No position exists for ETHUSDC'
+        'Cannot place reduceOnly order: No position exists for ETHUSDC',
       );
 
       expect(mockDiagnosticsService.recordError).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'LIGHTER_REDUCE_ONLY_NO_POSITION',
           exchange: 'LIGHTER',
-        })
+        }),
       );
     });
 
@@ -245,14 +260,14 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
       };
 
       await expect(adapter.placeOrder(wrongDirectionOrder)).rejects.toThrow(
-        'Invalid reduceOnly direction: Position is LONG, order side is LONG, expected SHORT to close'
+        'Invalid reduceOnly direction: Position is LONG, order side is LONG, expected SHORT to close',
       );
 
       expect(mockDiagnosticsService.recordError).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'LIGHTER_REDUCE_ONLY_WRONG_DIRECTION',
           exchange: 'LIGHTER',
-        })
+        }),
       );
     });
 
@@ -284,7 +299,7 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
       };
 
       await expect(adapter.placeOrder(wrongDirectionOrder)).rejects.toThrow(
-        'Invalid reduceOnly direction: Position is SHORT, order side is SHORT, expected LONG to close'
+        'Invalid reduceOnly direction: Position is SHORT, order side is SHORT, expected LONG to close',
       );
     });
 
@@ -329,8 +344,8 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
 
       // Verify no reduceOnly validation errors were recorded
       const recordErrorCalls = mockDiagnosticsService.recordError.mock.calls;
-      const reduceOnlyErrors = recordErrorCalls.filter(
-        call => call[0].type?.includes('REDUCE_ONLY')
+      const reduceOnlyErrors = recordErrorCalls.filter((call) =>
+        call[0].type?.includes('REDUCE_ONLY'),
       );
       expect(reduceOnlyErrors.length).toBe(0);
     });
@@ -372,8 +387,8 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
 
       // Verify no reduceOnly validation errors were recorded
       const recordErrorCalls = mockDiagnosticsService.recordError.mock.calls;
-      const reduceOnlyErrors = recordErrorCalls.filter(
-        call => call[0].type?.includes('REDUCE_ONLY')
+      const reduceOnlyErrors = recordErrorCalls.filter((call) =>
+        call[0].type?.includes('REDUCE_ONLY'),
       );
       expect(reduceOnlyErrors.length).toBe(0);
     });
@@ -451,9 +466,8 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
       expect(mockDiagnosticsService.recordError).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'LIGHTER_REDUCE_ONLY_SIZE_EXCEEDS',
-        })
+        }),
       );
     });
   });
 });
-

@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import WebSocket from 'ws';
 
 interface MarketStatsMessage {
@@ -30,27 +35,30 @@ interface WsMessage {
 
 /**
  * LighterWebSocketProvider - WebSocket-based market data provider for Lighter Protocol
- * 
+ *
  * Subscribes to market_stats channels for real-time open interest updates
  * This eliminates rate limit issues and provides accurate OI data
- * 
+ *
  * Docs: https://apidocs.lighter.xyz/docs/websocket-reference#market-stats
  */
 @Injectable()
 export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LighterWebSocketProvider.name);
   private readonly WS_URL = 'wss://mainnet.zklighter.elliot.ai/stream';
-  
+
   private ws: WebSocket | null = null;
   private isConnected = false;
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT_ATTEMPTS = 10;
   private readonly RECONNECT_DELAY = 5000; // 5 seconds
-  
+
   // Cache for market stats data (key: marketIndex, value: { openInterest: number, markPrice: number, volume24h: number })
-  private marketStatsCache: Map<number, { openInterest: number; markPrice: number; volume24h: number }> = new Map();
+  private marketStatsCache: Map<
+    number,
+    { openInterest: number; markPrice: number; volume24h: number }
+  > = new Map();
   private subscribedMarkets: Set<number> = new Set();
-  
+
   // Track if we've received initial data for each market
   private hasInitialData: Set<number> = new Set();
 
@@ -75,22 +83,28 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
           this.isConnected = true;
           this.reconnectAttempts = 0;
           // Removed WebSocket connection log - only execution logs shown
-          
+
           // Resubscribe to all markets we were tracking
           // Use setTimeout to ensure subscriptions happen after connection is fully established
           // Also gives time for markets to be discovered if discovery happens concurrently
           setTimeout(() => {
             if (this.subscribedMarkets.size > 0) {
-              this.logger.log(`Resubscribing to ${this.subscribedMarkets.size} Lighter markets after connection...`);
+              this.logger.log(
+                `Resubscribing to ${this.subscribedMarkets.size} Lighter markets after connection...`,
+              );
               this.resubscribeAll();
             } else {
-              this.logger.debug('No markets to resubscribe yet (subscribedMarkets is empty - markets may be discovered shortly)');
+              this.logger.debug(
+                'No markets to resubscribe yet (subscribedMarkets is empty - markets may be discovered shortly)',
+              );
               // Check again after a longer delay in case markets are discovered late
               setTimeout(() => {
                 if (this.subscribedMarkets.size > 0) {
-                  this.logger.log(`Markets discovered late - subscribing to ${this.subscribedMarkets.size} Lighter markets...`);
+                  this.logger.log(
+                    `Markets discovered late - subscribing to ${this.subscribedMarkets.size} Lighter markets...`,
+                  );
                   this.resubscribeAll();
-            }
+                }
               }, 2000);
             }
           }, 500); // Increased delay to allow markets to be discovered
@@ -101,15 +115,22 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
           try {
             const rawMessage = data.toString();
             const message: WsMessage = JSON.parse(rawMessage);
-            
+
             // Debug logging for market_stats messages
-            if (message.type === 'update/market_stats' || message.market_stats) {
-              this.logger.debug(`Received market_stats message: ${JSON.stringify(message)}`);
+            if (
+              message.type === 'update/market_stats' ||
+              message.market_stats
+            ) {
+              this.logger.debug(
+                `Received market_stats message: ${JSON.stringify(message)}`,
+              );
             }
-            
+
             this.handleMessage(message);
           } catch (error: any) {
-            this.logger.error(`Failed to parse WebSocket message: ${error.message}`);
+            this.logger.error(
+              `Failed to parse WebSocket message: ${error.message}`,
+            );
             this.logger.debug(`Raw message: ${data.toString()}`);
           }
         });
@@ -134,21 +155,27 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
         this.ws.on('close', () => {
           this.isConnected = false;
           // Removed WebSocket connection log - only execution logs shown
-          
+
           // Attempt to reconnect (silently - only log on repeated failures)
           if (this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS) {
             this.reconnectAttempts++;
             // Only log on 3rd+ attempt to reduce noise
             if (this.reconnectAttempts >= 3) {
-              this.logger.warn(`WebSocket reconnect attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS}...`);
+              this.logger.warn(
+                `WebSocket reconnect attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS}...`,
+              );
             }
             setTimeout(() => this.connect(), this.RECONNECT_DELAY);
           } else {
-            this.logger.error('Max reconnection attempts reached. WebSocket will not reconnect.');
+            this.logger.error(
+              'Max reconnection attempts reached. WebSocket will not reconnect.',
+            );
           }
         });
       } catch (error: any) {
-        this.logger.error(`Failed to create WebSocket connection: ${error.message}`);
+        this.logger.error(
+          `Failed to create WebSocket connection: ${error.message}`,
+        );
         reject(error);
       }
     });
@@ -191,29 +218,34 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
     if (message.market_stats) {
       const marketStats = message.market_stats;
       const marketIndex = marketStats.market_id;
-      
+
       if (!marketIndex) {
-        this.logger.warn(`Received market_stats message without market_id: ${JSON.stringify(message)}`);
+        this.logger.warn(
+          `Received market_stats message without market_id: ${JSON.stringify(message)}`,
+        );
         return;
       }
-      
+
       try {
         const openInterestRaw = marketStats.open_interest || '0';
         const markPriceRaw = marketStats.mark_price || '0';
         const volume24hRaw = marketStats.daily_quote_token_volume || 0; // Already in USD (quote = USDC)
         const openInterest = parseFloat(openInterestRaw);
         const markPrice = parseFloat(markPriceRaw);
-        const volume24h = typeof volume24hRaw === 'string' ? parseFloat(volume24hRaw) : volume24hRaw;
-        
+        const volume24h =
+          typeof volume24hRaw === 'string'
+            ? parseFloat(volume24hRaw)
+            : volume24hRaw;
+
         // Log parsing results for debugging
         if (isNaN(openInterest) || isNaN(markPrice)) {
           this.logger.warn(
             `Failed to parse market_stats for market ${marketIndex}: ` +
-            `open_interest="${openInterestRaw}", mark_price="${markPriceRaw}"`
+              `open_interest="${openInterestRaw}", mark_price="${markPriceRaw}"`,
           );
           return;
         }
-        
+
         // Cache data if mark price is valid (open interest can be 0)
         if (markPrice > 0) {
           // According to Lighter API docs, open_interest is a STRING
@@ -221,24 +253,26 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
           // Values are typically in millions/billions for major assets
           // We use the value as-is since it's already in USD
           const oiUsd = openInterest;
-          
+
           const wasNew = !this.marketStatsCache.has(marketIndex);
           this.marketStatsCache.set(marketIndex, {
             openInterest: oiUsd,
             markPrice: markPrice,
             volume24h: isNaN(volume24h) ? 0 : volume24h,
           });
-          
+
           if (!this.hasInitialData.has(marketIndex)) {
             this.hasInitialData.add(marketIndex);
           }
         } else {
           this.logger.warn(
-            `Invalid mark price for market ${marketIndex}: ${markPriceRaw}`
+            `Invalid mark price for market ${marketIndex}: ${markPriceRaw}`,
           );
         }
       } catch (error: any) {
-        this.logger.error(`Failed to parse market_stats for market ${marketIndex}: ${error.message}`);
+        this.logger.error(
+          `Failed to parse market_stats for market ${marketIndex}: ${error.message}`,
+        );
         this.logger.debug(`Message: ${JSON.stringify(message)}`);
       }
       return;
@@ -247,21 +281,33 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
     // Handle other message types (subscription confirmations, etc.)
     if (message.type && message.channel) {
       // Log subscription confirmations - note: channel format is "market_stats:1" (colon, not slash)
-      if (message.type === 'subscribed' || message.channel.startsWith('market_stats')) {
-        this.logger.debug(`WebSocket message: type=${message.type}, channel=${message.channel}`);
+      if (
+        message.type === 'subscribed' ||
+        message.channel.startsWith('market_stats')
+      ) {
+        this.logger.debug(
+          `WebSocket message: type=${message.type}, channel=${message.channel}`,
+        );
       } else {
-        this.logger.debug(`Received other WebSocket message: type=${message.type}, channel=${message.channel}`);
+        this.logger.debug(
+          `Received other WebSocket message: type=${message.type}, channel=${message.channel}`,
+        );
       }
     } else {
       // Log any unhandled messages for debugging
-      this.logger.debug(`Received unhandled WebSocket message: ${JSON.stringify(message)}`);
+      this.logger.debug(
+        `Received unhandled WebSocket message: ${JSON.stringify(message)}`,
+      );
     }
   }
 
   /**
    * Subscribe to market_stats for a specific market
    */
-  subscribeToMarket(marketIndex: number, forceResubscribe: boolean = false): void {
+  subscribeToMarket(
+    marketIndex: number,
+    forceResubscribe: boolean = false,
+  ): void {
     // Always track the subscription, even if WebSocket isn't connected yet
     // This ensures we resubscribe when it reconnects
     const wasNew = !this.subscribedMarkets.has(marketIndex);
@@ -272,7 +318,9 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
     if (!this.isConnected || !this.ws) {
       // WebSocket not connected - subscription will happen on reconnect via resubscribeAll
       if (wasNew) {
-        this.logger.debug(`Queued market ${marketIndex} for subscription (WebSocket not connected)`);
+        this.logger.debug(
+          `Queued market ${marketIndex} for subscription (WebSocket not connected)`,
+        );
       }
       return;
     }
@@ -281,13 +329,17 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
     // (avoid duplicate subscriptions unless we're explicitly resubscribing)
     // BUT: if we don't have data yet, always subscribe (even if market was already in set)
     if (!forceResubscribe && !wasNew && this.hasMarketData(marketIndex)) {
-      this.logger.debug(`Market ${marketIndex} already subscribed and has data, skipping`);
+      this.logger.debug(
+        `Market ${marketIndex} already subscribed and has data, skipping`,
+      );
       return;
     }
 
     // Subscribe to the market (either new subscription or resubscription)
     // Always subscribe if we don't have data yet, even if market was already in set
-    this.logger.debug(`Subscribing to market ${marketIndex}: wasNew=${wasNew}, hasData=${this.hasMarketData(marketIndex)}, forceResubscribe=${forceResubscribe}`);
+    this.logger.debug(
+      `Subscribing to market ${marketIndex}: wasNew=${wasNew}, hasData=${this.hasMarketData(marketIndex)}, forceResubscribe=${forceResubscribe}`,
+    );
     try {
       const subscribeMessage = {
         type: 'subscribe',
@@ -296,16 +348,24 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
 
       const messageStr = JSON.stringify(subscribeMessage);
       if (!this.ws) {
-        this.logger.error(`Cannot subscribe to market ${marketIndex} - WebSocket is null`);
+        this.logger.error(
+          `Cannot subscribe to market ${marketIndex} - WebSocket is null`,
+        );
         return;
       }
-      
+
       this.ws.send(messageStr);
-      this.logger.log(`📡 LIGHTER: Subscribed to market ${marketIndex} (channel: market_stats/${marketIndex})`);
+      this.logger.log(
+        `📡 LIGHTER: Subscribed to market ${marketIndex} (channel: market_stats/${marketIndex})`,
+      );
       this.logger.debug(`Subscription message: ${messageStr}`);
     } catch (error: any) {
-      this.logger.error(`Failed to subscribe to market ${marketIndex}: ${error.message}`);
-      this.logger.debug(`WebSocket state: connected=${this.isConnected}, ws=${!!this.ws}, readyState=${this.ws?.readyState}`);
+      this.logger.error(
+        `Failed to subscribe to market ${marketIndex}: ${error.message}`,
+      );
+      this.logger.debug(
+        `WebSocket state: connected=${this.isConnected}, ws=${!!this.ws}, readyState=${this.ws?.readyState}`,
+      );
     }
   }
 
@@ -313,32 +373,40 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
    * Subscribe to multiple markets at once
    */
   subscribeToMarkets(marketIndexes: number[]): void {
-    this.logger.debug(`subscribeToMarkets called with ${marketIndexes.length} markets. Connected: ${this.isConnected}, ws: ${!!this.ws}, wsReadyState: ${this.ws?.readyState}`);
-    
+    this.logger.debug(
+      `subscribeToMarkets called with ${marketIndexes.length} markets. Connected: ${this.isConnected}, ws: ${!!this.ws}, wsReadyState: ${this.ws?.readyState}`,
+    );
+
     // Add all markets to tracking set first
-    marketIndexes.forEach(index => {
+    marketIndexes.forEach((index) => {
       if (!this.subscribedMarkets.has(index)) {
         this.subscribedMarkets.add(index);
       }
     });
-    
+
     // If connected, subscribe to ALL markets (force subscribe to ensure we get data)
     // WebSocket.OPEN = 1
     if (this.isConnected && this.ws && this.ws.readyState === 1) {
       // Subscribe to all markets that don't have data yet
-      const marketsToSubscribe = marketIndexes.filter(index => !this.hasMarketData(index));
+      const marketsToSubscribe = marketIndexes.filter(
+        (index) => !this.hasMarketData(index),
+      );
       if (marketsToSubscribe.length > 0) {
         // Removed WebSocket subscription log - only execution logs shown
-        marketsToSubscribe.forEach(index => {
+        marketsToSubscribe.forEach((index) => {
           // Force subscribe to ensure message is sent
           this.subscribeToMarket(index, true);
         });
       } else {
-        this.logger.debug(`All ${marketIndexes.length} markets already have data`);
+        this.logger.debug(
+          `All ${marketIndexes.length} markets already have data`,
+        );
       }
     } else {
       // Not connected - markets are tracked and will be subscribed on connection
-      this.logger.debug(`WebSocket not ready - ${marketIndexes.length} markets queued for subscription. isConnected=${this.isConnected}, ws=${!!this.ws}, readyState=${this.ws?.readyState}`);
+      this.logger.debug(
+        `WebSocket not ready - ${marketIndexes.length} markets queued for subscription. isConnected=${this.isConnected}, ws=${!!this.ws}, readyState=${this.ws?.readyState}`,
+      );
     }
   }
 
@@ -347,7 +415,9 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
    */
   ensureAllMarketsSubscribed(): void {
     if (!this.isConnected || !this.ws) {
-      this.logger.debug(`Cannot ensure subscriptions - WebSocket not connected`);
+      this.logger.debug(
+        `Cannot ensure subscriptions - WebSocket not connected`,
+      );
       return;
     }
 
@@ -358,17 +428,21 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
 
     // Subscribe to all markets that don't have data yet
     const marketsToSubscribe = Array.from(this.subscribedMarkets).filter(
-      marketIndex => !this.hasMarketData(marketIndex)
+      (marketIndex) => !this.hasMarketData(marketIndex),
     );
 
     if (marketsToSubscribe.length > 0) {
-      this.logger.log(`Ensuring ${marketsToSubscribe.length} Lighter markets are subscribed (no data yet)...`);
-      marketsToSubscribe.forEach(index => {
+      this.logger.log(
+        `Ensuring ${marketsToSubscribe.length} Lighter markets are subscribed (no data yet)...`,
+      );
+      marketsToSubscribe.forEach((index) => {
         // Force subscription even if market is already in set
         this.subscribeToMarket(index, true);
       });
     } else {
-      this.logger.debug(`All ${this.subscribedMarkets.size} tracked Lighter markets already have data`);
+      this.logger.debug(
+        `All ${this.subscribedMarkets.size} tracked Lighter markets already have data`,
+      );
     }
   }
 
@@ -377,13 +451,19 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
    */
   private resubscribeAll(): void {
     if (this.subscribedMarkets.size > 0) {
-      this.logger.log(`Resubscribing to ${this.subscribedMarkets.size} Lighter markets...`);
+      this.logger.log(
+        `Resubscribing to ${this.subscribedMarkets.size} Lighter markets...`,
+      );
       const markets = Array.from(this.subscribedMarkets);
       // Force resubscribe to ensure all markets are subscribed
-      markets.forEach(index => this.subscribeToMarket(index, true));
-      this.logger.log(`Successfully resubscribed to ${markets.length} Lighter markets`);
+      markets.forEach((index) => this.subscribeToMarket(index, true));
+      this.logger.log(
+        `Successfully resubscribed to ${markets.length} Lighter markets`,
+      );
     } else {
-      this.logger.debug('No Lighter markets to resubscribe (subscribedMarkets is empty)');
+      this.logger.debug(
+        'No Lighter markets to resubscribe (subscribedMarkets is empty)',
+      );
     }
   }
 
@@ -394,15 +474,15 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
   getOpenInterest(marketIndex: number): number | undefined {
     const stats = this.marketStatsCache.get(marketIndex);
     const oi = stats?.openInterest;
-    
+
     // Debug logging if we're being asked for data we don't have
     if (oi === undefined && this.subscribedMarkets.has(marketIndex)) {
       this.logger.debug(
         `getOpenInterest(${marketIndex}): No data yet. ` +
-        `Connected: ${this.isConnected}, HasInitialData: ${this.hasInitialData.has(marketIndex)}`
+          `Connected: ${this.isConnected}, HasInitialData: ${this.hasInitialData.has(marketIndex)}`,
       );
     }
-    
+
     return oi;
   }
 
@@ -438,4 +518,3 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
     return this.marketStatsCache.has(marketIndex);
   }
 }
-

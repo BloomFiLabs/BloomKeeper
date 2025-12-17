@@ -187,7 +187,7 @@ export class ExchangeBalanceRebalancer {
     // 3. Active exchanges should share the remaining capital equally
 
     let targetBalance: number;
-    let activeBalances: number[] = [];
+    const activeBalances: number[] = [];
     let totalActiveBalance = 0;
 
     if (activeExchanges.size > 0) {

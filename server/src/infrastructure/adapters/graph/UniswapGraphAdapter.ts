@@ -7,15 +7,18 @@ import { Candle } from '../../../domain/entities/Candle';
 @Injectable()
 export class UniswapGraphAdapter implements IMarketDataProvider {
   private client: GraphQLClient;
-  private readonly SUBGRAPH_URL = 'https://gateway.thegraph.com/api/subgraphs/id/HMuAwufqZ1YCRmzL2SfHTVkzZovC9VL2UAKhjvRqKiR1';
+  private readonly SUBGRAPH_URL =
+    'https://gateway.thegraph.com/api/subgraphs/id/HMuAwufqZ1YCRmzL2SfHTVkzZovC9VL2UAKhjvRqKiR1';
 
   constructor(private configService: ConfigService) {
     const apiKey = this.configService.get<string>('GRAPH_API_KEY');
-    
+
     this.client = new GraphQLClient(this.SUBGRAPH_URL, {
-      headers: apiKey ? {
-        'Authorization': `Bearer ${apiKey}`,
-      } : {},
+      headers: apiKey
+        ? {
+            Authorization: `Bearer ${apiKey}`,
+          }
+        : {},
     });
   }
 
@@ -112,13 +115,17 @@ export class UniswapGraphAdapter implements IMarketDataProvider {
       if (!data.poolDayDatas || data.poolDayDatas.length === 0) {
         // Fallback to pool-level data
         const pool = data.pool;
-        if (!pool || !pool.totalValueLockedUSD || Number(pool.totalValueLockedUSD) === 0) {
+        if (
+          !pool ||
+          !pool.totalValueLockedUSD ||
+          Number(pool.totalValueLockedUSD) === 0
+        ) {
           return 11.0; // Fallback to historical average for 0.05% pools
         }
-        
+
         // Estimate daily fees from fee tier and volume (rough approximation)
         const feeTier = Number(pool.feeTier) / 1e6; // Convert from basis points
-        const estimatedDailyFees = Number(pool.volumeUSD) * feeTier / 7; // Approximate daily from weekly volume
+        const estimatedDailyFees = (Number(pool.volumeUSD) * feeTier) / 7; // Approximate daily from weekly volume
         const tvl = Number(pool.totalValueLockedUSD);
         const dailyApr = (estimatedDailyFees / tvl) * 100;
         return dailyApr * 365;
@@ -128,7 +135,7 @@ export class UniswapGraphAdapter implements IMarketDataProvider {
       let totalFees = 0;
       let totalTvl = 0;
       let daysCount = 0;
-      
+
       for (const dayData of data.poolDayDatas) {
         const fees = Number(dayData.feesUSD);
         const tvl = Number(dayData.tvlUSD);
@@ -138,7 +145,7 @@ export class UniswapGraphAdapter implements IMarketDataProvider {
           daysCount++;
         }
       }
-      
+
       if (daysCount === 0 || totalTvl === 0) {
         return 11.0; // Fallback
       }
@@ -181,7 +188,9 @@ export class UniswapGraphAdapter implements IMarketDataProvider {
       }
 
       // Fallback to 0.05% (most common Uniswap V3 fee tier)
-      console.warn(`⚠️  Could not fetch fee tier for pool ${poolAddress}, using default 0.05%`);
+      console.warn(
+        `⚠️  Could not fetch fee tier for pool ${poolAddress}, using default 0.05%`,
+      );
       return 0.0005;
     } catch (error) {
       console.warn(`⚠️  Failed to fetch pool fee tier: ${error.message}`);
@@ -194,12 +203,12 @@ export class UniswapGraphAdapter implements IMarketDataProvider {
     // For WETH/USDC pool: token0=WETH, token1=USDC
     // The price from subgraph is already human-readable (e.g., 0.00035 USDC per WETH)
     // To get ETH price in USD, we just need to invert: 1 / 0.00035 ≈ $2857
-    
+
     const convertPrice = (ratio: number): number => {
       if (ratio === 0) return 0;
       return 1 / ratio; // Simple inversion
     };
-    
+
     return new Candle(
       new Date(data.periodStartUnix * 1000),
       convertPrice(parseFloat(data.open)),
@@ -210,4 +219,3 @@ export class UniswapGraphAdapter implements IMarketDataProvider {
     );
   }
 }
-

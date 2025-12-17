@@ -90,7 +90,8 @@ describe('BalanceManager', () => {
     it('should return balance from wallet address', async () => {
       mockConfigService.get.mockImplementation((key: string) => {
         if (key === 'ARBITRUM_RPC_URL') return 'https://arb1.arbitrum.io/rpc';
-        if (key === 'WALLET_ADDRESS') return '0x1234567890123456789012345678901234567890';
+        if (key === 'WALLET_ADDRESS')
+          return '0x1234567890123456789012345678901234567890';
         return undefined;
       });
 
@@ -112,7 +113,8 @@ describe('BalanceManager', () => {
     it('should derive address from private key if wallet address not provided', async () => {
       mockConfigService.get.mockImplementation((key: string) => {
         if (key === 'ARBITRUM_RPC_URL') return 'https://arb1.arbitrum.io/rpc';
-        if (key === 'PRIVATE_KEY') return '0x1234567890123456789012345678901234567890123456789012345678901234';
+        if (key === 'PRIVATE_KEY')
+          return '0x1234567890123456789012345678901234567890123456789012345678901234';
         return undefined;
       });
 
@@ -144,7 +146,8 @@ describe('BalanceManager', () => {
     it('should return failure on error', async () => {
       mockConfigService.get.mockImplementation((key: string) => {
         if (key === 'ARBITRUM_RPC_URL') return 'https://arb1.arbitrum.io/rpc';
-        if (key === 'WALLET_ADDRESS') return '0x1234567890123456789012345678901234567890';
+        if (key === 'WALLET_ADDRESS')
+          return '0x1234567890123456789012345678901234567890';
         return undefined;
       });
 
@@ -165,9 +168,9 @@ describe('BalanceManager', () => {
 
   describe('checkAndDepositWalletFunds', () => {
     beforeEach(() => {
-      jest.spyOn(manager, 'getWalletUsdcBalance').mockResolvedValue(
-        Result.success(1000),
-      );
+      jest
+        .spyOn(manager, 'getWalletUsdcBalance')
+        .mockResolvedValue(Result.success(1000));
     });
 
     it('should distribute funds equally to all exchanges', async () => {
@@ -193,7 +196,11 @@ describe('BalanceManager', () => {
       try {
         await manager.checkAndDepositWalletFunds(
           mockAdapters,
-          new Set([ExchangeType.ASTER, ExchangeType.LIGHTER, ExchangeType.HYPERLIQUID]),
+          new Set([
+            ExchangeType.ASTER,
+            ExchangeType.LIGHTER,
+            ExchangeType.HYPERLIQUID,
+          ]),
         );
 
         // Should deposit ~333.33 to each exchange
@@ -215,9 +222,9 @@ describe('BalanceManager', () => {
     }, 20000);
 
     it('should skip deposits if wallet balance is zero', async () => {
-      jest.spyOn(manager, 'getWalletUsdcBalance').mockResolvedValue(
-        Result.success(0),
-      );
+      jest
+        .spyOn(manager, 'getWalletUsdcBalance')
+        .mockResolvedValue(Result.success(0));
 
       await manager.checkAndDepositWalletFunds(
         mockAdapters,
@@ -238,7 +245,11 @@ describe('BalanceManager', () => {
 
       await manager.checkAndDepositWalletFunds(
         mockAdapters,
-        new Set([ExchangeType.ASTER, ExchangeType.LIGHTER, ExchangeType.HYPERLIQUID]),
+        new Set([
+          ExchangeType.ASTER,
+          ExchangeType.LIGHTER,
+          ExchangeType.HYPERLIQUID,
+        ]),
       );
 
       // Each exchange would get ~$3.33, which is < $5, so should skip
@@ -248,7 +259,9 @@ describe('BalanceManager', () => {
     it('should handle deposit failures gracefully', async () => {
       const asterAdapter = mockAdapters.get(ExchangeType.ASTER)!;
       asterAdapter.getBalance.mockResolvedValue(0);
-      asterAdapter.depositExternal.mockRejectedValue(new Error('Deposit failed'));
+      asterAdapter.depositExternal.mockRejectedValue(
+        new Error('Deposit failed'),
+      );
 
       await manager.checkAndDepositWalletFunds(
         mockAdapters,
@@ -324,7 +337,9 @@ describe('BalanceManager', () => {
           [ExchangeType.HYPERLIQUID, 1000], // Unused, has funds
         ]),
       );
-      mockBalanceRebalancer.transferBetweenExchanges.mockResolvedValue('tx-hash-1');
+      mockBalanceRebalancer.transferBetweenExchanges.mockResolvedValue(
+        'tx-hash-1',
+      );
 
       const result = await manager.attemptRebalanceForOpportunity(
         opportunity,
@@ -349,13 +364,14 @@ describe('BalanceManager', () => {
       );
 
       const opportunity = createMockOpportunity();
-      const result = await managerWithoutRebalancer.attemptRebalanceForOpportunity(
-        opportunity,
-        mockAdapters,
-        500,
-        100,
-        100,
-      );
+      const result =
+        await managerWithoutRebalancer.attemptRebalanceForOpportunity(
+          opportunity,
+          mockAdapters,
+          500,
+          100,
+          100,
+        );
 
       expect(result.isFailure).toBe(true);
       if (result.isFailure) {
@@ -496,9 +512,15 @@ describe('BalanceManager', () => {
 
     describe('getDeployableBalances', () => {
       it('should get deployable balances for multiple exchanges', async () => {
-        const adapter1 = { getBalance: jest.fn().mockResolvedValue(100) } as any;
-        const adapter2 = { getBalance: jest.fn().mockResolvedValue(200) } as any;
-        const adapter3 = { getBalance: jest.fn().mockResolvedValue(150) } as any;
+        const adapter1 = {
+          getBalance: jest.fn().mockResolvedValue(100),
+        } as any;
+        const adapter2 = {
+          getBalance: jest.fn().mockResolvedValue(200),
+        } as any;
+        const adapter3 = {
+          getBalance: jest.fn().mockResolvedValue(150),
+        } as any;
 
         const adapters = new Map<ExchangeType, IPerpExchangeAdapter>([
           [ExchangeType.HYPERLIQUID, adapter1],
@@ -515,8 +537,12 @@ describe('BalanceManager', () => {
       });
 
       it('should handle exchange errors gracefully', async () => {
-        const adapter1 = { getBalance: jest.fn().mockResolvedValue(100) } as any;
-        const adapter2 = { getBalance: jest.fn().mockRejectedValue(new Error('API error')) } as any;
+        const adapter1 = {
+          getBalance: jest.fn().mockResolvedValue(100),
+        } as any;
+        const adapter2 = {
+          getBalance: jest.fn().mockRejectedValue(new Error('API error')),
+        } as any;
 
         const adapters = new Map<ExchangeType, IPerpExchangeAdapter>([
           [ExchangeType.HYPERLIQUID, adapter1],
@@ -533,13 +559,19 @@ describe('BalanceManager', () => {
         manager.setProfitTracker(mockProfitTracker);
 
         mockProfitTracker.getDeployableCapital
-          .mockResolvedValueOnce(80)  // HL: 100 - 20 profit
+          .mockResolvedValueOnce(80) // HL: 100 - 20 profit
           .mockResolvedValueOnce(180) // LI: 200 - 20 profit
           .mockResolvedValueOnce(140); // AS: 150 - 10 profit
 
-        const adapter1 = { getBalance: jest.fn().mockResolvedValue(100) } as any;
-        const adapter2 = { getBalance: jest.fn().mockResolvedValue(200) } as any;
-        const adapter3 = { getBalance: jest.fn().mockResolvedValue(150) } as any;
+        const adapter1 = {
+          getBalance: jest.fn().mockResolvedValue(100),
+        } as any;
+        const adapter2 = {
+          getBalance: jest.fn().mockResolvedValue(200),
+        } as any;
+        const adapter3 = {
+          getBalance: jest.fn().mockResolvedValue(150),
+        } as any;
 
         const adapters = new Map<ExchangeType, IPerpExchangeAdapter>([
           [ExchangeType.HYPERLIQUID, adapter1],

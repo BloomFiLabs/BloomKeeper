@@ -1,9 +1,18 @@
 import { Injectable, Logger, Optional, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SignerClient, OrderType as LighterOrderType, ApiClient, OrderApi, MarketHelper } from '@reservoir0x/lighter-ts-sdk';
+import {
+  SignerClient,
+  OrderType as LighterOrderType,
+  ApiClient,
+  OrderApi,
+  MarketHelper,
+} from '@reservoir0x/lighter-ts-sdk';
 import axios from 'axios';
 import { ethers } from 'ethers';
-import { ExchangeConfig, ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
+import {
+  ExchangeConfig,
+  ExchangeType,
+} from '../../../domain/value-objects/ExchangeConfig';
 import {
   PerpOrderRequest,
   PerpOrderResponse,
@@ -13,28 +22,34 @@ import {
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
+import {
+  IPerpExchangeAdapter,
+  ExchangeError,
+  FundingPayment,
+} from '../../../domain/ports/IPerpExchangeAdapter';
 import { DiagnosticsService } from '../../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../../domain/services/MarketQualityFilter';
 
 /**
  * LighterExchangeAdapter - Implements IPerpExchangeAdapter for Lighter Protocol
- * 
+ *
  * Based on the existing lighter-order-simple.ts script logic
  */
 @Injectable()
-export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDestroy {
+export class LighterExchangeAdapter
+  implements IPerpExchangeAdapter, OnModuleDestroy
+{
   private readonly logger = new Logger(LighterExchangeAdapter.name);
   private readonly config: ExchangeConfig;
   private signerClient: SignerClient | null = null;
   private orderApi: OrderApi | null = null;
   private marketHelpers: Map<number, MarketHelper> = new Map(); // marketIndex -> MarketHelper
-  
+
   // Market index mapping cache: symbol -> marketIndex
   private marketIndexCache: Map<string, number> = new Map();
   private marketIndexCacheTimestamp: number = 0;
   private readonly MARKET_INDEX_CACHE_TTL = 3600000; // 1 hour cache
-  
+
   // Mutex for order placement to prevent concurrent nonce conflicts
   // Lighter uses sequential nonces - concurrent orders cause "invalid nonce" errors
   private orderMutex: Promise<void> = Promise.resolve();
@@ -44,7 +59,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   private nonceResetInProgress = false;
   private nonceResetQueue: Array<() => void> = [];
   private readonly NONCE_RESET_TIMEOUT_MS = 5000; // 5 second timeout for waiting on current order
-  
+
   // Track consecutive nonce errors for debugging
   private consecutiveNonceErrors = 0;
   private lastSuccessfulOrderTime: Date | null = null;
@@ -54,10 +69,16 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
   ) {
-    const baseUrl = this.configService.get<string>('LIGHTER_API_BASE_URL') || 'https://mainnet.zklighter.elliot.ai';
+    const baseUrl =
+      this.configService.get<string>('LIGHTER_API_BASE_URL') ||
+      'https://mainnet.zklighter.elliot.ai';
     const apiKey = this.configService.get<string>('LIGHTER_API_KEY');
-    const accountIndex = parseInt(this.configService.get<string>('LIGHTER_ACCOUNT_INDEX') || '1000');
-    const apiKeyIndex = parseInt(this.configService.get<string>('LIGHTER_API_KEY_INDEX') || '1');
+    const accountIndex = parseInt(
+      this.configService.get<string>('LIGHTER_ACCOUNT_INDEX') || '1000',
+    );
+    const apiKeyIndex = parseInt(
+      this.configService.get<string>('LIGHTER_API_KEY_INDEX') || '1',
+    );
 
     if (!apiKey) {
       throw new Error('Lighter exchange requires LIGHTER_API_KEY');
@@ -87,7 +108,12 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   /**
    * Record an error to diagnostics service and market quality filter
    */
-  private recordError(type: string, message: string, symbol?: string, context?: Record<string, any>): void {
+  private recordError(
+    type: string,
+    message: string,
+    symbol?: string,
+    context?: Record<string, any>,
+  ): void {
     if (this.diagnosticsService) {
       this.diagnosticsService.recordError({
         type,
@@ -135,7 +161,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
    */
   async dispose(): Promise<void> {
     this.logger.log('Disposing Lighter adapter...');
-    
+
     if (this.signerClient) {
       try {
         if (typeof (this.signerClient as any).close === 'function') {
@@ -149,18 +175,18 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       }
       this.signerClient = null;
     }
-    
+
     this.orderApi = null;
     this.marketHelpers.clear();
     this.marketIndexCache.clear();
-    
+
     this.logger.log('Lighter adapter disposed');
   }
 
   private async ensureInitialized(): Promise<void> {
     if (!this.signerClient) {
       const normalizedKey = this.config.apiKey!;
-      
+
       this.signerClient = new SignerClient({
         url: this.config.baseUrl,
         privateKey: normalizedKey,
@@ -180,104 +206,115 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
    * Acquire the order mutex to prevent concurrent order placements
    * Lighter uses sequential nonces - concurrent orders cause "invalid nonce" errors
    * Returns a release function that MUST be called when done
-   * 
+   *
    * IMPORTANT: This also waits for any ongoing nonce reset to complete first
    */
   private async acquireOrderMutex(): Promise<() => void> {
     // First, wait for any nonce reset to complete
     if (this.nonceResetInProgress) {
-      this.logger.debug('Waiting for nonce reset to complete before acquiring mutex...');
-      await new Promise<void>(resolve => this.nonceResetQueue.push(resolve));
-      this.logger.debug('Nonce reset complete, proceeding with mutex acquisition');
+      this.logger.debug(
+        'Waiting for nonce reset to complete before acquiring mutex...',
+      );
+      await new Promise<void>((resolve) => this.nonceResetQueue.push(resolve));
+      this.logger.debug(
+        'Nonce reset complete, proceeding with mutex acquisition',
+      );
     }
-    
+
     // Wait for any pending order to complete
     await this.orderMutex;
-    
+
     // Double-check nonce reset didn't start while we were waiting
     if (this.nonceResetInProgress) {
       this.logger.debug('Nonce reset started while waiting, re-waiting...');
-      await new Promise<void>(resolve => this.nonceResetQueue.push(resolve));
+      await new Promise<void>((resolve) => this.nonceResetQueue.push(resolve));
     }
-    
+
     // Create a new promise that will be resolved when we release
     let release: () => void;
     this.orderMutex = new Promise<void>((resolve) => {
       release = resolve;
     });
-    
+
     return release!;
   }
 
   /**
    * Fully recreate the SignerClient to get a fresh nonce from the server
    * This is more robust than just resetting - it destroys all state and creates a new client
-   * 
+   *
    * IMPORTANT: This blocks all new orders until recreation is complete
    */
   private async resetSignerClient(): Promise<void> {
     // Prevent multiple concurrent resets
     if (this.nonceResetInProgress) {
       this.logger.debug('Nonce reset already in progress, waiting...');
-      await new Promise<void>(resolve => this.nonceResetQueue.push(resolve));
+      await new Promise<void>((resolve) => this.nonceResetQueue.push(resolve));
       return;
     }
-    
+
     this.nonceResetInProgress = true;
     const resetStartTime = Date.now();
     this.logger.warn(
       `🔄 Recreating Lighter SignerClient to re-sync nonce ` +
-      `(consecutive errors: ${this.consecutiveNonceErrors})...`
+        `(consecutive errors: ${this.consecutiveNonceErrors})...`,
     );
-    
+
     try {
       // NOTE: This method is called from within placeOrderInternal which already holds the mutex.
       // We do NOT wait for the mutex here - we already have exclusive access.
       // The nonceResetInProgress flag will block any NEW orders from acquiring the mutex
       // until we're done resetting.
-      
+
       // Step 1: Close and destroy existing client completely
       if (this.signerClient) {
         try {
           // Try to close gracefully if method exists
           if (typeof (this.signerClient as any).close === 'function') {
-        await (this.signerClient as any).close();
+            await (this.signerClient as any).close();
           }
           // Try to destroy if method exists
           if (typeof (this.signerClient as any).destroy === 'function') {
             await (this.signerClient as any).destroy();
           }
-      } catch (e) {
+        } catch (e) {
           // Ignore close/destroy errors - we're recreating anyway
+        }
       }
-    }
-    
+
       // Step 2: Clear ALL client state to ensure fresh start
-    this.signerClient = null;
+      this.signerClient = null;
       this.orderApi = null;
-      
+
       // Step 3: Wait for server state to settle
       // The delay increases with consecutive errors (1s base + 500ms per error, max 5s)
-      const settleDelay = Math.min(1000 + (this.consecutiveNonceErrors * 500), 5000);
-      this.logger.debug(`Waiting ${settleDelay}ms for server state to settle before re-initialization...`);
-      await new Promise(resolve => setTimeout(resolve, settleDelay));
-    
+      const settleDelay = Math.min(
+        1000 + this.consecutiveNonceErrors * 500,
+        5000,
+      );
+      this.logger.debug(
+        `Waiting ${settleDelay}ms for server state to settle before re-initialization...`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, settleDelay));
+
       // Step 4: Re-initialize with fresh client - this fetches fresh nonce from server
-    await this.ensureInitialized();
-    
+      await this.ensureInitialized();
+
       const resetDuration = Date.now() - resetStartTime;
       this.logger.log(
-        `✅ Lighter SignerClient recreated in ${resetDuration}ms - nonce re-synced from server`
+        `✅ Lighter SignerClient recreated in ${resetDuration}ms - nonce re-synced from server`,
       );
     } finally {
       // Release all waiting operations
       this.nonceResetInProgress = false;
       const waitingOperations = this.nonceResetQueue.splice(0);
-      this.logger.debug(`Releasing ${waitingOperations.length} operations waiting on nonce reset`);
-      waitingOperations.forEach(resolve => resolve());
+      this.logger.debug(
+        `Releasing ${waitingOperations.length} operations waiting on nonce reset`,
+      );
+      waitingOperations.forEach((resolve) => resolve());
     }
   }
-  
+
   /**
    * Check if a nonce reset is currently in progress
    */
@@ -289,54 +326,63 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     if (!this.marketHelpers.has(marketIndex)) {
       await this.ensureInitialized();
       const market = new MarketHelper(marketIndex, this.orderApi!);
-      
+
       // Add retry logic with exponential backoff for market config fetch (rate limiting)
       const maxRetries = 6;
       const baseDelay = 2000; // 2 seconds base delay
       const maxDelay = 60000; // 60 seconds max delay
       let lastError: any = null;
-      
+
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
           if (attempt > 0) {
             // Exponential backoff with jitter: 2s, 4s, 8s, 16s, 32s, 60s (capped)
-            const exponentialDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+            const exponentialDelay = Math.min(
+              baseDelay * Math.pow(2, attempt - 1),
+              maxDelay,
+            );
             const jitter = exponentialDelay * 0.2 * (Math.random() * 2 - 1);
             const delay = Math.max(1000, exponentialDelay + jitter);
-            
+
             this.logger.debug(
               `Retrying market config fetch for market ${marketIndex} after ${Math.floor(delay / 1000)}s ` +
-              `(attempt ${attempt + 1}/${maxRetries})`
+                `(attempt ${attempt + 1}/${maxRetries})`,
             );
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await new Promise((resolve) => setTimeout(resolve, delay));
           }
-          
+
           await market.initialize();
           this.marketHelpers.set(marketIndex, market);
           return market;
         } catch (error: any) {
           lastError = error;
           const errorMsg = error?.message || String(error);
-          const isRateLimit = errorMsg.includes('Too Many Requests') || 
-                             errorMsg.includes('429') ||
-                             errorMsg.includes('rate limit');
-          
+          const isRateLimit =
+            errorMsg.includes('Too Many Requests') ||
+            errorMsg.includes('429') ||
+            errorMsg.includes('rate limit');
+
           if (isRateLimit && attempt < maxRetries - 1) {
             // Silenced 429/rate limit warnings - only show errors
             this.logger.debug(
               `Market config fetch rate limited for market ${marketIndex} ` +
-              `(attempt ${attempt + 1}/${maxRetries}): ${errorMsg}. Will retry.`
+                `(attempt ${attempt + 1}/${maxRetries}): ${errorMsg}. Will retry.`,
             );
             continue;
           }
-          
+
           // Not retryable or max retries reached
           throw error;
         }
       }
-      
+
       // Should never reach here, but just in case
-      throw lastError || new Error(`Failed to initialize market helper for market ${marketIndex}`);
+      throw (
+        lastError ||
+        new Error(
+          `Failed to initialize market helper for market ${marketIndex}`,
+        )
+      );
     }
     return this.marketHelpers.get(marketIndex)!;
   }
@@ -348,15 +394,20 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
    */
   private async refreshMarketIndexCache(): Promise<void> {
     const now = Date.now();
-    
+
     // Use cache if fresh
-    if (this.marketIndexCache.size > 0 && (now - this.marketIndexCacheTimestamp) < this.MARKET_INDEX_CACHE_TTL) {
+    if (
+      this.marketIndexCache.size > 0 &&
+      now - this.marketIndexCacheTimestamp < this.MARKET_INDEX_CACHE_TTL
+    ) {
       return;
     }
 
     try {
-      this.logger.debug('Fetching market index mappings from Lighter Explorer API...');
-      
+      this.logger.debug(
+        'Fetching market index mappings from Lighter Explorer API...',
+      );
+
       const explorerUrl = 'https://explorer.elliot.ai/api/markets';
       const response = await axios.get(explorerUrl, {
         timeout: 10000,
@@ -374,9 +425,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       // Parse response: [{ "symbol": "ETH", "market_index": 0 }, ...]
       for (const market of response.data) {
         // API uses "market_index" (with underscore)
-        const marketIndex = market.market_index ?? market.marketIndex ?? market.index ?? null;
+        const marketIndex =
+          market.market_index ?? market.marketIndex ?? market.index ?? null;
         const symbol = market.symbol || market.baseAsset || market.name;
-        
+
         if (marketIndex !== null && symbol) {
           // Normalize symbol (remove USDC/USDT suffixes)
           const normalizedSymbol = symbol
@@ -385,7 +437,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             .replace('-PERP', '')
             .replace('PERP', '')
             .toUpperCase();
-          
+
           this.marketIndexCache.set(normalizedSymbol, Number(marketIndex));
         }
       }
@@ -393,7 +445,9 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       this.marketIndexCacheTimestamp = now;
       // Removed cache log - only execution logs shown
     } catch (error: any) {
-      this.logger.warn(`Failed to fetch market index mappings from Explorer API: ${error.message}`);
+      this.logger.warn(
+        `Failed to fetch market index mappings from Explorer API: ${error.message}`,
+      );
       // Don't throw - allow fallback to hardcoded mapping
     }
   }
@@ -407,7 +461,11 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     await this.refreshMarketIndexCache();
 
     // Normalize symbol
-    const baseSymbol = symbol.replace('USDC', '').replace('USDT', '').replace('-PERP', '').toUpperCase();
+    const baseSymbol = symbol
+      .replace('USDC', '')
+      .replace('USDT', '')
+      .replace('-PERP', '')
+      .toUpperCase();
 
     // Try cached mapping first
     const cachedIndex = this.marketIndexCache.get(baseSymbol);
@@ -419,7 +477,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     try {
       const apiClient = new ApiClient({ host: this.config.baseUrl });
       const orderBooks = await (apiClient as any).order?.getOrderBooks();
-      
+
       if (orderBooks && Array.isArray(orderBooks)) {
         for (let i = 0; i < orderBooks.length; i++) {
           const book = orderBooks[i];
@@ -441,15 +499,15 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
     // Final fallback: Hardcoded common market indices
     const symbolToMarketIndex: Record<string, number> = {
-      'ETH': 0,
-      'BTC': 1,
+      ETH: 0,
+      BTC: 1,
       // Add more as needed
     };
 
     const fallbackIndex = symbolToMarketIndex[baseSymbol] ?? 0;
     this.logger.warn(
       `Market index not found for ${symbol} (${baseSymbol}), using fallback index: ${fallbackIndex}. ` +
-      `Consider checking Lighter Explorer API: https://explorer.elliot.ai/api/markets`
+        `Consider checking Lighter Explorer API: https://explorer.elliot.ai/api/markets`,
     );
     return fallbackIndex;
   }
@@ -465,19 +523,19 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   async placeOrder(request: PerpOrderRequest): Promise<PerpOrderResponse> {
     this.logger.log(
       `📤 Placing ${request.side} order on Lighter: ${request.size} ${request.symbol} ` +
-      `@ ${request.price || 'market'} (type: ${request.type}, reduceOnly: ${request.reduceOnly})`
+        `@ ${request.price || 'market'} (type: ${request.type}, reduceOnly: ${request.reduceOnly})`,
     );
-    
+
     // CRITICAL: Validate reduceOnly orders BEFORE acquiring mutex
     // This prevents "invalid reduce only direction" errors from the blockchain
     if (request.reduceOnly) {
       await this.validateReduceOnlyOrder(request);
     }
-    
+
     // Acquire mutex to prevent concurrent order placements
     // Lighter uses sequential nonces - concurrent orders cause "invalid nonce" errors
     const releaseMutex = await this.acquireOrderMutex();
-    
+
     try {
       return await this.placeOrderInternal(request);
     } finally {
@@ -489,12 +547,14 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   /**
    * Validate that a reduceOnly order can be placed
    * Checks that a position exists and the order direction is correct for closing it
-   * 
+   *
    * @throws Error if no position exists or direction is wrong
    */
-  private async validateReduceOnlyOrder(request: PerpOrderRequest): Promise<void> {
+  private async validateReduceOnlyOrder(
+    request: PerpOrderRequest,
+  ): Promise<void> {
     const positions = await this.getPositions();
-    
+
     // Normalize symbol for comparison
     const normalizedRequestSymbol = request.symbol
       .replace('USDC', '')
@@ -502,104 +562,130 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       .replace('-PERP', '')
       .replace('PERP', '')
       .toUpperCase();
-    
-    const matchingPosition = positions.find(p => {
+
+    const matchingPosition = positions.find((p) => {
       const normalizedPosSymbol = p.symbol
         .replace('USDC', '')
         .replace('USDT', '')
         .replace('-PERP', '')
         .replace('PERP', '')
         .toUpperCase();
-      return normalizedPosSymbol === normalizedRequestSymbol && Math.abs(p.size) > 0.0001;
+      return (
+        normalizedPosSymbol === normalizedRequestSymbol &&
+        Math.abs(p.size) > 0.0001
+      );
     });
-    
+
     if (!matchingPosition) {
       const errorMsg = `Cannot place reduceOnly order: No position exists for ${request.symbol}`;
       this.logger.warn(`⚠️ ${errorMsg}`);
-      this.recordError('LIGHTER_REDUCE_ONLY_NO_POSITION', errorMsg, request.symbol);
+      this.recordError(
+        'LIGHTER_REDUCE_ONLY_NO_POSITION',
+        errorMsg,
+        request.symbol,
+      );
       throw new ExchangeError(errorMsg, ExchangeType.LIGHTER);
     }
-    
+
     // Verify direction matches - to close a position, we need the opposite side
     // LONG position -> need SHORT order to close
     // SHORT position -> need LONG order to close
-    const expectedCloseSide = matchingPosition.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
-    
+    const expectedCloseSide =
+      matchingPosition.side === OrderSide.LONG
+        ? OrderSide.SHORT
+        : OrderSide.LONG;
+
     if (request.side !== expectedCloseSide) {
-      const errorMsg = `Invalid reduceOnly direction: Position is ${matchingPosition.side}, ` +
+      const errorMsg =
+        `Invalid reduceOnly direction: Position is ${matchingPosition.side}, ` +
         `order side is ${request.side}, expected ${expectedCloseSide} to close`;
       this.logger.warn(`⚠️ ${errorMsg}`);
-      this.recordError('LIGHTER_REDUCE_ONLY_WRONG_DIRECTION', errorMsg, request.symbol, {
-        positionSide: matchingPosition.side,
-        orderSide: request.side,
-        expectedSide: expectedCloseSide,
-      });
+      this.recordError(
+        'LIGHTER_REDUCE_ONLY_WRONG_DIRECTION',
+        errorMsg,
+        request.symbol,
+        {
+          positionSide: matchingPosition.side,
+          orderSide: request.side,
+          expectedSide: expectedCloseSide,
+        },
+      );
       throw new ExchangeError(errorMsg, ExchangeType.LIGHTER);
     }
-    
+
     // Also validate that order size doesn't exceed position size
     const actualPositionSize = Math.abs(matchingPosition.size);
-    if (request.size > actualPositionSize * 1.01) { // 1% tolerance for rounding
+    if (request.size > actualPositionSize * 1.01) {
+      // 1% tolerance for rounding
       this.logger.warn(
         `⚠️ ReduceOnly order size ${request.size.toFixed(4)} exceeds position size ${actualPositionSize.toFixed(4)}. ` +
-        `Will use position size instead.`
+          `Will use position size instead.`,
       );
-      this.recordError('LIGHTER_REDUCE_ONLY_SIZE_EXCEEDS', 
-        `ReduceOnly size ${request.size.toFixed(4)} exceeds position ${actualPositionSize.toFixed(4)} - will auto-correct`, 
-        request.symbol, {
+      this.recordError(
+        'LIGHTER_REDUCE_ONLY_SIZE_EXCEEDS',
+        `ReduceOnly size ${request.size.toFixed(4)} exceeds position ${actualPositionSize.toFixed(4)} - will auto-correct`,
+        request.symbol,
+        {
           originalSize: request.size,
           positionSize: actualPositionSize,
-        }
+        },
       );
       // Note: We can't modify request.size here as it's readonly
       // The caller should fetch fresh position size before calling
       // We'll throw to force the caller to retry with correct size
       throw new ExchangeError(
         `ReduceOnly order size ${request.size.toFixed(4)} exceeds position size ${actualPositionSize.toFixed(4)}. ` +
-        `Please retry with correct size.`,
+          `Please retry with correct size.`,
         ExchangeType.LIGHTER,
       );
     }
-    
+
     this.logger.debug(
       `✅ ReduceOnly validation passed: Closing ${matchingPosition.side} position of ${actualPositionSize.toFixed(4)} ` +
-      `with ${request.side} order of ${request.size.toFixed(4)}`
+        `with ${request.side} order of ${request.size.toFixed(4)}`,
     );
   }
 
   /**
    * Internal order placement logic - must only be called while holding the order mutex
    */
-  private async placeOrderInternal(request: PerpOrderRequest): Promise<PerpOrderResponse> {
+  private async placeOrderInternal(
+    request: PerpOrderRequest,
+  ): Promise<PerpOrderResponse> {
     // Add retry logic with exponential backoff for order placement (rate limiting)
     // For market orders, limit to 5 retries with progressive price improvement
     const maxRetries = request.type === OrderType.MARKET ? 5 : 6;
     const baseDelay = 2000; // 2 seconds base delay
     const maxDelay = 60000; // 60 seconds max delay
     let lastError: any = null;
-    
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         if (attempt > 0) {
           // Exponential backoff with jitter: 2s, 4s, 8s, 16s, 32s, 60s (capped)
-          const exponentialDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+          const exponentialDelay = Math.min(
+            baseDelay * Math.pow(2, attempt - 1),
+            maxDelay,
+          );
           const jitter = exponentialDelay * 0.2 * (Math.random() * 2 - 1);
           const delay = Math.max(1000, exponentialDelay + jitter);
-          
+
           this.logger.warn(
             `Retrying order placement for ${request.symbol} after ${Math.floor(delay / 1000)}s ` +
-            `(attempt ${attempt + 1}/${maxRetries})`
+              `(attempt ${attempt + 1}/${maxRetries})`,
           );
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
-        
-        this.logger.debug(`Initializing Lighter adapter for order placement (attempt ${attempt + 1})...`);
+
+        this.logger.debug(
+          `Initializing Lighter adapter for order placement (attempt ${attempt + 1})...`,
+        );
         await this.ensureInitialized();
 
         this.logger.debug(`Getting market index for ${request.symbol}...`);
         const marketIndex = await this.getMarketIndex(request.symbol);
         this.logger.debug(`Market index for ${request.symbol}: ${marketIndex}`);
-        
+
         this.logger.debug(`Getting market helper for market ${marketIndex}...`);
         const market = await this.getMarketHelper(marketIndex);
 
@@ -613,12 +699,12 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
         let orderParams: any;
         let useCreateMarketOrder = false;
-        
+
         if (request.type === OrderType.MARKET) {
           // For closing positions (reduceOnly=true), use createMarketOrder
           if (request.reduceOnly) {
             useCreateMarketOrder = true;
-            
+
             // Get current mark price for avgExecutionPrice
             let avgExecutionPrice: number;
             try {
@@ -627,58 +713,66 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             } catch (priceError: any) {
               // Fallback: try to get from order book
               try {
-                const orderBook = await this.orderApi!.getOrderBookDetails({ marketIndex: marketIndex } as any) as any;
-                avgExecutionPrice = isBuy 
+                const orderBook = await this.orderApi!.getOrderBookDetails({
+                  marketIndex: marketIndex,
+                } as any);
+                avgExecutionPrice = isBuy
                   ? parseFloat(orderBook.bestAsk?.price || '0')
                   : parseFloat(orderBook.bestBid?.price || '0');
               } catch (obError: any) {
-                throw new Error(`Failed to get price for closing position: ${priceError.message}`);
+                throw new Error(
+                  `Failed to get price for closing position: ${priceError.message}`,
+                );
               }
             }
-            
+
             // Progressive price improvement for closing orders: worse prices on retries
             const priceImprovements = [0, 0.001, 0.005, 0.01, 0.02, 0.05];
-            const priceImprovement = priceImprovements[Math.min(attempt, priceImprovements.length - 1)];
-            
+            const priceImprovement =
+              priceImprovements[
+                Math.min(attempt, priceImprovements.length - 1)
+              ];
+
             // Apply price improvement (worse price = better chance to fill)
             // For BUY (closing SHORT): worse = higher price
             // For SELL (closing LONG): worse = lower price
             const adjustedPrice = isBuy
               ? avgExecutionPrice * (1 + priceImprovement)
               : avgExecutionPrice * (1 - priceImprovement);
-            
+
             if (attempt > 0) {
               this.logger.warn(
                 `🔄 Closing position retry ${attempt + 1}/${maxRetries} for ${request.symbol}: ` +
-                `Using ${(priceImprovement * 100).toFixed(2)}% worse price (${adjustedPrice.toFixed(6)} vs ${avgExecutionPrice.toFixed(6)})`
+                  `Using ${(priceImprovement * 100).toFixed(2)}% worse price (${adjustedPrice.toFixed(6)} vs ${avgExecutionPrice.toFixed(6)})`,
               );
             }
-            
+
             // Use createMarketOrder for closing positions (per Lighter docs)
-            const [tx, hash, error] = await this.signerClient!.createMarketOrder({
-              marketIndex,
-              clientOrderIndex: Date.now(),
-              baseAmount,
-              avgExecutionPrice: market.priceToUnits(adjustedPrice),
-              isAsk,
-              reduceOnly: true,
-            });
-            
+            const [tx, hash, error] =
+              await this.signerClient!.createMarketOrder({
+                marketIndex,
+                clientOrderIndex: Date.now(),
+                baseAmount,
+                avgExecutionPrice: market.priceToUnits(adjustedPrice),
+                isAsk,
+                reduceOnly: true,
+              });
+
             if (error) {
               throw new Error(`Failed to close position: ${error}`);
             }
-            
+
             // Wait for transaction
             try {
               await this.signerClient!.waitForTransaction(hash, 30000, 2000);
             } catch (waitError: any) {
               this.logger.warn(`Transaction wait failed: ${waitError.message}`);
             }
-            
+
             // Track successful order - reset consecutive nonce error counter
             this.consecutiveNonceErrors = 0;
             this.lastSuccessfulOrderTime = new Date();
-            
+
             return new PerpOrderResponse(
               hash,
               OrderStatus.SUBMITTED,
@@ -695,49 +789,64 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             // Get current market price
             let orderBook: any;
             const orderBookMaxRetries = 5;
-            for (let obAttempt = 0; obAttempt < orderBookMaxRetries; obAttempt++) {
+            for (
+              let obAttempt = 0;
+              obAttempt < orderBookMaxRetries;
+              obAttempt++
+            ) {
               try {
                 if (obAttempt > 0) {
-                  const obDelay = Math.min(baseDelay * Math.pow(2, obAttempt - 1), maxDelay);
+                  const obDelay = Math.min(
+                    baseDelay * Math.pow(2, obAttempt - 1),
+                    maxDelay,
+                  );
                   const obJitter = obDelay * 0.2 * (Math.random() * 2 - 1);
                   const delay = Math.max(1000, obDelay + obJitter);
-                  this.logger.debug(`Retrying order book fetch (attempt ${obAttempt + 1}/${orderBookMaxRetries})`);
-                  await new Promise(resolve => setTimeout(resolve, delay));
+                  this.logger.debug(
+                    `Retrying order book fetch (attempt ${obAttempt + 1}/${orderBookMaxRetries})`,
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, delay));
                 }
-                orderBook = await this.orderApi!.getOrderBookDetails({ marketIndex: marketIndex } as any) as any;
+                orderBook = await this.orderApi!.getOrderBookDetails({
+                  marketIndex: marketIndex,
+                } as any);
                 break;
               } catch (obError: any) {
                 const obErrorMsg = obError?.message || String(obError);
-                const isObRateLimit = obErrorMsg.includes('Too Many Requests') || 
-                                      obErrorMsg.includes('429') ||
-                                      obErrorMsg.includes('rate limit');
+                const isObRateLimit =
+                  obErrorMsg.includes('Too Many Requests') ||
+                  obErrorMsg.includes('429') ||
+                  obErrorMsg.includes('rate limit');
                 if (isObRateLimit && obAttempt < orderBookMaxRetries - 1) {
                   continue;
                 }
                 throw obError;
               }
             }
-            
+
             // Progressive price improvement for market orders: worse prices on retries
             const priceImprovements = [0, 0.001, 0.005, 0.01, 0.02, 0.05];
-            const priceImprovement = priceImprovements[Math.min(attempt, priceImprovements.length - 1)];
-            
-            let idealPrice = isBuy 
+            const priceImprovement =
+              priceImprovements[
+                Math.min(attempt, priceImprovements.length - 1)
+              ];
+
+            let idealPrice = isBuy
               ? parseFloat(orderBook.bestAsk?.price || '0')
               : parseFloat(orderBook.bestBid?.price || '0');
-            
+
             // Apply price improvement (worse price = better chance to fill)
             idealPrice = isBuy
               ? idealPrice * (1 + priceImprovement)
               : idealPrice * (1 - priceImprovement);
-            
+
             if (attempt > 0) {
               this.logger.warn(
                 `🔄 Market order retry ${attempt + 1}/${maxRetries} for ${request.symbol}: ` +
-                `Using ${(priceImprovement * 100).toFixed(2)}% worse price`
+                  `Using ${(priceImprovement * 100).toFixed(2)}% worse price`,
               );
             }
-            
+
             // Use createUnifiedOrder with MARKET order type (per Lighter docs)
             // For opening market orders: orderExpiry = 0 (consistent with limit orders)
             orderParams = {
@@ -763,18 +872,18 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           // Lighter API mapping: 0 = IOC, 1 = GTC/GTT (Good Till Time)
           const timeInForce = 1; // Always GTC/GTT (1) for LIMIT orders, regardless of request.timeInForce
           const expiredAt = Date.now() + 3600000; // 1 hour expiry for GTC orders
-          
+
           this.logger.debug(
             `LIMIT order for ${request.symbol}: Using GTC/GTT (timeInForce=1) ` +
-            `(request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}, but LIMIT orders always use GTC)`
+              `(request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}, but LIMIT orders always use GTC)`,
           );
 
           // orderExpiry: For GTC orders (timeInForce = 1), orderExpiry cannot be 0
           // SDK code shows: wasmOrderExpiry = (timeInForce === IOC) ? 0 : orderExpiry
           // This means for GTC orders, orderExpiry must be a valid timestamp >= expiredAt
           // Use expiredAt + 2 minutes for GTC orders (short expiry for trading bot)
-          const orderExpiry = expiredAt + (2 * 60 * 1000); // 2 minutes from expiredAt
-          
+          const orderExpiry = expiredAt + 2 * 60 * 1000; // 2 minutes from expiredAt
+
           orderParams = {
             marketIndex,
             clientOrderIndex: Date.now(),
@@ -793,68 +902,85 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         if (request.type === OrderType.LIMIT) {
           this.logger.log(
             `📋 LIMIT order for ${request.symbol}: timeInForce=${orderParams.timeInForce} ` +
-            `(${orderParams.timeInForce === 1 ? 'GTC/GTT' : 'IOC'}) - ` +
-            `request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}`
+              `(${orderParams.timeInForce === 1 ? 'GTC/GTT' : 'IOC'}) - ` +
+              `request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}`,
           );
         }
-        
-        this.logger.debug(`Creating unified order with params: ${JSON.stringify({
-          marketIndex: orderParams.marketIndex,
-          clientOrderIndex: orderParams.clientOrderIndex,
-          baseAmount: orderParams.baseAmount.toString(),
-          price: orderParams.price?.toString() || orderParams.idealPrice?.toString() || 'N/A',
-          idealPrice: orderParams.idealPrice?.toString(),
-          maxSlippage: orderParams.maxSlippage,
-          isAsk: orderParams.isAsk,
-          orderType: orderParams.orderType,
-          timeInForce: orderParams.timeInForce,
-          reduceOnly: orderParams.reduceOnly,
-        })}`);
-        
+
+        this.logger.debug(
+          `Creating unified order with params: ${JSON.stringify({
+            marketIndex: orderParams.marketIndex,
+            clientOrderIndex: orderParams.clientOrderIndex,
+            baseAmount: orderParams.baseAmount.toString(),
+            price:
+              orderParams.price?.toString() ||
+              orderParams.idealPrice?.toString() ||
+              'N/A',
+            idealPrice: orderParams.idealPrice?.toString(),
+            maxSlippage: orderParams.maxSlippage,
+            isAsk: orderParams.isAsk,
+            orderType: orderParams.orderType,
+            timeInForce: orderParams.timeInForce,
+            reduceOnly: orderParams.reduceOnly,
+          })}`,
+        );
+
         const result = await this.signerClient!.createUnifiedOrder(orderParams);
 
         if (!result.success) {
           const errorMsg = result.mainOrder.error || 'Order creation failed';
           this.logger.error(`❌ Lighter order creation failed: ${errorMsg}`);
           this.logger.error(`Order params: ${JSON.stringify(orderParams)}`);
-          this.recordError('LIGHTER_ORDER_CREATION_FAILED', errorMsg, request.symbol, { orderParams });
+          this.recordError(
+            'LIGHTER_ORDER_CREATION_FAILED',
+            errorMsg,
+            request.symbol,
+            { orderParams },
+          );
           throw new Error(errorMsg);
         }
 
         const orderId = result.mainOrder.hash;
         this.logger.log(`✅ Lighter order created successfully: ${orderId}`);
-        
+
         // Wait for transaction to be processed (matching script behavior)
         try {
           await this.signerClient!.waitForTransaction(orderId, 30000, 2000);
         } catch (error: any) {
           // Transaction wait might fail, but order may still be submitted
           this.logger.warn(`Order transaction wait failed: ${error.message}`);
-          this.recordError('LIGHTER_TX_WAIT_FAILED', error.message, request.symbol, { orderId });
+          this.recordError(
+            'LIGHTER_TX_WAIT_FAILED',
+            error.message,
+            request.symbol,
+            { orderId },
+          );
         }
 
         // CRITICAL: Wait a short time and check if order was immediately filled or canceled
         // Lighter may cancel orders immediately if they don't meet certain conditions
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second wait
-        
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // 2 second wait
+
         // Check positions to see if order filled immediately
         try {
           const positions = await this.getPositions();
           const matchingPosition = positions.find(
-            p => p.symbol === request.symbol && 
-                 p.side === request.side &&
-                 Math.abs(p.size) > 0.0001
+            (p) =>
+              p.symbol === request.symbol &&
+              p.side === request.side &&
+              Math.abs(p.size) > 0.0001,
           );
-          
+
           if (matchingPosition) {
             // Order filled immediately - check if size matches
             const expectedSize = request.size;
             const actualSize = matchingPosition.size;
             const sizeMatch = Math.abs(actualSize - expectedSize) < 0.0001;
-            
-            if (sizeMatch || actualSize >= expectedSize * 0.9) { // Allow 10% tolerance
+
+            if (sizeMatch || actualSize >= expectedSize * 0.9) {
+              // Allow 10% tolerance
               this.logger.log(
-                `✅ Lighter order ${orderId} filled immediately: ${actualSize.toFixed(4)} ${request.symbol}`
+                `✅ Lighter order ${orderId} filled immediately: ${actualSize.toFixed(4)} ${request.symbol}`,
               );
               // Record success for market quality tracking
               this.recordSuccess(request.symbol);
@@ -872,16 +998,18 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             }
           }
         } catch (positionError: any) {
-          this.logger.debug(`Could not check positions immediately after order placement: ${positionError.message}`);
+          this.logger.debug(
+            `Could not check positions immediately after order placement: ${positionError.message}`,
+          );
         }
 
         // Order is resting on the book (or may have been canceled - will be checked in waitForOrderFill)
         // Mark as SUBMITTED - caller should verify via waitForOrderFill
-        
+
         // Track successful order - reset consecutive nonce error counter
         this.consecutiveNonceErrors = 0;
         this.lastSuccessfulOrderTime = new Date();
-        
+
         return new PerpOrderResponse(
           orderId,
           OrderStatus.SUBMITTED,
@@ -897,93 +1025,109 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         lastError = error;
         const errorMsg = error?.message || String(error);
         const errorStack = error?.stack || '';
-        
+
         // Log detailed error information
         this.logger.error(
-          `❌ Lighter order placement failed (attempt ${attempt + 1}/${maxRetries}): ${errorMsg}`
+          `❌ Lighter order placement failed (attempt ${attempt + 1}/${maxRetries}): ${errorMsg}`,
         );
         if (errorStack) {
           this.logger.debug(`Error stack: ${errorStack}`);
         }
         if (error?.response) {
-          this.logger.debug(`Error response: ${JSON.stringify(error.response.data)}`);
+          this.logger.debug(
+            `Error response: ${JSON.stringify(error.response.data)}`,
+          );
         }
-        
-        const isRateLimit = errorMsg.includes('Too Many Requests') || 
-                           errorMsg.includes('429') ||
-                           errorMsg.includes('rate limit') ||
-                           errorMsg.includes('market config');
-        const isMarginModeError = errorMsg.includes('invalid margin mode') || 
-                                 errorMsg.includes('margin mode');
-        const isNonceError = errorMsg.toLowerCase().includes('invalid nonce') ||
-                            errorMsg.toLowerCase().includes('nonce');
-        
+
+        const isRateLimit =
+          errorMsg.includes('Too Many Requests') ||
+          errorMsg.includes('429') ||
+          errorMsg.includes('rate limit') ||
+          errorMsg.includes('market config');
+        const isMarginModeError =
+          errorMsg.includes('invalid margin mode') ||
+          errorMsg.includes('margin mode');
+        const isNonceError =
+          errorMsg.toLowerCase().includes('invalid nonce') ||
+          errorMsg.toLowerCase().includes('nonce');
+
         if (isRateLimit && attempt < maxRetries - 1) {
           // Silenced 429/rate limit warnings - only show errors
           this.logger.debug(
             `Order placement rate limited for ${request.symbol} ` +
-            `(attempt ${attempt + 1}/${maxRetries}): ${errorMsg}. Will retry.`
+              `(attempt ${attempt + 1}/${maxRetries}): ${errorMsg}. Will retry.`,
           );
           continue;
         }
-        
+
         // Nonce errors - reset client and retry (with max consecutive error limit)
         const MAX_CONSECUTIVE_NONCE_ERRORS = 10; // Stop retrying after 10 consecutive nonce errors
         if (isNonceError && attempt < maxRetries - 1) {
           this.consecutiveNonceErrors++;
-          const timeSinceLastSuccess = this.lastSuccessfulOrderTime 
+          const timeSinceLastSuccess = this.lastSuccessfulOrderTime
             ? `${Math.round((Date.now() - this.lastSuccessfulOrderTime.getTime()) / 1000)}s ago`
             : 'never';
-          
+
           // If we've hit too many consecutive nonce errors, something is fundamentally wrong
           // Stop retrying and let the error propagate
           if (this.consecutiveNonceErrors >= MAX_CONSECUTIVE_NONCE_ERRORS) {
             this.logger.error(
               `❌ Lighter nonce error limit reached (${this.consecutiveNonceErrors} consecutive errors). ` +
-              `Stopping retries. Last successful order: ${timeSinceLastSuccess}. ` +
-              `This may indicate a fundamental issue with the Lighter SDK or account state.`
+                `Stopping retries. Last successful order: ${timeSinceLastSuccess}. ` +
+                `This may indicate a fundamental issue with the Lighter SDK or account state.`,
             );
-            this.recordError('LIGHTER_NONCE_ERROR_LIMIT', 
-              `Consecutive nonce error limit (${MAX_CONSECUTIVE_NONCE_ERRORS}) reached`, 
-              request.symbol, {
+            this.recordError(
+              'LIGHTER_NONCE_ERROR_LIMIT',
+              `Consecutive nonce error limit (${MAX_CONSECUTIVE_NONCE_ERRORS}) reached`,
+              request.symbol,
+              {
                 consecutiveNonceErrors: this.consecutiveNonceErrors,
                 lastSuccessfulOrder: timeSinceLastSuccess,
                 originalError: errorMsg,
-              }
+              },
             );
             // Don't continue - let it fall through to the final error handling
           } else {
-          this.logger.warn(
+            this.logger.warn(
               `⚠️ Lighter nonce error #${this.consecutiveNonceErrors} for ${request.symbol}: ${errorMsg}. ` +
-              `Last successful order: ${timeSinceLastSuccess}. ` +
-            `Re-syncing nonce and retrying (attempt ${attempt + 1}/${maxRetries})...`
-          );
-            this.recordError('LIGHTER_NONCE_ERROR', errorMsg, request.symbol, { 
+                `Last successful order: ${timeSinceLastSuccess}. ` +
+                `Re-syncing nonce and retrying (attempt ${attempt + 1}/${maxRetries})...`,
+            );
+            this.recordError('LIGHTER_NONCE_ERROR', errorMsg, request.symbol, {
               attempt: attempt + 1,
               consecutiveNonceErrors: this.consecutiveNonceErrors,
               lastSuccessfulOrder: timeSinceLastSuccess,
             });
-          
+
             // Fully recreate the SignerClient to get a fresh nonce from the server
-          await this.resetSignerClient();
-          
+            await this.resetSignerClient();
+
             // Progressive backoff for nonce errors with exponential increase
             // 1s, 2s, 4s, 8s... capped at 10s
-            const nonceBackoff = Math.min(1000 * Math.pow(2, this.consecutiveNonceErrors - 1), 10000);
-            this.logger.debug(`Waiting ${nonceBackoff}ms before retry after nonce error`);
-            await new Promise(resolve => setTimeout(resolve, nonceBackoff));
-          continue;
+            const nonceBackoff = Math.min(
+              1000 * Math.pow(2, this.consecutiveNonceErrors - 1),
+              10000,
+            );
+            this.logger.debug(
+              `Waiting ${nonceBackoff}ms before retry after nonce error`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, nonceBackoff));
+            continue;
           }
         }
-        
+
         // Margin mode errors are not retryable - account configuration issue
         if (isMarginModeError) {
           this.logger.error(
             `❌ Lighter margin mode error for ${request.symbol}: ${errorMsg}. ` +
-            `This indicates the account may need margin mode configured. ` +
-            `Please check your Lighter account settings or contact support.`
+              `This indicates the account may need margin mode configured. ` +
+              `Please check your Lighter account settings or contact support.`,
           );
-          this.recordError('LIGHTER_MARGIN_MODE_ERROR', errorMsg, request.symbol);
+          this.recordError(
+            'LIGHTER_MARGIN_MODE_ERROR',
+            errorMsg,
+            request.symbol,
+          );
           throw new ExchangeError(
             `Invalid margin mode: Account may need margin mode configured. ${errorMsg}`,
             ExchangeType.LIGHTER,
@@ -991,10 +1135,13 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             error,
           );
         }
-        
+
         // Not retryable or max retries reached
         this.logger.error(`Failed to place order: ${errorMsg}`);
-        this.recordError('LIGHTER_ORDER_FAILED', errorMsg, request.symbol, { attempt: attempt + 1, maxRetries });
+        this.recordError('LIGHTER_ORDER_FAILED', errorMsg, request.symbol, {
+          attempt: attempt + 1,
+          maxRetries,
+        });
         throw new ExchangeError(
           `Failed to place order: ${errorMsg}`,
           ExchangeType.LIGHTER,
@@ -1003,23 +1150,28 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         );
       }
     }
-    
+
     // Should never reach here, but just in case
-        const finalErrorMsg = lastError?.message || 'Unknown error';
-        this.logger.error(
-          `❌ Lighter order placement failed after ${maxRetries} attempts: ${finalErrorMsg}`
-        );
-        if (lastError?.stack) {
-          this.logger.error(`Final error stack: ${lastError.stack}`);
-        }
-        this.recordError('LIGHTER_ORDER_MAX_RETRIES', finalErrorMsg, request.symbol, { maxRetries });
-        
-        throw new ExchangeError(
-          `Failed to place order after ${maxRetries} attempts: ${finalErrorMsg}`,
-          ExchangeType.LIGHTER,
-          undefined,
-          lastError,
-        );
+    const finalErrorMsg = lastError?.message || 'Unknown error';
+    this.logger.error(
+      `❌ Lighter order placement failed after ${maxRetries} attempts: ${finalErrorMsg}`,
+    );
+    if (lastError?.stack) {
+      this.logger.error(`Final error stack: ${lastError.stack}`);
+    }
+    this.recordError(
+      'LIGHTER_ORDER_MAX_RETRIES',
+      finalErrorMsg,
+      request.symbol,
+      { maxRetries },
+    );
+
+    throw new ExchangeError(
+      `Failed to place order after ${maxRetries} attempts: ${finalErrorMsg}`,
+      ExchangeType.LIGHTER,
+      undefined,
+      lastError,
+    );
   }
 
   async getPosition(symbol: string): Promise<PerpPosition | null> {
@@ -1032,16 +1184,18 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         .replace('-PERP', '')
         .replace('PERP', '')
         .toUpperCase();
-      
-      return positions.find((p) => {
-        const posSymbol = p.symbol
-          .replace('USDC', '')
-          .replace('USDT', '')
-          .replace('-PERP', '')
-          .replace('PERP', '')
-          .toUpperCase();
-        return posSymbol === normalizedSymbol;
-      }) || null;
+
+      return (
+        positions.find((p) => {
+          const posSymbol = p.symbol
+            .replace('USDC', '')
+            .replace('USDT', '')
+            .replace('-PERP', '')
+            .replace('PERP', '')
+            .toUpperCase();
+          return posSymbol === normalizedSymbol;
+        }) || null
+      );
     } catch (error: any) {
       this.logger.error(`Failed to get position: ${error.message}`);
       throw new ExchangeError(
@@ -1056,17 +1210,19 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   /**
    * Get symbol from market index by reverse lookup
    */
-  private async getSymbolFromMarketIndex(marketIndex: number): Promise<string | null> {
+  private async getSymbolFromMarketIndex(
+    marketIndex: number,
+  ): Promise<string | null> {
     // Refresh cache to ensure we have latest mappings
     await this.refreshMarketIndexCache();
-    
+
     // Reverse lookup: find symbol that maps to this market index
     for (const [symbol, index] of this.marketIndexCache.entries()) {
       if (index === marketIndex) {
         return symbol;
       }
     }
-    
+
     // Fallback: query markets API directly
     try {
       const explorerUrl = 'https://explorer.elliot.ai/api/markets';
@@ -1077,7 +1233,8 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
       if (response.data && Array.isArray(response.data)) {
         for (const market of response.data) {
-          const idx = market.market_index ?? market.marketIndex ?? market.index ?? null;
+          const idx =
+            market.market_index ?? market.marketIndex ?? market.index ?? null;
           if (idx === marketIndex) {
             const symbol = market.symbol || market.baseAsset || market.name;
             if (symbol) {
@@ -1095,23 +1252,27 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         }
       }
     } catch (error: any) {
-      this.logger.debug(`Failed to fetch symbol for market index ${marketIndex}: ${error.message}`);
+      this.logger.debug(
+        `Failed to fetch symbol for market index ${marketIndex}: ${error.message}`,
+      );
     }
-    
+
     return null;
   }
 
   async getPositions(): Promise<PerpPosition[]> {
     try {
       await this.ensureInitialized();
-      
+
       // Use Lighter Explorer API to get positions
       // Endpoint: https://explorer.elliot.ai/api/accounts/{accountIndex}/positions
       const accountIndex = this.config.accountIndex!;
       const explorerUrl = `https://explorer.elliot.ai/api/accounts/${accountIndex}/positions`;
-      
-      this.logger.debug(`Fetching positions from Lighter Explorer API for account ${accountIndex}...`);
-      
+
+      this.logger.debug(
+        `Fetching positions from Lighter Explorer API for account ${accountIndex}...`,
+      );
+
       const response = await axios.get(explorerUrl, {
         timeout: 10000,
         headers: { accept: 'application/json' },
@@ -1126,50 +1287,47 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       // Structure: { "positions": { "51": {...}, "52": {...} } }
       const positionsObj = response.data.positions || {};
       if (typeof positionsObj !== 'object' || Array.isArray(positionsObj)) {
-        this.logger.warn('Lighter Explorer API returned unexpected positions format');
+        this.logger.warn(
+          'Lighter Explorer API returned unexpected positions format',
+        );
         return [];
       }
 
       // Convert object to array of position data
       // Type assertion: positions are objects with known structure
-      const positionsData = Object.values(positionsObj) as Array<{
-        market_index?: number;
-        marketIndex?: number;
-        index?: number;
-        size?: string | number;
-        positionSize?: string | number;
-        amount?: string | number;
-        side?: string;
-        entry_price?: string | number;
-        entryPrice?: string | number;
-        avgEntryPrice?: string | number;
-        pnl?: string | number;
-        unrealized_pnl?: string | number;
-        unrealizedPnl?: string | number;
-      }>;
+      const positionsData = Object.values(positionsObj);
       const positions: PerpPosition[] = [];
 
       for (const posData of positionsData) {
         try {
           // Parse position data - actual structure from API:
           // { market_index, pnl, side, size, entry_price }
-          const marketIndex = posData.market_index ?? posData.marketIndex ?? posData.index ?? null;
+          const marketIndex =
+            posData.market_index ??
+            posData.marketIndex ??
+            posData.index ??
+            null;
           if (marketIndex === null) {
-            this.logger.warn(`Position data missing market_index: ${JSON.stringify(posData).substring(0, 200)}`);
+            this.logger.warn(
+              `Position data missing market_index: ${JSON.stringify(posData).substring(0, 200)}`,
+            );
             continue;
           }
 
           // Get symbol from market index
           const symbol = await this.getSymbolFromMarketIndex(marketIndex);
           if (!symbol) {
-            this.logger.warn(`Could not resolve symbol for market index ${marketIndex}, skipping position`);
+            this.logger.warn(
+              `Could not resolve symbol for market index ${marketIndex}, skipping position`,
+            );
             continue;
           }
 
           // Parse position size (can be negative for short positions)
-          const sizeRaw = posData.size ?? posData.positionSize ?? posData.amount ?? '0';
+          const sizeRaw =
+            posData.size ?? posData.positionSize ?? posData.amount ?? '0';
           const size = parseFloat(String(sizeRaw));
-          
+
           if (size === 0 || isNaN(size)) {
             continue; // Skip zero positions
           }
@@ -1178,7 +1336,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           let side: OrderSide;
           if (posData.side) {
             const sideStr = String(posData.side).toLowerCase();
-            side = sideStr === 'long' || sideStr === 'l' ? OrderSide.LONG : OrderSide.SHORT;
+            side =
+              sideStr === 'long' || sideStr === 'l'
+                ? OrderSide.LONG
+                : OrderSide.SHORT;
           } else {
             // Fallback: infer from size sign
             side = size > 0 ? OrderSide.LONG : OrderSide.SHORT;
@@ -1186,10 +1347,19 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           const absSize = Math.abs(size);
 
           // Parse entry price (required)
-          const entryPrice = parseFloat(String(posData.entry_price ?? posData.entryPrice ?? posData.avgEntryPrice ?? '0'));
-          
+          const entryPrice = parseFloat(
+            String(
+              posData.entry_price ??
+                posData.entryPrice ??
+                posData.avgEntryPrice ??
+                '0',
+            ),
+          );
+
           if (entryPrice <= 0) {
-            this.logger.warn(`Invalid entry price for ${symbol}: ${entryPrice}`);
+            this.logger.warn(
+              `Invalid entry price for ${symbol}: ${entryPrice}`,
+            );
             continue;
           }
 
@@ -1199,17 +1369,28 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             markPrice = await this.getMarkPrice(symbol);
             if (markPrice <= 0) {
               // Fallback to entry price if mark price fetch fails
-              this.logger.debug(`Could not fetch mark price for ${symbol}, using entry price`);
+              this.logger.debug(
+                `Could not fetch mark price for ${symbol}, using entry price`,
+              );
               markPrice = entryPrice;
             }
           } catch (error: any) {
             // Fallback to entry price if mark price fetch fails
-            this.logger.debug(`Failed to fetch mark price for ${symbol}: ${error.message}, using entry price`);
+            this.logger.debug(
+              `Failed to fetch mark price for ${symbol}: ${error.message}, using entry price`,
+            );
             markPrice = entryPrice;
           }
 
           // Parse PnL (unrealized profit/loss)
-          const unrealizedPnl = parseFloat(String(posData.pnl ?? posData.unrealized_pnl ?? posData.unrealizedPnl ?? '0'));
+          const unrealizedPnl = parseFloat(
+            String(
+              posData.pnl ??
+                posData.unrealized_pnl ??
+                posData.unrealizedPnl ??
+                '0',
+            ),
+          );
 
           // Lighter API doesn't provide leverage, liquidation price, or margin used in positions response
           // These can be calculated or fetched separately if needed
@@ -1231,25 +1412,31 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             undefined,
             new Date(),
           );
-          
+
           this.logger.debug(
             `📍 Lighter Position: symbol="${symbol}", side=${side}, size=${absSize}, ` +
-            `entryPrice=${entryPrice}, markPrice=${markPrice}, pnl=${unrealizedPnl}, marketIndex=${marketIndex}`
+              `entryPrice=${entryPrice}, markPrice=${markPrice}, pnl=${unrealizedPnl}, marketIndex=${marketIndex}`,
           );
-          
+
           positions.push(position);
         } catch (error: any) {
-          this.logger.warn(`Failed to parse position data: ${error.message}. Data: ${JSON.stringify(posData).substring(0, 200)}`);
+          this.logger.warn(
+            `Failed to parse position data: ${error.message}. Data: ${JSON.stringify(posData).substring(0, 200)}`,
+          );
           continue;
         }
       }
 
-      this.logger.debug(`✅ Lighter getPositions() returning ${positions.length} positions: ${positions.map(p => `${p.symbol}(${p.side})`).join(', ')}`);
+      this.logger.debug(
+        `✅ Lighter getPositions() returning ${positions.length} positions: ${positions.map((p) => `${p.symbol}(${p.side})`).join(', ')}`,
+      );
       return positions;
     } catch (error: any) {
       this.logger.error(`Failed to get positions: ${error.message}`);
       if (error.response) {
-        this.logger.error(`API response: ${JSON.stringify(error.response.data).substring(0, 400)}`);
+        this.logger.error(
+          `API response: ${JSON.stringify(error.response.data).substring(0, 400)}`,
+        );
       }
       throw new ExchangeError(
         `Failed to get positions: ${error.message}`,
@@ -1263,97 +1450,128 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   async cancelOrder(orderId: string, symbol?: string): Promise<boolean> {
     try {
       await this.ensureInitialized();
-      
+
       // CRITICAL FIX: Lighter's cancelOrder requires { marketIndex, orderIndex }
       // NOT the transaction hash! We need to find the actual order from open orders.
-      
+
       // First, check if orderId is a transaction hash (64+ chars hex) or a numeric order index
-      const isTransactionHash = orderId.length > 20 && /^[0-9a-f]+$/i.test(orderId);
-      
+      const isTransactionHash =
+        orderId.length > 20 && /^[0-9a-f]+$/i.test(orderId);
+
       if (isTransactionHash) {
         // Transaction hash passed - we need to find the actual order to cancel
         // This happens when we're trying to cancel an order we just placed
         this.logger.warn(
           `⚠️ cancelOrder called with transaction hash ${orderId.substring(0, 16)}... - ` +
-          `Lighter requires numeric orderIndex. Looking up open orders...`
+            `Lighter requires numeric orderIndex. Looking up open orders...`,
         );
-        
+
         if (!symbol) {
-          this.logger.error('❌ Cannot cancel order: symbol is required when using transaction hash');
+          this.logger.error(
+            '❌ Cannot cancel order: symbol is required when using transaction hash',
+          );
           throw new ExchangeError(
             'Symbol is required to cancel Lighter order by transaction hash',
             ExchangeType.LIGHTER,
           );
         }
-        
+
         // Get market index for the symbol
         const marketIndex = await this.getMarketIndex(symbol);
-        
+
         // Get open orders for this market
-        const authToken = await this.signerClient!.createAuthTokenWithExpiry(600);
-        const response = await axios.get(`${this.config.baseUrl}/api/v1/accountActiveOrders`, {
-          params: {
-            auth: authToken,
-            market_id: marketIndex,
-            account_index: this.config.accountIndex,
+        const authToken =
+          await this.signerClient!.createAuthTokenWithExpiry(600);
+        const response = await axios.get(
+          `${this.config.baseUrl}/api/v1/accountActiveOrders`,
+          {
+            params: {
+              auth: authToken,
+              market_id: marketIndex,
+              account_index: this.config.accountIndex,
+            },
+            timeout: 10000,
+            headers: { accept: 'application/json' },
           },
-          timeout: 10000,
-          headers: { accept: 'application/json' },
-        });
-        
+        );
+
         if (!response.data || response.data.code !== 200) {
-          this.logger.warn(`No open orders found for ${symbol} - order may have already filled/cancelled`);
+          this.logger.warn(
+            `No open orders found for ${symbol} - order may have already filled/cancelled`,
+          );
           return true; // Consider it "cancelled" if no orders exist
         }
-        
+
         const orders = response.data.orders || [];
         if (orders.length === 0) {
-          this.logger.warn(`No open orders found for ${symbol} - order may have already filled/cancelled`);
-      return true;
+          this.logger.warn(
+            `No open orders found for ${symbol} - order may have already filled/cancelled`,
+          );
+          return true;
         }
-        
+
         // Cancel all orders for this market (since we can't match by tx hash)
         // This is the safest approach when we don't know which specific order to cancel
-        this.logger.log(`🗑️ Found ${orders.length} open order(s) for ${symbol} - cancelling all...`);
-        
+        this.logger.log(
+          `🗑️ Found ${orders.length} open order(s) for ${symbol} - cancelling all...`,
+        );
+
         let cancelledCount = 0;
         for (const order of orders) {
-          const orderIndex = parseInt(order.order_id || order.order_index || '0');
+          const orderIndex = parseInt(
+            order.order_id || order.order_index || '0',
+          );
           if (orderIndex <= 0) continue;
-          
+
           try {
-            this.logger.debug(`Cancelling order ${orderIndex} for market ${marketIndex}...`);
+            this.logger.debug(
+              `Cancelling order ${orderIndex} for market ${marketIndex}...`,
+            );
             // SDK types are incorrect - it actually accepts { marketIndex, orderIndex } object
-            const [tx, txHash, error] = await (this.signerClient as any).cancelOrder({
+            const [tx, txHash, error] = await (
+              this.signerClient as any
+            ).cancelOrder({
               marketIndex,
               orderIndex,
             });
-            
+
             if (error) {
-              this.logger.warn(`Failed to cancel order ${orderIndex}: ${error}`);
+              this.logger.warn(
+                `Failed to cancel order ${orderIndex}: ${error}`,
+              );
               continue;
             }
-            
+
             // Wait for cancellation to be processed
             try {
               await this.signerClient!.waitForTransaction(txHash, 15000, 2000);
             } catch (waitError: any) {
-              this.logger.debug(`Cancel wait timeout (may still succeed): ${waitError.message}`);
+              this.logger.debug(
+                `Cancel wait timeout (may still succeed): ${waitError.message}`,
+              );
             }
-            
+
             cancelledCount++;
-            this.logger.log(`✅ Cancelled order ${orderIndex} (tx: ${txHash.substring(0, 16)}...)`);
+            this.logger.log(
+              `✅ Cancelled order ${orderIndex} (tx: ${txHash.substring(0, 16)}...)`,
+            );
           } catch (cancelError: any) {
-            this.logger.warn(`Error cancelling order ${orderIndex}: ${cancelError.message}`);
+            this.logger.warn(
+              `Error cancelling order ${orderIndex}: ${cancelError.message}`,
+            );
           }
         }
-        
+
         if (cancelledCount === 0) {
-          this.logger.warn(`⚠️ No orders were successfully cancelled for ${symbol}`);
+          this.logger.warn(
+            `⚠️ No orders were successfully cancelled for ${symbol}`,
+          );
         } else {
-          this.logger.log(`✅ Successfully cancelled ${cancelledCount}/${orders.length} order(s) for ${symbol}`);
+          this.logger.log(
+            `✅ Successfully cancelled ${cancelledCount}/${orders.length} order(s) for ${symbol}`,
+          );
         }
-        
+
         return cancelledCount > 0;
       } else {
         // Numeric order index passed - cancel directly
@@ -1365,7 +1583,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             ExchangeType.LIGHTER,
           );
         }
-        
+
         // Need market index - get from symbol
         if (!symbol) {
           this.logger.error('❌ Cannot cancel order: symbol is required');
@@ -1374,17 +1592,21 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             ExchangeType.LIGHTER,
           );
         }
-        
+
         const marketIndex = await this.getMarketIndex(symbol);
-        
-        this.logger.log(`🗑️ Cancelling Lighter order ${orderIndex} for market ${marketIndex}...`);
-        
+
+        this.logger.log(
+          `🗑️ Cancelling Lighter order ${orderIndex} for market ${marketIndex}...`,
+        );
+
         // SDK types are incorrect - it actually accepts { marketIndex, orderIndex } object
-        const [tx, txHash, error] = await (this.signerClient as any).cancelOrder({
+        const [tx, txHash, error] = await (
+          this.signerClient as any
+        ).cancelOrder({
           marketIndex,
           orderIndex,
         });
-        
+
         if (error) {
           this.logger.error(`❌ Cancel order failed: ${error}`);
           throw new ExchangeError(
@@ -1392,15 +1614,19 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             ExchangeType.LIGHTER,
           );
         }
-        
+
         // Wait for cancellation to be processed
         try {
           await this.signerClient!.waitForTransaction(txHash, 15000, 2000);
         } catch (waitError: any) {
-          this.logger.debug(`Cancel wait timeout (may still succeed): ${waitError.message}`);
+          this.logger.debug(
+            `Cancel wait timeout (may still succeed): ${waitError.message}`,
+          );
         }
-        
-        this.logger.log(`✅ Order ${orderIndex} cancelled successfully (tx: ${txHash.substring(0, 16)}...)`);
+
+        this.logger.log(
+          `✅ Order ${orderIndex} cancelled successfully (tx: ${txHash.substring(0, 16)}...)`,
+        );
         return true;
       }
     } catch (error: any) {
@@ -1417,70 +1643,81 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   async cancelAllOrders(symbol: string): Promise<number> {
     try {
       await this.ensureInitialized();
-      
+
       const marketIndex = await this.getMarketIndex(symbol);
-      
+
       // Get open orders for this specific market first
       const authToken = await this.signerClient!.createAuthTokenWithExpiry(600);
-      const response = await axios.get(`${this.config.baseUrl}/api/v1/accountActiveOrders`, {
-        params: {
-          auth: authToken,
-          market_id: marketIndex,
-          account_index: this.config.accountIndex,
+      const response = await axios.get(
+        `${this.config.baseUrl}/api/v1/accountActiveOrders`,
+        {
+          params: {
+            auth: authToken,
+            market_id: marketIndex,
+            account_index: this.config.accountIndex,
+          },
+          timeout: 10000,
+          headers: { accept: 'application/json' },
         },
-        timeout: 10000,
-        headers: { accept: 'application/json' },
-      });
-      
+      );
+
       if (!response.data || response.data.code !== 200) {
         this.logger.debug(`No open orders found for ${symbol}`);
         return 0;
       }
-      
+
       const orders = response.data.orders || [];
       if (orders.length === 0) {
         this.logger.debug(`No open orders to cancel for ${symbol}`);
         return 0;
       }
-      
-      this.logger.log(`🗑️ Cancelling ${orders.length} order(s) for ${symbol}...`);
-      
+
+      this.logger.log(
+        `🗑️ Cancelling ${orders.length} order(s) for ${symbol}...`,
+      );
+
       // Cancel each order individually (more reliable than cancelAllOrders which affects ALL markets)
       let cancelledCount = 0;
       for (const order of orders) {
         const orderIndex = parseInt(order.order_id || order.order_index || '0');
         if (orderIndex <= 0) continue;
-        
+
         try {
           // SDK types are incorrect - it actually accepts { marketIndex, orderIndex } object
-          const [tx, txHash, error] = await (this.signerClient as any).cancelOrder({
+          const [tx, txHash, error] = await (
+            this.signerClient as any
+          ).cancelOrder({
             marketIndex,
             orderIndex,
           });
-          
+
           if (error) {
             this.logger.warn(`Failed to cancel order ${orderIndex}: ${error}`);
             continue;
           }
-          
+
           // Wait briefly for cancellation
           try {
             await this.signerClient!.waitForTransaction(txHash, 10000, 2000);
           } catch (waitError: any) {
             this.logger.debug(`Cancel wait timeout: ${waitError.message}`);
           }
-          
+
           cancelledCount++;
           this.logger.debug(`Cancelled order ${orderIndex}`);
         } catch (cancelError: any) {
-          this.logger.warn(`Error cancelling order ${orderIndex}: ${cancelError.message}`);
+          this.logger.warn(
+            `Error cancelling order ${orderIndex}: ${cancelError.message}`,
+          );
         }
       }
-      
+
       if (cancelledCount > 0) {
-        this.logger.log(`✅ Cancelled ${cancelledCount}/${orders.length} order(s) for ${symbol}`);
+        this.logger.log(
+          `✅ Cancelled ${cancelledCount}/${orders.length} order(s) for ${symbol}`,
+        );
       }
-      
+
       return cancelledCount;
     } catch (error: any) {
       this.logger.error(`Failed to cancel all orders: ${error.message}`);
@@ -1496,76 +1733,100 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   /**
    * Get all open orders for this account
    * Uses Lighter API: /api/v1/accountActiveOrders (requires auth token)
-   * 
+   *
    * Returns orders with: orderId, symbol, side, price, size, filledSize, timestamp
    * Used for deduplication checks to prevent placing multiple orders for single-leg hedging
    */
-  async getOpenOrders(): Promise<import('../../../domain/ports/IPerpExchangeAdapter').OpenOrder[]> {
+  async getOpenOrders(): Promise<
+    import('../../../domain/ports/IPerpExchangeAdapter').OpenOrder[]
+  > {
     try {
       await this.ensureInitialized();
-      
+
       this.logger.debug('🔍 Fetching open orders from Lighter...');
-      
+
       // Create auth token for authenticated endpoint
       const authToken = await this.signerClient!.createAuthTokenWithExpiry(600); // 10 minutes
-      
+
       // Note: accountActiveOrders requires market_id, so we need to query each market
       // For now, query all markets we care about (0-100) or use a different endpoint
       // Actually, let's try the account endpoint which includes open_order_count per position
-      const accountResponse = await axios.get(`${this.config.baseUrl}/api/v1/account`, {
-        params: {
-          by: 'index',
-          value: String(this.config.accountIndex),
+      const accountResponse = await axios.get(
+        `${this.config.baseUrl}/api/v1/account`,
+        {
+          params: {
+            by: 'index',
+            value: String(this.config.accountIndex),
+          },
+          timeout: 10000,
+          headers: { accept: 'application/json' },
         },
-        timeout: 10000,
-        headers: { accept: 'application/json' },
-      });
+      );
 
       if (!accountResponse.data || accountResponse.data.code !== 200) {
-        this.logger.debug(`Lighter account API returned: ${JSON.stringify(accountResponse.data).substring(0, 200)}`);
+        this.logger.debug(
+          `Lighter account API returned: ${JSON.stringify(accountResponse.data).substring(0, 200)}`,
+        );
         return [];
       }
 
       // Find markets with open orders from account data
       const positions = accountResponse.data.accounts?.[0]?.positions || [];
       const marketsWithOrders = positions
-        .filter((p: any) => (p.open_order_count || 0) > 0 || (p.pending_order_count || 0) > 0)
+        .filter(
+          (p: any) =>
+            (p.open_order_count || 0) > 0 || (p.pending_order_count || 0) > 0,
+        )
         .map((p: any) => p.market_id);
 
       if (marketsWithOrders.length === 0) {
-        this.logger.debug('🔍 No markets with open orders found in account data');
+        this.logger.debug(
+          '🔍 No markets with open orders found in account data',
+        );
         return [];
       }
 
-      this.logger.log(`🔍 Found ${marketsWithOrders.length} market(s) with open orders: ${marketsWithOrders.join(', ')}`);
+      this.logger.log(
+        `🔍 Found ${marketsWithOrders.length} market(s) with open orders: ${marketsWithOrders.join(', ')}`,
+      );
 
       // Query each market with open orders
-      const allOrders: import('../../../domain/ports/IPerpExchangeAdapter').OpenOrder[] = [];
-      
+      const allOrders: import('../../../domain/ports/IPerpExchangeAdapter').OpenOrder[] =
+        [];
+
       for (const marketId of marketsWithOrders) {
         try {
-          const response = await axios.get(`${this.config.baseUrl}/api/v1/accountActiveOrders`, {
-            params: {
-              auth: authToken,
-              market_id: marketId,
-              account_index: this.config.accountIndex,  // Required parameter!
+          const response = await axios.get(
+            `${this.config.baseUrl}/api/v1/accountActiveOrders`,
+            {
+              params: {
+                auth: authToken,
+                market_id: marketId,
+                account_index: this.config.accountIndex, // Required parameter!
+              },
+              timeout: 10000,
+              headers: { accept: 'application/json' },
             },
-            timeout: 10000,
-            headers: { accept: 'application/json' },
-          });
+          );
 
           if (!response.data || response.data.code !== 200) {
-            this.logger.debug(`Lighter accountActiveOrders for market ${marketId} returned: ${JSON.stringify(response.data).substring(0, 200)}`);
+            this.logger.debug(
+              `Lighter accountActiveOrders for market ${marketId} returned: ${JSON.stringify(response.data).substring(0, 200)}`,
+            );
             continue;
           }
 
           const ordersData = response.data.orders || [];
-          this.logger.debug(`🔍 Market ${marketId}: Found ${ordersData.length} order(s)`);
-          
+          this.logger.debug(
+            `🔍 Market ${marketId}: Found ${ordersData.length} order(s)`,
+          );
+
           for (const orderData of ordersData) {
             try {
               // API returns: order_id, initial_base_amount, remaining_base_amount, price, is_ask, filled_base_amount
-              const orderId = String(orderData.order_id || orderData.order_index || '');
+              const orderId = String(
+                orderData.order_id || orderData.order_index || '',
+              );
               const symbol = await this.getSymbolFromMarketIndex(marketId);
               if (!symbol || !orderId) continue;
 
@@ -1574,54 +1835,91 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
               const price = parseFloat(String(orderData.price || '0'));
               // Use remaining_base_amount for current size
-              const size = Math.abs(parseFloat(String(orderData.remaining_base_amount || orderData.initial_base_amount || '0')));
-              const initialSize = Math.abs(parseFloat(String(orderData.initial_base_amount || '0')));
-              const filledSize = Math.abs(parseFloat(String(orderData.filled_base_amount || '0')));
+              const size = Math.abs(
+                parseFloat(
+                  String(
+                    orderData.remaining_base_amount ||
+                      orderData.initial_base_amount ||
+                      '0',
+                  ),
+                ),
+              );
+              const initialSize = Math.abs(
+                parseFloat(String(orderData.initial_base_amount || '0')),
+              );
+              const filledSize = Math.abs(
+                parseFloat(String(orderData.filled_base_amount || '0')),
+              );
 
               // Parse timestamp from nonce or created_time
               let timestamp = new Date();
               if (orderData.created_time) {
-                timestamp = new Date(orderData.created_time < 1e12 ? orderData.created_time * 1000 : orderData.created_time);
+                timestamp = new Date(
+                  orderData.created_time < 1e12
+                    ? orderData.created_time * 1000
+                    : orderData.created_time,
+                );
               } else if (orderData.nonce) {
                 // Nonce includes timestamp in high bits - extract rough timestamp
                 // This is a fallback; actual created_time should be preferred
-                const nonceTimestamp = Math.floor(orderData.nonce / (2 ** 32));
+                const nonceTimestamp = Math.floor(orderData.nonce / 2 ** 32);
                 if (nonceTimestamp > 0 && nonceTimestamp < 2e9) {
                   timestamp = new Date(nonceTimestamp * 1000);
                 }
               }
 
-              allOrders.push({ orderId, symbol, side, price, size, filledSize, timestamp });
-              this.logger.debug(`  Order: ${orderId} ${side} ${size} ${symbol} @ ${price}`);
+              allOrders.push({
+                orderId,
+                symbol,
+                side,
+                price,
+                size,
+                filledSize,
+                timestamp,
+              });
+              this.logger.debug(
+                `  Order: ${orderId} ${side} ${size} ${symbol} @ ${price}`,
+              );
             } catch (e: any) {
               this.logger.debug(`Failed to parse order: ${e.message}`);
             }
           }
         } catch (marketError: any) {
-          this.logger.debug(`Failed to get orders for market ${marketId}: ${marketError.message}`);
+          this.logger.debug(
+            `Failed to get orders for market ${marketId}: ${marketError.message}`,
+          );
         }
       }
 
       if (allOrders.length > 0) {
-        this.logger.log(`🔍 Total open orders on Lighter: ${allOrders.length} - ${allOrders.map(o => `${o.symbol} ${o.side} ${o.size}@${o.price}`).join(', ')}`);
+        this.logger.log(
+          `🔍 Total open orders on Lighter: ${allOrders.length} - ${allOrders.map((o) => `${o.symbol} ${o.side} ${o.size}@${o.price}`).join(', ')}`,
+        );
       }
       return allOrders;
     } catch (error: any) {
-      this.logger.warn(`⚠️ Failed to get open orders from Lighter: ${error.message}`);
+      this.logger.warn(
+        `⚠️ Failed to get open orders from Lighter: ${error.message}`,
+      );
       return [];
     }
   }
 
-  async getOrderStatus(orderId: string, symbol?: string): Promise<PerpOrderResponse> {
+  async getOrderStatus(
+    orderId: string,
+    symbol?: string,
+  ): Promise<PerpOrderResponse> {
     try {
       await this.ensureInitialized();
-      
+
       // Lighter SDK limitation: The @reservoir0x/lighter-ts-sdk doesn't provide a method to query order status
       // by order ID. We work around this by checking positions to see if the order filled.
       // If no matching position exists, the order may be resting on the book or canceled.
-      
+
       if (!symbol) {
-        this.logger.warn('getOrderStatus: Symbol required for Lighter order status check');
+        this.logger.warn(
+          'getOrderStatus: Symbol required for Lighter order status check',
+        );
         return new PerpOrderResponse(
           orderId,
           OrderStatus.SUBMITTED,
@@ -1634,35 +1932,37 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           new Date(),
         );
       }
-      
+
       // Check positions to see if order filled
       try {
         const positions = await this.getPositions();
-        
+
         // Try to infer order side from positions (if we have a position for this symbol)
         // Note: This is imperfect but better than always returning SUBMITTED
         const matchingPosition = positions.find(
-          p => p.symbol === symbol && Math.abs(p.size) > 0.0001
+          (p) => p.symbol === symbol && Math.abs(p.size) > 0.0001,
         );
-        
+
         if (matchingPosition) {
           // Position exists - order may have filled (but we can't be 100% sure it's this specific order)
           // Return SUBMITTED to let waitForOrderFill continue checking
           this.logger.debug(
             `getOrderStatus: Found position for ${symbol} (${matchingPosition.side}, size: ${matchingPosition.size}), ` +
-            `but cannot confirm if order ${orderId} filled. Returning SUBMITTED.`
+              `but cannot confirm if order ${orderId} filled. Returning SUBMITTED.`,
           );
         } else {
           // No position found - order may be resting on book or canceled
           // We can't distinguish between these cases without querying open orders
           this.logger.debug(
-            `getOrderStatus: No position found for ${symbol}. Order ${orderId} may be resting or canceled.`
+            `getOrderStatus: No position found for ${symbol}. Order ${orderId} may be resting or canceled.`,
           );
         }
       } catch (positionError: any) {
-        this.logger.debug(`Could not check positions for order status: ${positionError.message}`);
+        this.logger.debug(
+          `Could not check positions for order status: ${positionError.message}`,
+        );
       }
-      
+
       // Return SUBMITTED - waitForOrderFill will continue checking positions
       return new PerpOrderResponse(
         orderId,
@@ -1699,19 +1999,20 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   }
 
   // Price cache: key = symbol, value = { price: number, timestamp: number }
-  private priceCache: Map<string, { price: number; timestamp: number }> = new Map();
+  private priceCache: Map<string, { price: number; timestamp: number }> =
+    new Map();
   private readonly PRICE_CACHE_TTL = 10000; // 10 seconds cache
 
   async getMarkPrice(symbol: string): Promise<number> {
     // Check cache first
     const cached = this.priceCache.get(symbol);
-    if (cached && (Date.now() - cached.timestamp) < this.PRICE_CACHE_TTL) {
+    if (cached && Date.now() - cached.timestamp < this.PRICE_CACHE_TTL) {
       return cached.price;
     }
 
     try {
       await this.ensureInitialized();
-      
+
       const marketIndex = await this.getMarketIndex(symbol);
       let markPrice: number | null = null;
       let lastError: string | null = null;
@@ -1722,79 +2023,105 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       const maxRetries = 6; // Increased from 3 to 6
       const baseDelay = 2000; // 2 seconds base delay
       const maxDelay = 60000; // 60 seconds max delay
-      
+
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
           if (attempt > 0) {
             // Exponential backoff with jitter: 2s, 4s, 8s, 16s, 32s, 60s (capped)
-            const exponentialDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+            const exponentialDelay = Math.min(
+              baseDelay * Math.pow(2, attempt - 1),
+              maxDelay,
+            );
             // Add jitter (±20%) to avoid thundering herd problem
             const jitter = exponentialDelay * 0.2 * (Math.random() * 2 - 1); // Random between -20% and +20%
             const delay = Math.max(1000, exponentialDelay + jitter); // Minimum 1 second
-            
+
             this.logger.debug(
               `Retrying candlesticks API for ${symbol} after ${Math.floor(delay / 1000)}s ` +
-              `(attempt ${attempt + 1}/${maxRetries}, exponential: ${Math.floor(exponentialDelay / 1000)}s)`
+                `(attempt ${attempt + 1}/${maxRetries}, exponential: ${Math.floor(exponentialDelay / 1000)}s)`,
             );
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await new Promise((resolve) => setTimeout(resolve, delay));
           }
-          
+
           const now = Math.floor(Date.now() / 1000);
           const oneMinuteAgo = now - 60;
           const baseUrl = this.config.baseUrl;
-          
-          const candlestickResponse = await axios.get(`${baseUrl}/api/v1/candlesticks`, {
-            params: {
-              market_id: marketIndex,
-              resolution: '1m',
-              start_timestamp: oneMinuteAgo,
-              end_timestamp: now,
-              count_back: 1,
-              set_timestamp_to_end: true
+
+          const candlestickResponse = await axios.get(
+            `${baseUrl}/api/v1/candlesticks`,
+            {
+              params: {
+                market_id: marketIndex,
+                resolution: '1m',
+                start_timestamp: oneMinuteAgo,
+                end_timestamp: now,
+                count_back: 1,
+                set_timestamp_to_end: true,
+              },
+              timeout: 10000,
             },
-            timeout: 10000,
-          });
-          
+          );
+
           const candlestickData = candlestickResponse.data;
           const candlesticks = candlestickData?.candlesticks || [];
-          
-          if (candlesticks && Array.isArray(candlesticks) && candlesticks.length > 0) {
+
+          if (
+            candlesticks &&
+            Array.isArray(candlesticks) &&
+            candlesticks.length > 0
+          ) {
             const latest = candlesticks[candlesticks.length - 1];
             const closePrice = latest?.close; // Already a number from the API
-            
-            if (closePrice && typeof closePrice === 'number' && !isNaN(closePrice) && closePrice > 0) {
+
+            if (
+              closePrice &&
+              typeof closePrice === 'number' &&
+              !isNaN(closePrice) &&
+              closePrice > 0
+            ) {
               markPrice = closePrice;
-              this.priceCache.set(symbol, { price: markPrice, timestamp: Date.now() });
-              this.logger.debug(`Got price for ${symbol} from candlesticks: $${markPrice.toFixed(2)}`);
+              this.priceCache.set(symbol, {
+                price: markPrice,
+                timestamp: Date.now(),
+              });
+              this.logger.debug(
+                `Got price for ${symbol} from candlesticks: $${markPrice.toFixed(2)}`,
+              );
               return markPrice;
             }
           }
-          
+
           // If we got here, no price found but no error - break retry loop
           break;
         } catch (candlestickError: any) {
-          const errorMsg = candlestickError?.message || candlestickError?.toString() || String(candlestickError);
-          const errorResponse = candlestickError?.response?.data || candlestickError?.response || candlestickError?.data;
+          const errorMsg =
+            candlestickError?.message ||
+            candlestickError?.toString() ||
+            String(candlestickError);
+          const errorResponse =
+            candlestickError?.response?.data ||
+            candlestickError?.response ||
+            candlestickError?.data;
           const statusCode = candlestickError?.response?.status;
-          
+
           // If it's a 429 (rate limit), retry with improved backoff
           if (statusCode === 429 && attempt < maxRetries - 1) {
             lastError = `Candlesticks API: Rate limited (429), will retry`;
             // Silenced 429 warnings - only show errors
             this.logger.debug(
               `Candlesticks method rate limited for ${symbol} (attempt ${attempt + 1}/${maxRetries}): ${errorMsg}. ` +
-              `Will retry with exponential backoff.`
+                `Will retry with exponential backoff.`,
             );
             continue; // Retry
           }
-          
+
           // For other errors or final attempt, log and break
           lastError = `Candlesticks API: ${errorMsg}`;
           this.logger.debug(
             `Candlesticks method failed for ${symbol}: ${errorMsg}\n` +
-            `Error response: ${JSON.stringify(errorResponse || {}).substring(0, 200)}`
+              `Error response: ${JSON.stringify(errorResponse || {}).substring(0, 200)}`,
           );
-          
+
           // If not a retryable error, break
           if (statusCode !== 429) {
             break;
@@ -1805,23 +2132,29 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       // Method 1: Try order book (most accurate for bid/ask spread)
       // Try getOrderBookDetails with marketIndex (number)
       try {
-        const response = await this.orderApi!.getOrderBookDetails({ marketIndex: marketIndex } as any) as any;
-        
+        const response = await this.orderApi!.getOrderBookDetails({
+          marketIndex: marketIndex,
+        } as any);
+
         // Log the actual response structure for debugging
         this.logger.debug(
           `Order book response for ${symbol} (marketIndex: ${marketIndex}): ` +
-          `${JSON.stringify(response).substring(0, 300)}`
+            `${JSON.stringify(response).substring(0, 300)}`,
         );
-        
+
         // Response structure: { code: 200, order_book_details: { bestBid: {...}, bestAsk: {...} } }
         const orderBook = response?.order_book_details || response;
         const bestBid = orderBook?.bestBid || orderBook?.best_bid;
         const bestAsk = orderBook?.bestAsk || orderBook?.best_ask;
-        
+
         if (bestBid?.price && bestAsk?.price) {
-          markPrice = (parseFloat(bestBid.price) + parseFloat(bestAsk.price)) / 2;
+          markPrice =
+            (parseFloat(bestBid.price) + parseFloat(bestAsk.price)) / 2;
           if (markPrice > 0) {
-            this.priceCache.set(symbol, { price: markPrice, timestamp: Date.now() });
+            this.priceCache.set(symbol, {
+              price: markPrice,
+              timestamp: Date.now(),
+            });
             return markPrice;
           }
         } else {
@@ -1829,56 +2162,78 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           lastError = `Order book: No price data in response. Response keys: ${Object.keys(response || {}).join(', ')}. OrderBook keys: ${Object.keys(orderBook || {}).join(', ')}`;
           this.logger.warn(
             `Order book method returned no price for ${symbol} (marketIndex: ${marketIndex}). ` +
-            `Response structure: ${JSON.stringify(response).substring(0, 400)}`
+              `Response structure: ${JSON.stringify(response).substring(0, 400)}`,
           );
         }
       } catch (orderBookError: any) {
-        const errorMsg = orderBookError?.message || orderBookError?.toString() || String(orderBookError);
-        const errorResponse = orderBookError?.response?.data || orderBookError?.response || orderBookError?.data;
+        const errorMsg =
+          orderBookError?.message ||
+          orderBookError?.toString() ||
+          String(orderBookError);
+        const errorResponse =
+          orderBookError?.response?.data ||
+          orderBookError?.response ||
+          orderBookError?.data;
         lastError = `Order book (marketIndex): ${errorMsg}`;
         this.logger.error(
           `Order book method (marketIndex) failed for ${symbol} (marketIndex: ${marketIndex}): ` +
-          `${errorMsg}\n` +
-          `Error response: ${errorResponse ? JSON.stringify(errorResponse).substring(0, 400) : 'No error response'}\n` +
-          `Full error: ${orderBookError ? JSON.stringify(orderBookError).substring(0, 400) : 'No error object'}`
+            `${errorMsg}\n` +
+            `Error response: ${errorResponse ? JSON.stringify(errorResponse).substring(0, 400) : 'No error response'}\n` +
+            `Full error: ${orderBookError ? JSON.stringify(orderBookError).substring(0, 400) : 'No error object'}`,
         );
       }
 
       // Method 1b: Try orderBooks with market_id as string (alternative endpoint)
       try {
         const apiClient = new ApiClient({ host: this.config.baseUrl });
-        const orderBooksResponse = await (apiClient as any).order?.orderBooks({ market_id: marketIndex.toString() }) as any;
-        
+        const orderBooksResponse = await (apiClient as any).order?.orderBooks({
+          market_id: marketIndex.toString(),
+        });
+
         // orderBooks returns metadata, not prices, but check if there's price data nested
-        if (orderBooksResponse?.order_books && Array.isArray(orderBooksResponse.order_books)) {
-          const marketBook = orderBooksResponse.order_books.find((book: any) => 
-            book.market_id === marketIndex || book.market_id === marketIndex.toString()
+        if (
+          orderBooksResponse?.order_books &&
+          Array.isArray(orderBooksResponse.order_books)
+        ) {
+          const marketBook = orderBooksResponse.order_books.find(
+            (book: any) =>
+              book.market_id === marketIndex ||
+              book.market_id === marketIndex.toString(),
           );
-          
+
           // orderBooks endpoint returns metadata (fees, min amounts) but not prices
           // So we can't get mark price from this endpoint
           // But we can verify the market exists and is active
           if (marketBook && marketBook.status === 'active') {
-            this.logger.debug(`Market ${marketIndex} (${symbol}) verified via orderBooks API as active`);
+            this.logger.debug(
+              `Market ${marketIndex} (${symbol}) verified via orderBooks API as active`,
+            );
             // Continue to next method to get actual prices
           }
         }
       } catch (orderBooksError: any) {
         // This is expected - orderBooks doesn't return prices, just metadata
-        this.logger.debug(`orderBooks API (metadata only, no prices): ${orderBooksError.message}`);
+        this.logger.debug(
+          `orderBooks API (metadata only, no prices): ${orderBooksError.message}`,
+        );
       }
 
       // Method 2: Try funding rates API (may include mark price) - this is cached by LighterFundingDataProvider
       let fundingRates: any[] = [];
       try {
-        const baseUrl = this.configService.get<string>('LIGHTER_API_BASE_URL') || 'https://mainnet.zklighter.elliot.ai';
+        const baseUrl =
+          this.configService.get<string>('LIGHTER_API_BASE_URL') ||
+          'https://mainnet.zklighter.elliot.ai';
         const fundingUrl = `${baseUrl}/api/v1/funding-rates`;
         const response = await axios.get(fundingUrl, {
           timeout: 10000,
         });
 
         // Handle different response structures
-        if (response.data?.funding_rates && Array.isArray(response.data.funding_rates)) {
+        if (
+          response.data?.funding_rates &&
+          Array.isArray(response.data.funding_rates)
+        ) {
           fundingRates = response.data.funding_rates;
         } else if (Array.isArray(response.data)) {
           fundingRates = response.data;
@@ -1886,12 +2241,12 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
         if (fundingRates.length > 0) {
           const marketRate = fundingRates.find(
-            (r: any) => 
-              r.market_id === marketIndex || 
+            (r: any) =>
+              r.market_id === marketIndex ||
               r.market_index === marketIndex ||
-              r.marketIndex === marketIndex
+              r.marketIndex === marketIndex,
           );
-          
+
           if (marketRate) {
             if (marketRate.mark_price) {
               markPrice = parseFloat(marketRate.mark_price);
@@ -1900,37 +2255,48 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             } else if (marketRate.lastPrice) {
               markPrice = parseFloat(marketRate.lastPrice);
             }
-            
+
             if (markPrice && markPrice > 0) {
-              this.priceCache.set(symbol, { price: markPrice, timestamp: Date.now() });
+              this.priceCache.set(symbol, {
+                price: markPrice,
+                timestamp: Date.now(),
+              });
               return markPrice;
             }
           }
         }
       } catch (fundingError: any) {
-        const errorMsg = fundingError?.message || fundingError?.toString() || String(fundingError);
-        const errorResponse = fundingError?.response?.data || fundingError?.response || fundingError?.data;
+        const errorMsg =
+          fundingError?.message ||
+          fundingError?.toString() ||
+          String(fundingError);
+        const errorResponse =
+          fundingError?.response?.data ||
+          fundingError?.response ||
+          fundingError?.data;
         lastError = `Funding rates API: ${errorMsg}`;
-        const errorResponseStr = errorResponse ? JSON.stringify(errorResponse).substring(0, 400) : 'No error response';
+        const errorResponseStr = errorResponse
+          ? JSON.stringify(errorResponse).substring(0, 400)
+          : 'No error response';
         this.logger.warn(
           `Funding rates API method failed for ${symbol}: ${errorMsg}\n` +
-          `Error response: ${errorResponseStr}`
+            `Error response: ${errorResponseStr}`,
         );
       }
-      
+
       // If funding rates API succeeded but no price found, log it
       if (!markPrice && fundingRates.length > 0) {
         const marketRate = fundingRates.find(
-          (r: any) => 
-            r.market_id === marketIndex || 
+          (r: any) =>
+            r.market_id === marketIndex ||
             r.market_index === marketIndex ||
-            r.marketIndex === marketIndex
+            r.marketIndex === marketIndex,
         );
         if (marketRate) {
           lastError = `Funding rates API: Found market rate but no price field. Rate keys: ${Object.keys(marketRate).join(', ')}`;
           this.logger.warn(
             `Funding rates API returned data for ${symbol} but no price: ` +
-            `${JSON.stringify(marketRate).substring(0, 300)}`
+              `${JSON.stringify(marketRate).substring(0, 300)}`,
           );
         } else {
           lastError = `Funding rates API: No market rate found for marketIndex ${marketIndex} in ${fundingRates.length} rates`;
@@ -1942,20 +2308,23 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       const explorerMaxRetries = 5;
       const explorerBaseDelay = 2000;
       const explorerMaxDelay = 60000;
-      
+
       for (let attempt = 0; attempt < explorerMaxRetries; attempt++) {
         try {
           if (attempt > 0) {
             // Exponential backoff with jitter: 2s, 4s, 8s, 16s, 32s, 60s (capped)
-            const exponentialDelay = Math.min(explorerBaseDelay * Math.pow(2, attempt - 1), explorerMaxDelay);
+            const exponentialDelay = Math.min(
+              explorerBaseDelay * Math.pow(2, attempt - 1),
+              explorerMaxDelay,
+            );
             const jitter = exponentialDelay * 0.2 * (Math.random() * 2 - 1);
             const delay = Math.max(1000, exponentialDelay + jitter);
-            
+
             this.logger.debug(
               `Retrying explorer API for ${symbol} after ${Math.floor(delay / 1000)}s ` +
-              `(attempt ${attempt + 1}/${explorerMaxRetries})`
+                `(attempt ${attempt + 1}/${explorerMaxRetries})`,
             );
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await new Promise((resolve) => setTimeout(resolve, delay));
           }
 
           const explorerUrl = `https://explorer.elliot.ai/api/markets/${symbol}/logs`;
@@ -1967,50 +2336,82 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           // Try multiple response structures
           if (response.data) {
             // Structure 1: Direct price fields
-            if (typeof response.data === 'object' && !Array.isArray(response.data)) {
-              if (response.data.price && !isNaN(parseFloat(response.data.price))) {
+            if (
+              typeof response.data === 'object' &&
+              !Array.isArray(response.data)
+            ) {
+              if (
+                response.data.price &&
+                !isNaN(parseFloat(response.data.price))
+              ) {
                 markPrice = parseFloat(response.data.price);
-              } else if (response.data.markPrice && !isNaN(parseFloat(response.data.markPrice))) {
+              } else if (
+                response.data.markPrice &&
+                !isNaN(parseFloat(response.data.markPrice))
+              ) {
                 markPrice = parseFloat(response.data.markPrice);
-              } else if (response.data.lastPrice && !isNaN(parseFloat(response.data.lastPrice))) {
+              } else if (
+                response.data.lastPrice &&
+                !isNaN(parseFloat(response.data.lastPrice))
+              ) {
                 markPrice = parseFloat(response.data.lastPrice);
               }
               // Structure 2: Nested data object
               else if (response.data.data) {
-                if (response.data.data.price) markPrice = parseFloat(response.data.data.price);
-                else if (response.data.data.markPrice) markPrice = parseFloat(response.data.data.markPrice);
-                else if (response.data.data.lastPrice) markPrice = parseFloat(response.data.data.lastPrice);
+                if (response.data.data.price)
+                  markPrice = parseFloat(response.data.data.price);
+                else if (response.data.data.markPrice)
+                  markPrice = parseFloat(response.data.data.markPrice);
+                else if (response.data.data.lastPrice)
+                  markPrice = parseFloat(response.data.data.lastPrice);
               }
               // Structure 3: Array of logs (get latest)
-              else if (Array.isArray(response.data) && response.data.length > 0) {
+              else if (
+                Array.isArray(response.data) &&
+                response.data.length > 0
+              ) {
                 const latest = response.data[0];
                 if (latest.price) markPrice = parseFloat(latest.price);
-                else if (latest.markPrice) markPrice = parseFloat(latest.markPrice);
-                else if (latest.lastPrice) markPrice = parseFloat(latest.lastPrice);
-                else if (latest.price_usd) markPrice = parseFloat(latest.price_usd);
+                else if (latest.markPrice)
+                  markPrice = parseFloat(latest.markPrice);
+                else if (latest.lastPrice)
+                  markPrice = parseFloat(latest.lastPrice);
+                else if (latest.price_usd)
+                  markPrice = parseFloat(latest.price_usd);
               }
             }
             // Structure 4: Direct array
             else if (Array.isArray(response.data) && response.data.length > 0) {
               const latest = response.data[0];
               if (latest.price) markPrice = parseFloat(latest.price);
-              else if (latest.markPrice) markPrice = parseFloat(latest.markPrice);
-              else if (latest.lastPrice) markPrice = parseFloat(latest.lastPrice);
+              else if (latest.markPrice)
+                markPrice = parseFloat(latest.markPrice);
+              else if (latest.lastPrice)
+                markPrice = parseFloat(latest.lastPrice);
             }
 
             if (markPrice && markPrice > 0) {
-              this.priceCache.set(symbol, { price: markPrice, timestamp: Date.now() });
+              this.priceCache.set(symbol, {
+                price: markPrice,
+                timestamp: Date.now(),
+              });
               return markPrice;
             }
           }
         } catch (explorerError: any) {
-          const errorMsg = explorerError?.message || explorerError?.toString() || String(explorerError);
-          const errorResponse = explorerError?.response?.data || explorerError?.response || explorerError?.data;
+          const errorMsg =
+            explorerError?.message ||
+            explorerError?.toString() ||
+            String(explorerError);
+          const errorResponse =
+            explorerError?.response?.data ||
+            explorerError?.response ||
+            explorerError?.data;
           lastError = `Explorer API (attempt ${attempt + 1}): ${errorMsg}`;
           if (attempt === 2) {
             this.logger.warn(
               `Explorer API method failed for ${symbol} after 3 attempts: ${errorMsg}\n` +
-              `Error response: ${errorResponse ? JSON.stringify(errorResponse).substring(0, 400) : 'No error response'}`
+                `Error response: ${errorResponse ? JSON.stringify(errorResponse).substring(0, 400) : 'No error response'}`,
             );
           }
         }
@@ -2021,50 +2422,64 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       try {
         await this.ensureInitialized();
         const apiClient = new ApiClient({ host: this.config.baseUrl });
-        marketData = await (apiClient as any).market?.getMarketData({ marketIndex });
+        marketData = await (apiClient as any).market?.getMarketData({
+          marketIndex,
+        });
         if (marketData?.markPrice && !isNaN(parseFloat(marketData.markPrice))) {
           markPrice = parseFloat(marketData.markPrice);
         } else if (marketData?.price && !isNaN(parseFloat(marketData.price))) {
           markPrice = parseFloat(marketData.price);
         }
-        
+
         if (markPrice && markPrice > 0) {
-          this.priceCache.set(symbol, { price: markPrice, timestamp: Date.now() });
+          this.priceCache.set(symbol, {
+            price: markPrice,
+            timestamp: Date.now(),
+          });
           return markPrice;
         }
       } catch (marketDataError: any) {
-        const errorMsg = marketDataError?.message || marketDataError?.toString() || String(marketDataError);
-        const errorResponse = marketDataError?.response?.data || marketDataError?.response || marketDataError?.data;
+        const errorMsg =
+          marketDataError?.message ||
+          marketDataError?.toString() ||
+          String(marketDataError);
+        const errorResponse =
+          marketDataError?.response?.data ||
+          marketDataError?.response ||
+          marketDataError?.data;
         lastError = `Market data API: ${errorMsg}`;
         this.logger.warn(
           `Market data API method failed for ${symbol}: ${errorMsg}\n` +
-          `Error response: ${JSON.stringify(errorResponse).substring(0, 400)}`
+            `Error response: ${JSON.stringify(errorResponse).substring(0, 400)}`,
         );
       }
-      
+
       // If market data API succeeded but no price found, log it
       if (!markPrice && marketData) {
         lastError = `Market data API: Response received but no price field. Keys: ${Object.keys(marketData).join(', ')}`;
         this.logger.warn(
           `Market data API returned data for ${symbol} but no price: ` +
-          `${JSON.stringify(marketData).substring(0, 300)}`
+            `${JSON.stringify(marketData).substring(0, 300)}`,
         );
       }
-      
+
       // All methods failed - log detailed error information
-      const errorMsg = `Unable to determine mark price for ${symbol} (marketIndex: ${marketIndex}). ` +
+      const errorMsg =
+        `Unable to determine mark price for ${symbol} (marketIndex: ${marketIndex}). ` +
         `Tried: order book, funding rates API, explorer API (3 attempts), market data API. ` +
         `Last error: ${lastError || 'All methods returned no data (no exceptions thrown)'}`;
       this.logger.error(
         `❌ All price fetching methods failed for ${symbol}: ${errorMsg}\n` +
-        `   Market Index: ${marketIndex}\n` +
-        `   Base URL: ${this.config.baseUrl}\n` +
-        `   Order API initialized: ${!!this.orderApi}\n` +
-        `   Last error details: ${lastError}`
+          `   Market Index: ${marketIndex}\n` +
+          `   Base URL: ${this.config.baseUrl}\n` +
+          `   Order API initialized: ${!!this.orderApi}\n` +
+          `   Last error details: ${lastError}`,
       );
       throw new Error(errorMsg);
     } catch (error: any) {
-      this.logger.error(`Failed to get mark price for ${symbol}: ${error.message}`);
+      this.logger.error(
+        `Failed to get mark price for ${symbol}: ${error.message}`,
+      );
       throw new ExchangeError(
         `Failed to get mark price: ${error.message}`,
         ExchangeType.LIGHTER,
@@ -2076,26 +2491,29 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
   async getBalance(): Promise<number> {
     const accountIndex = this.config.accountIndex!;
-    
+
     // Retry logic for rate limiting (429 errors) with improved exponential backoff
     const maxRetries = 6; // Increased from 3 to 6
     const baseDelay = 2000; // 2 seconds base delay
     const maxDelay = 60000; // 60 seconds max delay
-    
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         if (attempt > 0) {
           // Exponential backoff with jitter: 2s, 4s, 8s, 16s, 32s, 60s (capped)
-          const exponentialDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+          const exponentialDelay = Math.min(
+            baseDelay * Math.pow(2, attempt - 1),
+            maxDelay,
+          );
           // Add jitter (±20%) to avoid thundering herd problem
           const jitter = exponentialDelay * 0.2 * (Math.random() * 2 - 1); // Random between -20% and +20%
           const delay = Math.max(1000, exponentialDelay + jitter); // Minimum 1 second
-          
+
           this.logger.debug(
             `Retrying Lighter balance query after ${Math.floor(delay / 1000)}s ` +
-            `(attempt ${attempt + 1}/${maxRetries}, exponential: ${Math.floor(exponentialDelay / 1000)}s)`
+              `(attempt ${attempt + 1}/${maxRetries}, exponential: ${Math.floor(exponentialDelay / 1000)}s)`,
           );
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
 
         // Use AccountApi from SDK - it works and returns the correct structure
@@ -2104,37 +2522,51 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         const apiClient = new ApiClient({ host: this.config.baseUrl });
         const { AccountApi } = await import('@reservoir0x/lighter-ts-sdk');
         const accountApi = new AccountApi(apiClient);
-        
+
         // Call getAccount with proper parameters
-        const response = await (accountApi.getAccount as any)({ 
-          by: 'index', 
-          value: String(accountIndex) 
+        const response = await (accountApi.getAccount as any)({
+          by: 'index',
+          value: String(accountIndex),
         });
 
         // Response structure from actual API call:
         // { code: 200, total: 1, accounts: [{ collateral, available_balance, status, ... }] }
-        if (response && response.code === 200 && response.accounts && response.accounts.length > 0) {
+        if (
+          response &&
+          response.code === 200 &&
+          response.accounts &&
+          response.accounts.length > 0
+        ) {
           const account = response.accounts[0];
           // Use available_balance or collateral (they should be the same)
-          const balance = parseFloat(account.available_balance || account.collateral || '0');
+          const balance = parseFloat(
+            account.available_balance || account.collateral || '0',
+          );
           const status = account.status === 1 ? 'active' : 'inactive';
-          this.logger.debug(`Lighter balance retrieved: $${balance.toFixed(2)} (Status: ${status}, Index: ${account.index})`);
+          this.logger.debug(
+            `Lighter balance retrieved: $${balance.toFixed(2)} (Status: ${status}, Index: ${account.index})`,
+          );
           return balance;
         }
 
         // Fallback: try direct REST API call if SDK response structure is different
         try {
-          const httpResponse = await axios.get(`${this.config.baseUrl}/api/v1/account`, {
-            params: {
-              by: 'index',
-              value: String(accountIndex),
+          const httpResponse = await axios.get(
+            `${this.config.baseUrl}/api/v1/account`,
+            {
+              params: {
+                by: 'index',
+                value: String(accountIndex),
+              },
+              timeout: 10000,
             },
-            timeout: 10000,
-          });
+          );
 
           if (httpResponse.data && httpResponse.data.collateral !== undefined) {
             const balance = parseFloat(httpResponse.data.collateral || '0');
-            this.logger.debug(`Lighter balance retrieved (REST fallback): $${balance.toFixed(2)}`);
+            this.logger.debug(
+              `Lighter balance retrieved (REST fallback): $${balance.toFixed(2)}`,
+            );
             return balance;
           }
         } catch (httpError: any) {
@@ -2146,37 +2578,43 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           this.logger.debug(`REST API fallback failed: ${httpError.message}`);
         }
 
-        this.logger.warn('Lighter account API returned data but no balance found');
+        this.logger.warn(
+          'Lighter account API returned data but no balance found',
+        );
         return 0;
       } catch (error: any) {
         const statusCode = error?.response?.status;
         const errorMsg = error?.message || String(error);
-        
+
         // If it's a 429 (rate limit), retry with improved backoff
         if (statusCode === 429 && attempt < maxRetries - 1) {
           // Silenced 429 warnings - only show errors
           this.logger.debug(
             `Lighter balance query rate limited (attempt ${attempt + 1}/${maxRetries}): ${errorMsg}. ` +
-            `Will retry with exponential backoff.`
+              `Will retry with exponential backoff.`,
           );
           continue; // Retry
         }
-        
+
         // For other errors or final attempt
         this.logger.error(`Failed to get balance: ${errorMsg}`);
         if (error.response) {
-          this.logger.debug(`Lighter API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+          this.logger.debug(
+            `Lighter API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`,
+          );
         }
-        
+
         // If not a retryable error, break
         if (statusCode !== 429) {
           break;
         }
       }
     }
-    
+
     // If all retries failed, return 0 instead of throwing to allow system to continue
-    this.logger.warn('Returning 0 balance due to error - Lighter balance query may need authentication');
+    this.logger.warn(
+      'Returning 0 balance due to error - Lighter balance query may need authentication',
+    );
     return 0;
   }
 
@@ -2197,12 +2635,12 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
   /**
    * Get available margin for new positions
-   * 
+   *
    * This calculates the margin available for opening new positions by:
    * 1. Getting the total balance
    * 2. Subtracting margin used by existing positions
    * 3. Applying a safety buffer for maintenance margin
-   * 
+   *
    * This prevents "not enough margin to create the order" errors by ensuring
    * we only try to open positions we can actually afford.
    */
@@ -2210,43 +2648,45 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     try {
       const totalBalance = await this.getBalance();
       const positions = await this.getPositions();
-      
+
       // Calculate margin used by existing positions
       let marginUsed = 0;
       for (const pos of positions) {
         // Estimate margin based on position value and leverage
         // Lighter typically uses cross margin, so we estimate based on notional value
         const positionValue = Math.abs(pos.size) * pos.markPrice;
-        
+
         // Use position's leverage if available, otherwise assume 10x (Lighter default)
         const leverage = pos.leverage || 10;
         const estimatedMargin = positionValue / leverage;
         marginUsed += estimatedMargin;
-        
+
         this.logger.debug(
           `Position ${pos.symbol}: value=$${positionValue.toFixed(2)}, ` +
-          `leverage=${leverage}x, margin=$${estimatedMargin.toFixed(2)}`
+            `leverage=${leverage}x, margin=$${estimatedMargin.toFixed(2)}`,
         );
       }
-      
+
       // Apply safety buffers:
       // 1. 10% buffer for maintenance margin requirements
       // 2. Additional 5% buffer for price movements during order execution
-      const MAINTENANCE_BUFFER = 0.10; // 10%
-      const EXECUTION_BUFFER = 0.05;   // 5%
+      const MAINTENANCE_BUFFER = 0.1; // 10%
+      const EXECUTION_BUFFER = 0.05; // 5%
       const TOTAL_BUFFER = MAINTENANCE_BUFFER + EXECUTION_BUFFER; // 15%
-      
+
       const availableMargin = (totalBalance - marginUsed) * (1 - TOTAL_BUFFER);
-      
+
       this.logger.debug(
         `Available margin calculation: totalBalance=$${totalBalance.toFixed(2)}, ` +
-        `marginUsed=$${marginUsed.toFixed(2)}, buffer=${(TOTAL_BUFFER * 100).toFixed(0)}%, ` +
-        `available=$${Math.max(0, availableMargin).toFixed(2)}`
+          `marginUsed=$${marginUsed.toFixed(2)}, buffer=${(TOTAL_BUFFER * 100).toFixed(0)}%, ` +
+          `available=$${Math.max(0, availableMargin).toFixed(2)}`,
       );
-      
+
       return Math.max(0, availableMargin);
     } catch (error: any) {
-      this.logger.warn(`Failed to calculate available margin: ${error.message}, falling back to getBalance`);
+      this.logger.warn(
+        `Failed to calculate available margin: ${error.message}, falling back to getBalance`,
+      );
       // Fallback to total balance with a conservative buffer
       try {
         const balance = await this.getBalance();
@@ -2289,32 +2729,36 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   /**
    * Get fast withdraw pool availability in USDC
    * Returns the amount available in the fast withdraw pool, or null if unable to check
-   * 
+   *
    * This is useful for checking if the pool has sufficient liquidity before attempting a withdrawal
    */
   async getFastWithdrawPoolAvailability(): Promise<number | null> {
     try {
       await this.ensureInitialized();
-      
+
       // Create auth token
       const authToken = await this.signerClient!.createAuthTokenWithExpiry(600);
-      
+
       // Get pool info
       const poolInfo = await this.getFastWithdrawInfo(authToken);
-      
+
       if (poolInfo.withdraw_limit !== undefined) {
         const availableUsdc = poolInfo.withdraw_limit / 1e6;
-        this.logger.debug(`Lighter fast withdraw pool availability: $${availableUsdc.toFixed(2)} USDC`);
+        this.logger.debug(
+          `Lighter fast withdraw pool availability: $${availableUsdc.toFixed(2)} USDC`,
+        );
         return availableUsdc;
       }
-      
+
       return null;
     } catch (error: any) {
-      this.logger.warn(`Failed to check fast withdraw pool availability: ${error.message}`);
+      this.logger.warn(
+        `Failed to check fast withdraw pool availability: ${error.message}`,
+      );
       return null;
     }
   }
-  
+
   /**
    * Build memo from Ethereum address for fast withdraw
    * Format: 20 bytes address + 12 zeros = 32 bytes total
@@ -2324,14 +2768,14 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     if (cleanAddress.length !== 40) {
       throw new Error(`Invalid address length: ${cleanAddress.length}`);
     }
-    
+
     // Convert address to bytes (20 bytes)
     const addrBytes = Buffer.from(cleanAddress, 'hex');
-    
+
     // Create 32-byte memo: 20 bytes address + 12 zeros
     const memo = Buffer.alloc(32, 0);
     addrBytes.copy(memo, 0);
-    
+
     // Return as hex string (without 0x prefix)
     return memo.toString('hex');
   }
@@ -2341,25 +2785,27 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
    */
   private async getFastWithdrawInfo(
     authToken: string,
-    maxRetries: number = 3
+    maxRetries: number = 3,
   ): Promise<{ to_account_index: number; withdraw_limit?: number }> {
     let lastError: any;
-    
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const response = await axios.get(
           `${this.config.baseUrl}/api/v1/fastwithdraw/info`,
           {
-            params: { 
+            params: {
               account_index: this.config.accountIndex,
-              auth: authToken
+              auth: authToken,
             },
             timeout: 30000,
-          }
+          },
         );
 
         if (response.data.code !== 200) {
-          throw new Error(`Pool info failed: ${response.data.message || 'Unknown error'}`);
+          throw new Error(
+            `Pool info failed: ${response.data.message || 'Unknown error'}`,
+          );
         }
 
         return {
@@ -2368,14 +2814,16 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         };
       } catch (error: any) {
         lastError = error;
-        this.logger.debug(`Fast withdraw info attempt ${attempt}/${maxRetries} failed: ${error.message}`);
-        
+        this.logger.debug(
+          `Fast withdraw info attempt ${attempt}/${maxRetries} failed: ${error.message}`,
+        );
+
         if (attempt < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, 2000));
         }
       }
     }
-    
+
     throw lastError;
   }
 
@@ -2384,7 +2832,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
    */
   private async getFastWithdrawFee(
     toAccountIndex: number,
-    authToken: string
+    authToken: string,
   ): Promise<number> {
     const response = await axios.get(
       `${this.config.baseUrl}/api/v1/transferFeeInfo`,
@@ -2395,11 +2843,13 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           auth: authToken,
         },
         timeout: 10000,
-      }
+      },
     );
 
     if (response.data.code !== 200) {
-      throw new Error(`Transfer fee failed: ${response.data.message || 'Unknown error'}`);
+      throw new Error(
+        `Transfer fee failed: ${response.data.message || 'Unknown error'}`,
+      );
     }
 
     // transfer_fee_usdc is in micro-USDC (1e6)
@@ -2409,17 +2859,26 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
   /**
    * Get next nonce for Lighter transactions
    */
-  private async getFastWithdrawNonce(): Promise<{ apiKeyIndex: number; nonce: number }> {
-    const response = await axios.get(`${this.config.baseUrl}/api/v1/nextNonce`, {
-      params: { 
-        account_index: this.config.accountIndex, 
-        api_key_index: this.config.apiKeyIndex 
+  private async getFastWithdrawNonce(): Promise<{
+    apiKeyIndex: number;
+    nonce: number;
+  }> {
+    const response = await axios.get(
+      `${this.config.baseUrl}/api/v1/nextNonce`,
+      {
+        params: {
+          account_index: this.config.accountIndex,
+          api_key_index: this.config.apiKeyIndex,
+        },
+        timeout: 10000,
       },
-      timeout: 10000,
-    });
+    );
 
     if (response.data && typeof response.data === 'object') {
-      if (response.data.nonce !== undefined && response.data.api_key_index !== undefined) {
+      if (
+        response.data.nonce !== undefined &&
+        response.data.api_key_index !== undefined
+      ) {
         return {
           apiKeyIndex: response.data.api_key_index,
           nonce: response.data.nonce,
@@ -2437,7 +2896,9 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       };
     }
 
-    throw new Error(`Unexpected nonce format: ${JSON.stringify(response.data)}`);
+    throw new Error(
+      `Unexpected nonce format: ${JSON.stringify(response.data)}`,
+    );
   }
 
   // ==================== End Fast Withdraw Helper Methods ====================
@@ -2453,7 +2914,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       // However, we'll log this and return a success message
       this.logger.log(
         `Lighter uses a unified account model - all funds are already available for perp trading. ` +
-        `No internal transfer needed. Amount: $${amount.toFixed(2)}`
+          `No internal transfer needed. Amount: $${amount.toFixed(2)}`,
       );
 
       // Return a placeholder transaction ID since no actual transfer occurs
@@ -2469,7 +2930,11 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     }
   }
 
-  async depositExternal(amount: number, asset: string, destination?: string): Promise<string> {
+  async depositExternal(
+    amount: number,
+    asset: string,
+    destination?: string,
+  ): Promise<string> {
     try {
       if (amount <= 0) {
         throw new Error('Deposit amount must be greater than 0');
@@ -2480,36 +2945,46 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         throw new Error(`Only USDC deposits are supported. Received: ${asset}`);
       }
 
-      this.logger.log(`Depositing $${amount.toFixed(2)} ${asset} to Lighter...`);
+      this.logger.log(
+        `Depositing $${amount.toFixed(2)} ${asset} to Lighter...`,
+      );
 
       // Lighter deposit contract on Arbitrum
       // User confirmed: transfer to 0xB512443BB7737E90401DEF0BCF442aB5454A94f8
-      const LIGHTER_DEPOSIT_CONTRACT = '0xB512443BB7737E90401DEF0BCF442aB5454A94f8';
-      const USDC_CONTRACT_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'; // USDC on Arbitrum
-      
+      const LIGHTER_DEPOSIT_CONTRACT =
+        '0xB512443BB7737E90401DEF0BCF442aB5454A94f8';
+      const USDC_CONTRACT_ADDRESS =
+        '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'; // USDC on Arbitrum
+
       // Get Arbitrum RPC URL
-      const arbitrumRpcUrl = this.configService.get<string>('ARBITRUM_RPC_URL') ||
-                             this.configService.get<string>('ARB_RPC_URL') ||
-                             'https://arb1.arbitrum.io/rpc'; // Public RPC fallback
-      
+      const arbitrumRpcUrl =
+        this.configService.get<string>('ARBITRUM_RPC_URL') ||
+        this.configService.get<string>('ARB_RPC_URL') ||
+        'https://arb1.arbitrum.io/rpc'; // Public RPC fallback
+
       // Get private key for signing transactions
-      const privateKey = this.configService.get<string>('PRIVATE_KEY') || 
-                        this.configService.get<string>('LIGHTER_PRIVATE_KEY');
+      const privateKey =
+        this.configService.get<string>('PRIVATE_KEY') ||
+        this.configService.get<string>('LIGHTER_PRIVATE_KEY');
       if (!privateKey) {
-        throw new Error('PRIVATE_KEY or LIGHTER_PRIVATE_KEY required for on-chain deposits');
+        throw new Error(
+          'PRIVATE_KEY or LIGHTER_PRIVATE_KEY required for on-chain deposits',
+        );
       }
 
-      const normalizedPrivateKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      const normalizedPrivateKey = privateKey.startsWith('0x')
+        ? privateKey
+        : `0x${privateKey}`;
       const provider = new ethers.JsonRpcProvider(arbitrumRpcUrl);
       const wallet = new ethers.Wallet(normalizedPrivateKey, provider);
 
       this.logger.debug(
         `Lighter deposit details:\n` +
-        `  Deposit contract: ${LIGHTER_DEPOSIT_CONTRACT}\n` +
-        `  USDC contract: ${USDC_CONTRACT_ADDRESS}\n` +
-        `  Amount: ${amount} USDC\n` +
-        `  Wallet: ${wallet.address}\n` +
-        `  RPC: ${arbitrumRpcUrl}`
+          `  Deposit contract: ${LIGHTER_DEPOSIT_CONTRACT}\n` +
+          `  USDC contract: ${USDC_CONTRACT_ADDRESS}\n` +
+          `  Amount: ${amount} USDC\n` +
+          `  Wallet: ${wallet.address}\n` +
+          `  RPC: ${arbitrumRpcUrl}`,
       );
 
       // ERC20 ABI for USDC (approve, transfer, allowance, balanceOf, decimals)
@@ -2521,7 +2996,11 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         'function decimals() external view returns (uint8)',
       ];
 
-      const usdcContract = new ethers.Contract(USDC_CONTRACT_ADDRESS, erc20Abi, wallet);
+      const usdcContract = new ethers.Contract(
+        USDC_CONTRACT_ADDRESS,
+        erc20Abi,
+        wallet,
+      );
 
       // Get USDC decimals (convert BigInt to number)
       const decimalsBigInt = await usdcContract.decimals();
@@ -2536,7 +3015,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       let attempt = 0;
       let balanceFormatted = 0;
       let balanceWei: bigint;
-      
+
       // Wait for funds to arrive (at least the requested amount)
       // Note: Hyperliquid withdrawals can take 1-2 minutes to arrive on-chain
       while (true) {
@@ -2548,78 +3027,85 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
           this.logger.error(`Failed to check balance: ${error.message}`);
           throw new Error(`Failed to check USDC balance: ${error.message}`);
         }
-        
+
         this.logger.debug(
           `Balance check attempt ${attempt}: ${balanceFormatted.toFixed(2)} USDC ` +
-          `(requested: ${amount.toFixed(2)} USDC)`
+            `(requested: ${amount.toFixed(2)} USDC)`,
         );
 
         const elapsed = Date.now() - startTime;
-        
+
         // Tolerance for withdrawal fees: accept balance within 5% or $0.50 of requested amount
-        const tolerance = Math.max(amount * 0.05, 0.50);
+        const tolerance = Math.max(amount * 0.05, 0.5);
         const minAcceptableAmount = amount - tolerance;
-        
+
         // After 2 minutes, accept balance if it's at least 80% of requested (handles withdrawal fees)
         const acceptPartialAfter = 120000; // 2 minutes
-        const minPartialAmount = amount * 0.80;
-        
+        const minPartialAmount = amount * 0.8;
+
         // Check if we have sufficient balance
         if (balanceFormatted >= amount) {
           // Removed funds arrival log - only execution/order logs shown
           break;
         }
-        
+
         // Accept balance within tolerance (handles withdrawal fees)
         if (balanceFormatted >= minAcceptableAmount && balanceFormatted > 0) {
           // Removed funds arrival log - only execution/order logs shown
           break;
         }
-        
+
         // After 2 minutes, accept partial balance if reasonable (at least 80% of requested)
-        if (elapsed >= acceptPartialAfter && balanceFormatted >= minPartialAmount && balanceFormatted > 0) {
+        if (
+          elapsed >= acceptPartialAfter &&
+          balanceFormatted >= minPartialAmount &&
+          balanceFormatted > 0
+        ) {
           this.logger.log(
             `✅ Accepting partial balance after ${Math.floor(elapsed / 1000)}s wait. ` +
-            `Available: ${balanceFormatted.toFixed(2)} USDC (requested: ${amount.toFixed(2)} USDC). ` +
-            `Withdrawal fees may have reduced the amount.`
+              `Available: ${balanceFormatted.toFixed(2)} USDC (requested: ${amount.toFixed(2)} USDC). ` +
+              `Withdrawal fees may have reduced the amount.`,
           );
           break;
         }
-        
+
         // Timeout after max wait time
         if (elapsed >= maxWaitTime) {
           if (balanceFormatted > 0) {
             // If we have some balance, use it instead of failing
             this.logger.warn(
               `⚠️ Timeout reached but accepting available balance: ${balanceFormatted.toFixed(2)} USDC ` +
-              `(requested: ${amount.toFixed(2)} USDC). Withdrawal fees may have reduced the amount.`
+                `(requested: ${amount.toFixed(2)} USDC). Withdrawal fees may have reduced the amount.`,
             );
             break;
           }
           throw new Error(
             `Insufficient USDC balance after ${Math.floor(elapsed / 1000)}s wait. ` +
-            `Required: ${amount.toFixed(2)} USDC, Available: ${balanceFormatted.toFixed(2)} USDC. ` +
-            `Funds may still be in transit from withdrawal. Check withdrawal status.`
+              `Required: ${amount.toFixed(2)} USDC, Available: ${balanceFormatted.toFixed(2)} USDC. ` +
+              `Funds may still be in transit from withdrawal. Check withdrawal status.`,
           );
         }
 
         // Exponential backoff: 2s, 4s, 8s, 16s, capped at 30s
-        const delay = Math.min(initialDelay * Math.pow(2, attempt - 1), maxDelay);
+        const delay = Math.min(
+          initialDelay * Math.pow(2, attempt - 1),
+          maxDelay,
+        );
         const remaining = maxWaitTime - elapsed;
         const waitTime = Math.min(delay, remaining);
-        
+
         this.logger.warn(
           `Waiting for funds to arrive. ` +
-          `Current: ${balanceFormatted.toFixed(2)} USDC, Required: ${amount.toFixed(2)} USDC. ` +
-          `Waiting ${waitTime / 1000}s (attempt ${attempt}, ${Math.floor(elapsed / 1000)}s elapsed)...`
+            `Current: ${balanceFormatted.toFixed(2)} USDC, Required: ${amount.toFixed(2)} USDC. ` +
+            `Waiting ${waitTime / 1000}s (attempt ${attempt}, ${Math.floor(elapsed / 1000)}s elapsed)...`,
         );
-        
-        await new Promise(resolve => setTimeout(resolve, waitTime));
+
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
 
       this.logger.log(
         `✅ Funds confirmed (${balanceFormatted.toFixed(2)} USDC). ` +
-        `Proceeding with deposit to Lighter contract ${LIGHTER_DEPOSIT_CONTRACT}...`
+          `Proceeding with deposit to Lighter contract ${LIGHTER_DEPOSIT_CONTRACT}...`,
       );
 
       // Determine deposit amount:
@@ -2628,47 +3114,72 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       // - Otherwise, deposit full balance (this handles rebalancing where withdrawal fees reduce the amount)
       const isWalletDeposit = balanceFormatted >= amount * 3;
       const depositAmount = isWalletDeposit ? amount : balanceFormatted;
-      const depositAmountWei = isWalletDeposit 
+      const depositAmountWei = isWalletDeposit
         ? ethers.parseUnits(depositAmount.toFixed(decimals), decimals)
         : balanceWei;
 
       // Check current allowance
-      this.logger.log(`Checking allowance for Lighter deposit contract ${LIGHTER_DEPOSIT_CONTRACT}...`);
-      const currentAllowance = await usdcContract.allowance(wallet.address, LIGHTER_DEPOSIT_CONTRACT);
-      this.logger.debug(`Current allowance: ${ethers.formatUnits(currentAllowance, decimals)} USDC`);
-      
+      this.logger.log(
+        `Checking allowance for Lighter deposit contract ${LIGHTER_DEPOSIT_CONTRACT}...`,
+      );
+      const currentAllowance = await usdcContract.allowance(
+        wallet.address,
+        LIGHTER_DEPOSIT_CONTRACT,
+      );
+      this.logger.debug(
+        `Current allowance: ${ethers.formatUnits(currentAllowance, decimals)} USDC`,
+      );
+
       // Approve deposit contract if needed
       if (currentAllowance < depositAmountWei) {
-        this.logger.log(`Approving Lighter deposit contract to spend ${depositAmount.toFixed(2)} USDC...`);
-        const approveTx = await usdcContract.approve(LIGHTER_DEPOSIT_CONTRACT, depositAmountWei);
+        this.logger.log(
+          `Approving Lighter deposit contract to spend ${depositAmount.toFixed(2)} USDC...`,
+        );
+        const approveTx = await usdcContract.approve(
+          LIGHTER_DEPOSIT_CONTRACT,
+          depositAmountWei,
+        );
         this.logger.log(`⏳ Approval transaction submitted: ${approveTx.hash}`);
         const approveReceipt = await approveTx.wait();
-        this.logger.log(`✅ Approval confirmed: ${approveReceipt.hash}, Block: ${approveReceipt.blockNumber}`);
+        this.logger.log(
+          `✅ Approval confirmed: ${approveReceipt.hash}, Block: ${approveReceipt.blockNumber}`,
+        );
       } else {
-        this.logger.log(`Sufficient allowance already exists (${ethers.formatUnits(currentAllowance, decimals)} USDC)`);
+        this.logger.log(
+          `Sufficient allowance already exists (${ethers.formatUnits(currentAllowance, decimals)} USDC)`,
+        );
       }
 
       // Transfer USDC to Lighter deposit contract
-      this.logger.log(`🚀 Executing transfer to Lighter deposit contract ${LIGHTER_DEPOSIT_CONTRACT}...`);
+      this.logger.log(
+        `🚀 Executing transfer to Lighter deposit contract ${LIGHTER_DEPOSIT_CONTRACT}...`,
+      );
       if (isWalletDeposit) {
         this.logger.log(
           `Transferring ${depositAmount.toFixed(2)} USDC (requested amount) to Lighter deposit contract... ` +
-          `(wallet has ${balanceFormatted.toFixed(2)} USDC total, depositing only ${depositAmount.toFixed(2)} USDC)`
+            `(wallet has ${balanceFormatted.toFixed(2)} USDC total, depositing only ${depositAmount.toFixed(2)} USDC)`,
         );
       } else {
         this.logger.log(
           `Transferring ${depositAmount.toFixed(2)} USDC (full wallet balance) to Lighter deposit contract... ` +
-          `(requested amount was ${amount.toFixed(2)} USDC, but depositing available balance after fees)`
+            `(requested amount was ${amount.toFixed(2)} USDC, but depositing available balance after fees)`,
         );
       }
-      
-      this.logger.log(`Calling transfer(${LIGHTER_DEPOSIT_CONTRACT}, ${depositAmountWei.toString()})...`);
-      const transferTx = await usdcContract.transfer(LIGHTER_DEPOSIT_CONTRACT, depositAmountWei);
+
+      this.logger.log(
+        `Calling transfer(${LIGHTER_DEPOSIT_CONTRACT}, ${depositAmountWei.toString()})...`,
+      );
+      const transferTx = await usdcContract.transfer(
+        LIGHTER_DEPOSIT_CONTRACT,
+        depositAmountWei,
+      );
       this.logger.log(`⏳ Deposit transaction submitted: ${transferTx.hash}`);
       const receipt = await transferTx.wait();
-      
+
       if (receipt.status === 1) {
-        this.logger.log(`✅ Deposit successful! Transaction: ${receipt.hash}, Block: ${receipt.blockNumber}`);
+        this.logger.log(
+          `✅ Deposit successful! Transaction: ${receipt.hash}, Block: ${receipt.blockNumber}`,
+        );
         return receipt.hash;
       } else {
         throw new Error(`Deposit transaction failed: ${receipt.hash}`);
@@ -2692,7 +3203,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
 
   /**
    * Withdraw funds from Lighter to an external Ethereum address using fast withdraw
-   * 
+   *
    * Fast withdraw works by:
    * 1. Creating an auth token with the SDK
    * 2. Getting the fast withdraw pool info
@@ -2700,33 +3211,48 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
    * 4. Signing the transfer with BOTH L2 (Lighter) and L1 (Ethereum) signatures
    * 5. Submitting to the fast withdraw endpoint
    */
-  async withdrawExternal(amount: number, asset: string, destination: string): Promise<string> {
+  async withdrawExternal(
+    amount: number,
+    asset: string,
+    destination: string,
+  ): Promise<string> {
     try {
       if (amount <= 0) {
         throw new Error('Withdrawal amount must be greater than 0');
       }
 
       if (!destination || !destination.match(/^0x[a-fA-F0-9]{40}$/)) {
-        throw new Error('Invalid destination address. Must be a valid Ethereum address (0x followed by 40 hex characters)');
+        throw new Error(
+          'Invalid destination address. Must be a valid Ethereum address (0x followed by 40 hex characters)',
+        );
       }
 
       // Only USDC is supported for fast withdrawals
       if (asset.toUpperCase() !== 'USDC') {
-        throw new Error(`Only USDC withdrawals are supported. Received: ${asset}`);
+        throw new Error(
+          `Only USDC withdrawals are supported. Received: ${asset}`,
+        );
       }
 
-      this.logger.log(`🏦 Fast withdrawing $${amount.toFixed(2)} ${asset} to ${destination} on Lighter...`);
+      this.logger.log(
+        `🏦 Fast withdrawing $${amount.toFixed(2)} ${asset} to ${destination} on Lighter...`,
+      );
 
       await this.ensureInitialized();
 
       // Get Ethereum private key for L1 signing
-      const ethPrivateKey = this.configService.get<string>('ETH_PRIVATE_KEY') || 
-                           this.configService.get<string>('PRIVATE_KEY') ||
-                           this.configService.get<string>('LIGHTER_PRIVATE_KEY');
+      const ethPrivateKey =
+        this.configService.get<string>('ETH_PRIVATE_KEY') ||
+        this.configService.get<string>('PRIVATE_KEY') ||
+        this.configService.get<string>('LIGHTER_PRIVATE_KEY');
       if (!ethPrivateKey) {
-        throw new Error('ETH_PRIVATE_KEY, PRIVATE_KEY, or LIGHTER_PRIVATE_KEY required for fast withdrawals (L1 signature)');
+        throw new Error(
+          'ETH_PRIVATE_KEY, PRIVATE_KEY, or LIGHTER_PRIVATE_KEY required for fast withdrawals (L1 signature)',
+        );
       }
-      const normalizedEthKey = ethPrivateKey.startsWith('0x') ? ethPrivateKey : `0x${ethPrivateKey}`;
+      const normalizedEthKey = ethPrivateKey.startsWith('0x')
+        ? ethPrivateKey
+        : `0x${ethPrivateKey}`;
 
       // Constants
       const ASSET_ID_USDC = 3;
@@ -2741,15 +3267,19 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       this.logger.debug('Getting fast withdraw pool info...');
       const poolInfo = await this.getFastWithdrawInfo(authToken);
       const toAccountIndex = poolInfo.to_account_index;
-      
+
       // Check withdraw limit
       if (poolInfo.withdraw_limit !== undefined) {
         const limitUsdc = poolInfo.withdraw_limit / 1e6;
         if (amount > limitUsdc) {
-          throw new Error(`Withdrawal amount ($${amount.toFixed(2)}) exceeds pool limit ($${limitUsdc.toFixed(2)})`);
+          throw new Error(
+            `Withdrawal amount ($${amount.toFixed(2)}) exceeds pool limit ($${limitUsdc.toFixed(2)})`,
+          );
         }
       }
-      this.logger.debug(`Pool: ${toAccountIndex}, Limit: ${poolInfo.withdraw_limit ? (poolInfo.withdraw_limit / 1e6).toFixed(2) : 'N/A'} USDC`);
+      this.logger.debug(
+        `Pool: ${toAccountIndex}, Limit: ${poolInfo.withdraw_limit ? (poolInfo.withdraw_limit / 1e6).toFixed(2) : 'N/A'} USDC`,
+      );
 
       // 3. Get transfer fee
       this.logger.debug('Getting transfer fee...');
@@ -2770,17 +3300,18 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       const amountMicroUsdc = Math.floor(amount * 1e6);
 
       // Build the L1 message (matching SDK format)
-      const toHex = (value: number): string => '0x' + value.toString(16).padStart(16, '0');
-      
+      const toHex = (value: number): string =>
+        '0x' + value.toString(16).padStart(16, '0');
+
       const l1Message = `Transfer\n\nnonce: ${toHex(nonce)}\nfrom: ${toHex(this.config.accountIndex!)} (route ${toHex(ROUTE_PERP)})\napi key: ${toHex(apiKeyIndex)}\nto: ${toHex(toAccountIndex)} (route ${toHex(ROUTE_PERP)})\nasset: ${toHex(ASSET_ID_USDC)}\namount: ${toHex(amountMicroUsdc)}\nfee: ${toHex(fee)}\nchainId: ${toHex(CHAIN_ID)}\nmemo: ${memoHex}\nOnly sign this message for a trusted client!`;
-      
+
       // Sign L1 message with Ethereum private key
       const wallet = new ethers.Wallet(normalizedEthKey);
       const l1Sig = await wallet.signMessage(l1Message);
 
       // Access the internal wallet signer from the SignerClient
       const wasmSigner = (this.signerClient as any).wallet;
-      
+
       // Sign transfer using the internal WASM signer (which has the correct Lighter key)
       const transferResult = await wasmSigner.signTransfer({
         toAccountIndex: toAccountIndex,
@@ -2803,8 +3334,10 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
       const txInfoStr = JSON.stringify(txInfoParsed);
 
       // 7. Submit to fastwithdraw endpoint (auth as query param)
-      this.logger.log(`📤 Submitting fast withdraw of $${amount.toFixed(2)} USDC to ${destination}...`);
-      
+      this.logger.log(
+        `📤 Submitting fast withdraw of $${amount.toFixed(2)} USDC to ${destination}...`,
+      );
+
       const formData = new URLSearchParams();
       formData.append('tx_info', txInfoStr);
       formData.append('to_address', destination);
@@ -2817,23 +3350,32 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
             'Content-Type': 'application/x-www-form-urlencoded',
           },
           timeout: 30000,
-        }
+        },
       );
 
       if (response.data.code === 200) {
-        const txHash = response.data.tx_hash || response.data.txHash || `lighter-fastwithdraw-${Date.now()}`;
+        const txHash =
+          response.data.tx_hash ||
+          response.data.txHash ||
+          `lighter-fastwithdraw-${Date.now()}`;
         this.logger.log(`✅ Fast withdrawal successful! TX: ${txHash}`);
-        this.logger.log(`   Amount: $${amount.toFixed(2)} USDC (fee: $${feeUsdc.toFixed(2)})`);
+        this.logger.log(
+          `   Amount: $${amount.toFixed(2)} USDC (fee: $${feeUsdc.toFixed(2)})`,
+        );
         this.logger.log(`   Destination: ${destination}`);
         return txHash;
       } else {
-        throw new Error(`Fast withdrawal failed: ${response.data.message || JSON.stringify(response.data)}`);
+        throw new Error(
+          `Fast withdrawal failed: ${response.data.message || JSON.stringify(response.data)}`,
+        );
       }
     } catch (error: any) {
       if (error instanceof ExchangeError) {
         throw error;
       }
-      this.logger.error(`Failed to withdraw ${asset} to ${destination}: ${error.message}`);
+      this.logger.error(
+        `Failed to withdraw ${asset} to ${destination}: ${error.message}`,
+      );
       throw new ExchangeError(
         `Failed to withdraw: ${error.message}`,
         ExchangeType.LIGHTER,
@@ -2850,30 +3392,38 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
    * @param endTime Optional end time in milliseconds (not used by Lighter API)
    * @returns Array of funding payments
    */
-  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+  async getFundingPayments(
+    startTime?: number,
+    endTime?: number,
+  ): Promise<FundingPayment[]> {
     try {
       await this.ensureInitialized();
 
-      this.logger.debug(`Fetching funding payments from Lighter for account ${this.config.accountIndex}`);
+      this.logger.debug(
+        `Fetching funding payments from Lighter for account ${this.config.accountIndex}`,
+      );
 
       // Create auth token for the request
       const authToken = await this.signerClient!.createAuthTokenWithExpiry(600); // 10 minutes
 
       // Call the positionFunding endpoint
-      const response = await axios.get(`${this.config.baseUrl}/api/v1/positionFunding`, {
-        params: {
-          account_index: this.config.accountIndex,
-          limit: 100,
-          auth: authToken,
+      const response = await axios.get(
+        `${this.config.baseUrl}/api/v1/positionFunding`,
+        {
+          params: {
+            account_index: this.config.accountIndex,
+            limit: 100,
+            auth: authToken,
+          },
+          timeout: 30000,
+          headers: {
+            accept: 'application/json',
+          },
         },
-        timeout: 30000,
-        headers: {
-          'accept': 'application/json',
-        },
-      });
+      );
 
       const data = response.data;
-      
+
       // Parse response: { code: 200, position_fundings: [...] }
       let fundingData: any[] = [];
       if (data.position_fundings && Array.isArray(data.position_fundings)) {
@@ -2892,7 +3442,7 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         // { timestamp, market_id, funding_id, change, rate, position_size, position_side }
         const amount = parseFloat(entry.change || '0');
         const marketId = entry.market_id || 0;
-        
+
         // Get symbol from market index
         let symbol = `Market-${marketId}`;
         for (const [sym, idx] of this.marketIndexCache.entries()) {
@@ -2912,7 +3462,9 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
         });
       }
 
-      this.logger.debug(`Retrieved ${payments.length} funding payments from Lighter`);
+      this.logger.debug(
+        `Retrieved ${payments.length} funding payments from Lighter`,
+      );
       return payments;
     } catch (error: any) {
       this.logger.error(`Failed to get funding payments: ${error.message}`);
@@ -2925,4 +3477,3 @@ export class LighterExchangeAdapter implements IPerpExchangeAdapter, OnModuleDes
     }
   }
 }
-

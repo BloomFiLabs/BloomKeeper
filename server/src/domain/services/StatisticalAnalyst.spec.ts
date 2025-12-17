@@ -43,18 +43,17 @@ describe('StatisticalAnalyst', () => {
   });
 
   it('should detect mean reversion (random noise)', () => {
-      const candles: Candle[] = [];
-      let price = 1000;
-      for (let i = 0; i < 100; i++) {
-          // Oscillate around 1000
-          price = 1000 + (Math.random() - 0.5) * 20; 
-          candles.push(new Candle(new Date(), 0, 0, 0, price, 0));
-      }
-      
-      const result = analyst.analyze(candles);
-      // Random walk H ~ 0.5 or mean reverting H < 0.5
-      // With simple random noise around a mean, it is mean-reverting, so H < 0.5
-      expect(result.hurst.value).toBeLessThan(0.5);
+    const candles: Candle[] = [];
+    let price = 1000;
+    for (let i = 0; i < 100; i++) {
+      // Oscillate around 1000
+      price = 1000 + (Math.random() - 0.5) * 20;
+      candles.push(new Candle(new Date(), 0, 0, 0, price, 0));
+    }
+
+    const result = analyst.analyze(candles);
+    // Random walk H ~ 0.5 or mean reverting H < 0.5
+    // With simple random noise around a mean, it is mean-reverting, so H < 0.5
+    expect(result.hurst.value).toBeLessThan(0.5);
   });
 });
-

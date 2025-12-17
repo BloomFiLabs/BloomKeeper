@@ -37,7 +37,7 @@ describe('RateLimiterService', () => {
     it('should have limits for all exchanges', () => {
       const hyperliquidLimit = service.getLimit(ExchangeType.HYPERLIQUID);
       const asterLimit = service.getLimit(ExchangeType.ASTER);
-      
+
       expect(hyperliquidLimit).toBeDefined();
       expect(asterLimit).toBeDefined();
     });
@@ -103,7 +103,7 @@ describe('RateLimiterService', () => {
 
     it('should return zero for unknown exchange', () => {
       const usage = service.getUsage('UNKNOWN' as ExchangeType);
-      
+
       expect(usage.currentRequestsPerSecond).toBe(0);
       expect(usage.maxRequestsPerSecond).toBe(0);
     });
@@ -117,16 +117,20 @@ describe('RateLimiterService', () => {
       const allUsage = service.getAllUsage();
 
       expect(allUsage.size).toBeGreaterThan(0);
-      expect(allUsage.get(ExchangeType.LIGHTER)?.currentRequestsPerSecond).toBe(1);
-      expect(allUsage.get(ExchangeType.HYPERLIQUID)?.currentRequestsPerSecond).toBe(1);
+      expect(allUsage.get(ExchangeType.LIGHTER)?.currentRequestsPerSecond).toBe(
+        1,
+      );
+      expect(
+        allUsage.get(ExchangeType.HYPERLIQUID)?.currentRequestsPerSecond,
+      ).toBe(1);
     });
   });
 
   describe('setLimit', () => {
     it('should update rate limits at runtime', () => {
-      service.setLimit(ExchangeType.LIGHTER, { 
+      service.setLimit(ExchangeType.LIGHTER, {
         maxRequestsPerSecond: 3,
-        maxRequestsPerMinute: 50 
+        maxRequestsPerMinute: 50,
       });
 
       const limit = service.getLimit(ExchangeType.LIGHTER);
@@ -168,9 +172,9 @@ describe('RateLimiterService', () => {
   describe('rate limiting behavior', () => {
     it('should throttle requests when limit exceeded', async () => {
       // Set a very low limit for testing
-      service.setLimit(ExchangeType.LIGHTER, { 
+      service.setLimit(ExchangeType.LIGHTER, {
         maxRequestsPerSecond: 2,
-        maxRequestsPerMinute: 100 
+        maxRequestsPerMinute: 100,
       });
 
       const startTime = Date.now();
@@ -183,15 +187,15 @@ describe('RateLimiterService', () => {
       await service.acquire(ExchangeType.LIGHTER);
 
       const elapsed = Date.now() - startTime;
-      
+
       // Should have waited at least some time (100ms minimum due to buffer)
       expect(elapsed).toBeGreaterThanOrEqual(100);
     }, 5000);
 
     it('should allow requests after window expires', async () => {
-      service.setLimit(ExchangeType.LIGHTER, { 
+      service.setLimit(ExchangeType.LIGHTER, {
         maxRequestsPerSecond: 2,
-        maxRequestsPerMinute: 100 
+        maxRequestsPerMinute: 100,
       });
 
       // Acquire 2 (at limit)
@@ -199,7 +203,7 @@ describe('RateLimiterService', () => {
       await service.acquire(ExchangeType.LIGHTER);
 
       // Wait for window to expire
-      await new Promise(resolve => setTimeout(resolve, 1100));
+      await new Promise((resolve) => setTimeout(resolve, 1100));
 
       // Should be able to acquire again
       const result = service.tryAcquire(ExchangeType.LIGHTER);
@@ -223,7 +227,8 @@ describe('RateLimiterService', () => {
         ],
       }).compile();
 
-      const configuredService = module.get<RateLimiterService>(RateLimiterService);
+      const configuredService =
+        module.get<RateLimiterService>(RateLimiterService);
       const limit = configuredService.getLimit(ExchangeType.LIGHTER);
 
       expect(limit?.maxRequestsPerSecond).toBe(3);
@@ -231,5 +236,3 @@ describe('RateLimiterService', () => {
     });
   });
 });
-
-

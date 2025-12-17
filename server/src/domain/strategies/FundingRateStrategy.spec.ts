@@ -1,5 +1,11 @@
-import { FundingRateStrategy, FundingRateStrategyConfig } from './FundingRateStrategy';
-import { IExecutableStrategy, StrategyExecutionResult } from './IExecutableStrategy';
+import {
+  FundingRateStrategy,
+  FundingRateStrategyConfig,
+} from './FundingRateStrategy';
+import {
+  IExecutableStrategy,
+  StrategyExecutionResult,
+} from './IExecutableStrategy';
 
 // Mock interfaces for dependencies
 interface MockFundingDataProvider {
@@ -9,8 +15,17 @@ interface MockFundingDataProvider {
 }
 
 interface MockHyperLiquidExecutor {
-  getPosition(strategyAddress: string): Promise<{ size: number; side: 'long' | 'short' | 'none'; entryPrice: number }>;
-  placeOrder(strategyAddress: string, isLong: boolean, size: number, price: number): Promise<string>;
+  getPosition(strategyAddress: string): Promise<{
+    size: number;
+    side: 'long' | 'short' | 'none';
+    entryPrice: number;
+  }>;
+  placeOrder(
+    strategyAddress: string,
+    isLong: boolean,
+    size: number,
+    price: number,
+  ): Promise<string>;
   closePosition(strategyAddress: string): Promise<string>;
   getEquity(strategyAddress: string): Promise<number>;
   getMarkPrice(asset: string): Promise<number>;
@@ -20,7 +35,7 @@ describe('FundingRateStrategy', () => {
   let strategy: FundingRateStrategy;
   let mockFundingProvider: jest.Mocked<MockFundingDataProvider>;
   let mockExecutor: jest.Mocked<MockHyperLiquidExecutor>;
-  
+
   const defaultConfig: FundingRateStrategyConfig = {
     name: 'ETH Funding Rate',
     chainId: 999, // HyperEVM
@@ -38,7 +53,7 @@ describe('FundingRateStrategy', () => {
       getPredictedFundingRate: jest.fn(),
       getOpenInterest: jest.fn(),
     };
-    
+
     mockExecutor = {
       getPosition: jest.fn(),
       placeOrder: jest.fn(),
@@ -46,7 +61,7 @@ describe('FundingRateStrategy', () => {
       getEquity: jest.fn(),
       getMarkPrice: jest.fn().mockResolvedValue(3000), // Default ETH price
     };
-    
+
     strategy = new FundingRateStrategy(
       defaultConfig,
       mockFundingProvider as any,
@@ -64,7 +79,9 @@ describe('FundingRateStrategy', () => {
     });
 
     it('should implement contractAddress property', () => {
-      expect(strategy.contractAddress).toBe('0x247062659f997BDb5975b984c2bE2aDF87661314');
+      expect(strategy.contractAddress).toBe(
+        '0x247062659f997BDb5975b984c2bE2aDF87661314',
+      );
     });
 
     it('should implement isEnabled/setEnabled', () => {
@@ -77,9 +94,9 @@ describe('FundingRateStrategy', () => {
   describe('execute() - Entry conditions', () => {
     it('should skip execution when disabled', async () => {
       strategy.setEnabled(false);
-      
+
       const result = await strategy.execute();
-      
+
       expect(result.executed).toBe(false);
       expect(result.reason).toContain('disabled');
     });
@@ -88,12 +105,16 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(0.0005); // 0.05% per 8h
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(0.0004);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 0, side: 'none', entryPrice: 0 });
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 0,
+        side: 'none',
+        entryPrice: 0,
+      });
       mockExecutor.getEquity.mockResolvedValue(10000);
       mockExecutor.placeOrder.mockResolvedValue('0xabc123');
-      
+
       const result = await strategy.execute();
-      
+
       expect(result.executed).toBe(true);
       expect(result.action).toBe('OPEN_SHORT');
       expect(mockExecutor.placeOrder).toHaveBeenCalledWith(
@@ -108,12 +129,16 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(-0.0005); // -0.05% per 8h
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(-0.0004);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 0, side: 'none', entryPrice: 0 });
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 0,
+        side: 'none',
+        entryPrice: 0,
+      });
       mockExecutor.getEquity.mockResolvedValue(10000);
       mockExecutor.placeOrder.mockResolvedValue('0xdef456');
-      
+
       const result = await strategy.execute();
-      
+
       expect(result.executed).toBe(true);
       expect(result.action).toBe('OPEN_LONG');
       expect(mockExecutor.placeOrder).toHaveBeenCalledWith(
@@ -128,11 +153,15 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(0.00005); // 0.005% - below threshold
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(0.00004);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 0, side: 'none', entryPrice: 0 });
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 0,
+        side: 'none',
+        entryPrice: 0,
+      });
       mockExecutor.getEquity.mockResolvedValue(10000);
-      
+
       const result = await strategy.execute();
-      
+
       expect(result.executed).toBe(false);
       expect(result.reason).toContain('below threshold');
       expect(mockExecutor.placeOrder).not.toHaveBeenCalled();
@@ -144,11 +173,15 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(0.0005); // Still positive
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(0.0004);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 1000, side: 'short', entryPrice: 3000 });
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 1000,
+        side: 'short',
+        entryPrice: 3000,
+      });
       mockExecutor.getEquity.mockResolvedValue(10000);
-      
+
       const result = await strategy.execute();
-      
+
       expect(result.executed).toBe(false);
       expect(result.action).toBe('HOLD');
       expect(result.reason).toContain('favorable');
@@ -160,12 +193,16 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(-0.00008); // Weak negative
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(-0.00006);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 1000, side: 'short', entryPrice: 3000 }); // We're short
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 1000,
+        side: 'short',
+        entryPrice: 3000,
+      }); // We're short
       mockExecutor.getEquity.mockResolvedValue(10000);
       mockExecutor.closePosition.mockResolvedValue('0xclose123');
-      
+
       const result = await strategy.execute();
-      
+
       expect(result.executed).toBe(true);
       expect(result.action).toBe('CLOSE_POSITION');
       expect(mockExecutor.closePosition).toHaveBeenCalled();
@@ -175,13 +212,17 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(-0.0008); // Strong negative
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(-0.0007);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 1000, side: 'short', entryPrice: 3000 });
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 1000,
+        side: 'short',
+        entryPrice: 3000,
+      });
       mockExecutor.getEquity.mockResolvedValue(10000);
       mockExecutor.closePosition.mockResolvedValue('0xclose123');
       mockExecutor.placeOrder.mockResolvedValue('0xflip456');
-      
+
       const result = await strategy.execute();
-      
+
       expect(result.executed).toBe(true);
       expect(result.action).toBe('FLIP_TO_LONG');
     });
@@ -192,11 +233,15 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(0.0005);
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(0.0004);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 1000, side: 'short', entryPrice: 3000 });
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 1000,
+        side: 'short',
+        entryPrice: 3000,
+      });
       mockExecutor.getEquity.mockResolvedValue(10500);
-      
+
       const metrics = await strategy.getMetrics();
-      
+
       expect(metrics).toHaveProperty('currentFundingRate');
       expect(metrics).toHaveProperty('predictedFundingRate');
       expect(metrics).toHaveProperty('positionSide');
@@ -209,11 +254,13 @@ describe('FundingRateStrategy', () => {
   describe('emergencyExit()', () => {
     it('should close all positions and return tx hash', async () => {
       mockExecutor.closePosition.mockResolvedValue('0xemergency789');
-      
+
       const txHash = await strategy.emergencyExit();
-      
+
       expect(txHash).toBe('0xemergency789');
-      expect(mockExecutor.closePosition).toHaveBeenCalledWith(defaultConfig.contractAddress);
+      expect(mockExecutor.closePosition).toHaveBeenCalledWith(
+        defaultConfig.contractAddress,
+      );
     });
   });
 
@@ -225,16 +272,19 @@ describe('FundingRateStrategy', () => {
       mockFundingProvider.getCurrentFundingRate.mockResolvedValue(0.0005);
       mockFundingProvider.getPredictedFundingRate.mockResolvedValue(0.0005);
       mockFundingProvider.getOpenInterest.mockResolvedValue(100000000);
-      mockExecutor.getPosition.mockResolvedValue({ size: 0, side: 'none', entryPrice: 0 });
+      mockExecutor.getPosition.mockResolvedValue({
+        size: 0,
+        side: 'none',
+        entryPrice: 0,
+      });
       mockExecutor.getEquity.mockResolvedValue(10000);
-      
+
       const metrics = await strategy.getMetrics();
       const estimatedAPY = metrics.estimatedAPY as number;
-      
+
       // 0.05% * 3 * 365 = 54.75% simple APY
       expect(estimatedAPY).toBeGreaterThan(50);
       expect(estimatedAPY).toBeLessThan(60);
     });
   });
 });
-

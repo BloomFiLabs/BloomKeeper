@@ -103,5 +103,3 @@ describe('PerpPosition', () => {
     }).toThrow('Entry price must be greater than 0');
   });
 });
-
-

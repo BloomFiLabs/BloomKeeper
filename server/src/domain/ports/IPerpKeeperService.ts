@@ -1,5 +1,8 @@
 import { ExchangeType } from '../value-objects/ExchangeConfig';
-import { PerpOrderRequest, PerpOrderResponse } from '../value-objects/PerpOrder';
+import {
+  PerpOrderRequest,
+  PerpOrderResponse,
+} from '../value-objects/PerpOrder';
 import { PerpPosition } from '../entities/PerpPosition';
 import { PerpOrder } from '../entities/PerpOrder';
 import { IPerpExchangeAdapter } from './IPerpExchangeAdapter';
@@ -28,7 +31,7 @@ export interface PositionMonitoringResult {
 
 /**
  * IPerpKeeperService - Main interface for the perpetual keeper service
- * 
+ *
  * This service orchestrates perpetual trading operations across multiple exchanges.
  * It manages order placement, position monitoring, and strategy execution.
  */
@@ -54,7 +57,10 @@ export interface IPerpKeeperService {
    * @returns Order response
    * @throws Error if order placement fails
    */
-  placeOrder(exchangeType: ExchangeType, request: PerpOrderRequest): Promise<PerpOrderResponse>;
+  placeOrder(
+    exchangeType: ExchangeType,
+    request: PerpOrderRequest,
+  ): Promise<PerpOrderResponse>;
 
   /**
    * Place orders on multiple exchanges (for redundancy or arbitrage)
@@ -71,7 +77,10 @@ export interface IPerpKeeperService {
    * @param symbol Trading symbol
    * @returns Position or null if no position
    */
-  getPosition(exchangeType: ExchangeType, symbol: string): Promise<PerpPosition | null>;
+  getPosition(
+    exchangeType: ExchangeType,
+    symbol: string,
+  ): Promise<PerpPosition | null>;
 
   /**
    * Get all positions across all exchanges
@@ -92,7 +101,11 @@ export interface IPerpKeeperService {
    * @param symbol Trading symbol (optional)
    * @returns True if cancellation was successful
    */
-  cancelOrder(exchangeType: ExchangeType, orderId: string, symbol?: string): Promise<boolean>;
+  cancelOrder(
+    exchangeType: ExchangeType,
+    orderId: string,
+    symbol?: string,
+  ): Promise<boolean>;
 
   /**
    * Cancel all orders for a symbol on a specific exchange
@@ -109,7 +122,9 @@ export interface IPerpKeeperService {
    * @returns Strategy execution result
    */
   executeStrategy(
-    strategy: (adapters: Map<ExchangeType, IPerpExchangeAdapter>) => Promise<StrategyExecutionResult>,
+    strategy: (
+      adapters: Map<ExchangeType, IPerpExchangeAdapter>,
+    ) => Promise<StrategyExecutionResult>,
   ): Promise<StrategyExecutionResult>;
 
   /**
@@ -119,7 +134,11 @@ export interface IPerpKeeperService {
    * @param symbol Trading symbol (optional)
    * @returns Order response with current status
    */
-  getOrderStatus(exchangeType: ExchangeType, orderId: string, symbol?: string): Promise<PerpOrderResponse>;
+  getOrderStatus(
+    exchangeType: ExchangeType,
+    orderId: string,
+    symbol?: string,
+  ): Promise<PerpOrderResponse>;
 
   /**
    * Get mark price from a specific exchange
@@ -155,5 +174,3 @@ export interface IPerpKeeperService {
    */
   testAllConnections(): Promise<void>;
 }
-
-

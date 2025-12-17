@@ -48,13 +48,10 @@ export interface IPortfolioOptimizer {
     targetAggregateAPY?: number,
   ): Promise<PortfolioAllocation>;
 
-  calculateDataQualityRiskFactor(
-    opportunity: ArbitrageOpportunity,
-  ): number;
+  calculateDataQualityRiskFactor(opportunity: ArbitrageOpportunity): number;
 
   validateHistoricalDataQuality(
     opportunity: ArbitrageOpportunity,
     historicalSpread: number,
   ): { isValid: boolean; reason?: string };
 }
-

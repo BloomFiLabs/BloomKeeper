@@ -120,7 +120,7 @@ describe('DiagnosticsService', () => {
 
     it('should resolve single-leg events', () => {
       const id = 'single-2';
-      
+
       service.recordSingleLegStart({
         id,
         symbol: 'BTCUSDT',
@@ -134,7 +134,7 @@ describe('DiagnosticsService', () => {
 
       const diagnostics = service.getDiagnostics();
       const activeSingleLeg = diagnostics.singleLegs.active.find(
-        sl => sl.symbol === 'BTCUSDT' && sl.exchange === ExchangeType.ASTER
+        (sl) => sl.symbol === 'BTCUSDT' && sl.exchange === ExchangeType.ASTER,
       );
       expect(activeSingleLeg).toBeUndefined();
     });
@@ -171,14 +171,17 @@ describe('DiagnosticsService', () => {
       const mockRateLimiter = {
         getAllUsage: jest.fn().mockReturnValue(
           new Map([
-            [ExchangeType.LIGHTER, {
-              currentRequestsPerSecond: 3,
-              maxRequestsPerSecond: 5,
-              currentRequestsPerMinute: 50,
-              maxRequestsPerMinute: 100,
-              queuedRequests: 0,
-            }],
-          ])
+            [
+              ExchangeType.LIGHTER,
+              {
+                currentRequestsPerSecond: 3,
+                maxRequestsPerSecond: 5,
+                currentRequestsPerMinute: 50,
+                maxRequestsPerMinute: 100,
+                queuedRequests: 0,
+              },
+            ],
+          ]),
         ),
       } as unknown as RateLimiterService;
 
@@ -186,9 +189,16 @@ describe('DiagnosticsService', () => {
 
       const diagnostics = service.getDiagnostics();
       expect(diagnostics.rateLimiter).toBeDefined();
-      expect(diagnostics.rateLimiter?.byExchange[ExchangeType.LIGHTER]).toBeDefined();
-      expect(diagnostics.rateLimiter?.byExchange[ExchangeType.LIGHTER].currentPerSecond).toBe(3);
-      expect(diagnostics.rateLimiter?.byExchange[ExchangeType.LIGHTER].maxPerSecond).toBe(5);
+      expect(
+        diagnostics.rateLimiter?.byExchange[ExchangeType.LIGHTER],
+      ).toBeDefined();
+      expect(
+        diagnostics.rateLimiter?.byExchange[ExchangeType.LIGHTER]
+          .currentPerSecond,
+      ).toBe(3);
+      expect(
+        diagnostics.rateLimiter?.byExchange[ExchangeType.LIGHTER].maxPerSecond,
+      ).toBe(5);
     });
 
     it('should not include rate limiter if not set', () => {
@@ -295,4 +305,3 @@ describe('DiagnosticsService', () => {
     });
   });
 });
-

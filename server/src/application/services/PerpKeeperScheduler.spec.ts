@@ -35,7 +35,9 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
       discoverCommonAssets: jest.fn(),
       findArbitrageOpportunities: jest.fn(),
       executeArbitrageStrategy: jest.fn(),
-      healthCheck: jest.fn().mockResolvedValue({ healthy: true, exchanges: new Map() }),
+      healthCheck: jest
+        .fn()
+        .mockResolvedValue({ healthy: true, exchanges: new Map() }),
       getAllPositionsWithMetrics: jest.fn().mockResolvedValue({
         positions: [],
         totalUnrealizedPnl: 0,
@@ -66,7 +68,10 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
         PerpKeeperScheduler,
         { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
         { provide: ConfigService, useValue: mockConfigService },
-        { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+        {
+          provide: PerpKeeperPerformanceLogger,
+          useValue: mockPerformanceLogger,
+        },
         { provide: PerpKeeperService, useValue: mockKeeperService },
       ],
     }).compile();
@@ -88,13 +93,16 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
-      
+
       // Access private property via type assertion for testing
       const blacklist = (newScheduler as any).blacklistedSymbols as Set<string>;
       expect(blacklist.has('NVDA')).toBe(true);
@@ -114,14 +122,17 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
       const blacklist = (newScheduler as any).blacklistedSymbols as Set<string>;
-      
+
       // Both NVDAUSDT and NVDA should normalize to NVDA
       expect(blacklist.has('NVDA')).toBe(true);
       expect(blacklist.size).toBe(1); // Should deduplicate
@@ -139,14 +150,17 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
       const blacklist = (newScheduler as any).blacklistedSymbols as Set<string>;
-      
+
       expect(blacklist.has('NVDA')).toBe(true);
       expect(blacklist.size).toBe(1);
     });
@@ -163,23 +177,32 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
     });
 
     it('should filter blacklisted symbols from discovered assets', async () => {
-      mockOrchestrator.discoverCommonAssets.mockResolvedValue(['ETH', 'BTC', 'NVDA', 'TSLA', 'SOL']);
+      mockOrchestrator.discoverCommonAssets.mockResolvedValue([
+        'ETH',
+        'BTC',
+        'NVDA',
+        'TSLA',
+        'SOL',
+      ]);
 
       const module: TestingModule = await Test.createTestingModule({
         providers: [
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
-      
+
       // Call private method via type assertion
       const symbols = await (newScheduler as any).discoverAssetsIfNeeded();
-      
+
       expect(symbols).not.toContain('NVDA');
       expect(symbols).not.toContain('TSLA');
       expect(symbols).toContain('ETH');
@@ -201,14 +224,17 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
       const symbols = (newScheduler as any).symbols as string[];
-      
+
       expect(symbols).not.toContain('NVDA');
       expect(symbols).not.toContain('TSLA');
       expect(symbols).toContain('ETH');
@@ -270,23 +296,29 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
-      
+
       // Mock the private method to return filtered symbols
-      (newScheduler as any).discoverAssetsIfNeeded = jest.fn().mockResolvedValue(['ETH']);
-      
+      (newScheduler as any).discoverAssetsIfNeeded = jest
+        .fn()
+        .mockResolvedValue(['ETH']);
+
       // Execute hourly (this will test the filtering)
       await (newScheduler as any).executeHourly();
 
       // Verify that findArbitrageOpportunities was called with filtered symbols
       expect(mockOrchestrator.findArbitrageOpportunities).toHaveBeenCalled();
-      const callArgs = mockOrchestrator.findArbitrageOpportunities.mock.calls[0];
-      const symbolsPassed = callArgs[0] as string[];
+      const callArgs =
+        mockOrchestrator.findArbitrageOpportunities.mock.calls[0];
+      const symbolsPassed = callArgs[0];
       expect(symbolsPassed).not.toContain('NVDA');
     });
 
@@ -334,20 +366,26 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
-      (newScheduler as any).discoverAssetsIfNeeded = jest.fn().mockResolvedValue(['ETH']);
-      
+      (newScheduler as any).discoverAssetsIfNeeded = jest
+        .fn()
+        .mockResolvedValue(['ETH']);
+
       await (newScheduler as any).executeHourly();
 
       // Verify executeArbitrageStrategy was called with filtered symbols (not including NVDA)
       expect(mockOrchestrator.executeArbitrageStrategy).toHaveBeenCalled();
-      const executeCallArgs = mockOrchestrator.executeArbitrageStrategy.mock.calls[0];
-      const symbolsPassed = executeCallArgs[0] as string[];
+      const executeCallArgs =
+        mockOrchestrator.executeArbitrageStrategy.mock.calls[0];
+      const symbolsPassed = executeCallArgs[0];
       expect(symbolsPassed).not.toContain('NVDA');
     });
   });
@@ -368,14 +406,19 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
-      const isBlacklisted = (newScheduler as any).isBlacklisted.bind(newScheduler);
-      
+      const isBlacklisted = (newScheduler as any).isBlacklisted.bind(
+        newScheduler,
+      );
+
       expect(isBlacklisted('NVDA')).toBe(true);
       expect(isBlacklisted('NVDAUSDT')).toBe(true); // Should normalize
       expect(isBlacklisted('ETH')).toBe(false);
@@ -388,23 +431,22 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
           PerpKeeperScheduler,
           { provide: PerpKeeperOrchestrator, useValue: mockOrchestrator },
           { provide: ConfigService, useValue: mockConfigService },
-          { provide: PerpKeeperPerformanceLogger, useValue: mockPerformanceLogger },
+          {
+            provide: PerpKeeperPerformanceLogger,
+            useValue: mockPerformanceLogger,
+          },
           { provide: PerpKeeperService, useValue: mockKeeperService },
         ],
       }).compile();
 
       const newScheduler = module.get<PerpKeeperScheduler>(PerpKeeperScheduler);
-      const isBlacklisted = (newScheduler as any).isBlacklisted.bind(newScheduler);
-      
+      const isBlacklisted = (newScheduler as any).isBlacklisted.bind(
+        newScheduler,
+      );
+
       expect(isBlacklisted('nvda')).toBe(true);
       expect(isBlacklisted('NvDa')).toBe(true);
       expect(isBlacklisted('NVDA')).toBe(true);
     });
   });
 });
-
-
-
-
-
-

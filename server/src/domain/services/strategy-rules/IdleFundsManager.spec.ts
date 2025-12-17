@@ -32,17 +32,26 @@ describe('IdleFundsManager', () => {
 
     // Create mock adapters
     mockAdapters = new Map();
-    const createMockAdapter = (exchange: ExchangeType): jest.Mocked<IPerpExchangeAdapter> => ({
-      getBalance: jest.fn(),
-      getPositions: jest.fn(),
-      getOrderStatus: jest.fn(),
-      placeOrder: jest.fn(),
-      cancelOrder: jest.fn(),
-      getMarkPrice: jest.fn(),
-    } as any);
+    const createMockAdapter = (
+      exchange: ExchangeType,
+    ): jest.Mocked<IPerpExchangeAdapter> =>
+      ({
+        getBalance: jest.fn(),
+        getPositions: jest.fn(),
+        getOrderStatus: jest.fn(),
+        placeOrder: jest.fn(),
+        cancelOrder: jest.fn(),
+        getMarkPrice: jest.fn(),
+      }) as any;
 
-    mockAdapters.set(ExchangeType.HYPERLIQUID, createMockAdapter(ExchangeType.HYPERLIQUID));
-    mockAdapters.set(ExchangeType.LIGHTER, createMockAdapter(ExchangeType.LIGHTER));
+    mockAdapters.set(
+      ExchangeType.HYPERLIQUID,
+      createMockAdapter(ExchangeType.HYPERLIQUID),
+    );
+    mockAdapters.set(
+      ExchangeType.LIGHTER,
+      createMockAdapter(ExchangeType.LIGHTER),
+    );
     mockAdapters.set(ExchangeType.ASTER, createMockAdapter(ExchangeType.ASTER));
   });
 
@@ -91,9 +100,14 @@ describe('IdleFundsManager', () => {
     it('should detect unused balance on exchanges with no positions or orders', async () => {
       const positions: PerpPosition[] = [];
       const openOrders = new Map<ExchangeType, string[]>();
-      const failedOrders = new Map<ExchangeType, Array<{ orderId: string; symbol: string; timestamp: Date }>>();
+      const failedOrders = new Map<
+        ExchangeType,
+        Array<{ orderId: string; symbol: string; timestamp: Date }>
+      >();
 
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.getBalance.mockResolvedValue(1000);
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .getBalance.mockResolvedValue(1000);
       mockAdapters.get(ExchangeType.LIGHTER)!.getBalance.mockResolvedValue(500);
       mockAdapters.get(ExchangeType.ASTER)!.getBalance.mockResolvedValue(0);
 
@@ -106,16 +120,32 @@ describe('IdleFundsManager', () => {
 
       expect(result.isSuccess).toBe(true);
       expect(result.value.length).toBe(2);
-      expect(result.value.some(info => info.exchange === ExchangeType.HYPERLIQUID && info.idleBalance === 1000)).toBe(true);
-      expect(result.value.some(info => info.exchange === ExchangeType.LIGHTER && info.idleBalance === 500)).toBe(true);
+      expect(
+        result.value.some(
+          (info) =>
+            info.exchange === ExchangeType.HYPERLIQUID &&
+            info.idleBalance === 1000,
+        ),
+      ).toBe(true);
+      expect(
+        result.value.some(
+          (info) =>
+            info.exchange === ExchangeType.LIGHTER && info.idleBalance === 500,
+        ),
+      ).toBe(true);
     });
 
     it('should not detect idle funds below minimum threshold', async () => {
       const positions: PerpPosition[] = [];
       const openOrders = new Map<ExchangeType, string[]>();
-      const failedOrders = new Map<ExchangeType, Array<{ orderId: string; symbol: string; timestamp: Date }>>();
+      const failedOrders = new Map<
+        ExchangeType,
+        Array<{ orderId: string; symbol: string; timestamp: Date }>
+      >();
 
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.getBalance.mockResolvedValue(5); // Below $10 threshold
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .getBalance.mockResolvedValue(5); // Below $10 threshold
 
       const result = await manager.detectIdleFunds(
         mockAdapters,
@@ -131,17 +161,29 @@ describe('IdleFundsManager', () => {
     it('should detect idle funds from failed orders after timeout', async () => {
       const positions: PerpPosition[] = [];
       const openOrders = new Map<ExchangeType, string[]>();
-      const failedOrders = new Map<ExchangeType, Array<{ orderId: string; symbol: string; timestamp: Date }>>();
-      
+      const failedOrders = new Map<
+        ExchangeType,
+        Array<{ orderId: string; symbol: string; timestamp: Date }>
+      >();
+
       const oldTimestamp = new Date(Date.now() - 6 * 60 * 1000); // 6 minutes ago
       failedOrders.set(ExchangeType.HYPERLIQUID, [
         { orderId: 'failed-1', symbol: 'ETHUSDT', timestamp: oldTimestamp },
       ]);
 
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.getBalance.mockResolvedValue(1000);
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.getOrderStatus.mockResolvedValue(
-        new PerpOrderResponse('failed-1', OrderStatus.SUBMITTED, 'ETHUSDT', OrderSide.LONG),
-      );
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .getBalance.mockResolvedValue(1000);
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .getOrderStatus.mockResolvedValue(
+          new PerpOrderResponse(
+            'failed-1',
+            OrderStatus.SUBMITTED,
+            'ETHUSDT',
+            OrderSide.LONG,
+          ),
+        );
 
       const result = await manager.detectIdleFunds(
         mockAdapters,
@@ -151,20 +193,33 @@ describe('IdleFundsManager', () => {
       );
 
       expect(result.isSuccess).toBe(true);
-      const failedOrderIdle = result.value.find(info => info.reason === 'unfilled_order');
+      const failedOrderIdle = result.value.find(
+        (info) => info.reason === 'unfilled_order',
+      );
       expect(failedOrderIdle).toBeDefined();
       expect(failedOrderIdle?.orderId).toBe('failed-1');
     });
 
     it('should account for margin used by existing positions', async () => {
       const positions = [
-        createMockPosition('ETHUSDT', ExchangeType.HYPERLIQUID, OrderSide.LONG, 1, 100),
+        createMockPosition(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          OrderSide.LONG,
+          1,
+          100,
+        ),
       ];
       const openOrders = new Map<ExchangeType, string[]>();
-      const failedOrders = new Map<ExchangeType, Array<{ orderId: string; symbol: string; timestamp: Date }>>();
+      const failedOrders = new Map<
+        ExchangeType,
+        Array<{ orderId: string; symbol: string; timestamp: Date }>
+      >();
 
       // Position value = 1 * 100 = $100, margin = $100 / 10 (leverage) = $10
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.getBalance.mockResolvedValue(1000);
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .getBalance.mockResolvedValue(1000);
       // Available = 1000 - 10 = 990
 
       const result = await manager.detectIdleFunds(
@@ -176,7 +231,9 @@ describe('IdleFundsManager', () => {
 
       expect(result.isSuccess).toBe(true);
       // Should detect idle funds (990 - buffer)
-      const hyperliquidIdle = result.value.find(info => info.exchange === ExchangeType.HYPERLIQUID);
+      const hyperliquidIdle = result.value.find(
+        (info) => info.exchange === ExchangeType.HYPERLIQUID,
+      );
       expect(hyperliquidIdle).toBeDefined();
       expect(hyperliquidIdle!.idleBalance).toBeGreaterThan(0);
     });
@@ -185,16 +242,41 @@ describe('IdleFundsManager', () => {
   describe('rankPositionsByPerformance', () => {
     it('should rank positions by expected return (best first)', () => {
       const positions = [
-        createMockPosition('ETHUSDT', ExchangeType.HYPERLIQUID, OrderSide.LONG, 1, 100),
-        createMockPosition('BTCUSDT', ExchangeType.LIGHTER, OrderSide.SHORT, 0.5, 50000),
+        createMockPosition(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          OrderSide.LONG,
+          1,
+          100,
+        ),
+        createMockPosition(
+          'BTCUSDT',
+          ExchangeType.LIGHTER,
+          OrderSide.SHORT,
+          0.5,
+          50000,
+        ),
       ];
 
       const opportunities = [
-        createMockOpportunity('ETHUSDT', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, 0.5), // 50% APY
-        createMockOpportunity('BTCUSDT', ExchangeType.LIGHTER, ExchangeType.ASTER, 0.2), // 20% APY
+        createMockOpportunity(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+          0.5,
+        ), // 50% APY
+        createMockOpportunity(
+          'BTCUSDT',
+          ExchangeType.LIGHTER,
+          ExchangeType.ASTER,
+          0.2,
+        ), // 20% APY
       ];
 
-      const ranked = manager.rankPositionsByPerformance(positions, opportunities);
+      const ranked = manager.rankPositionsByPerformance(
+        positions,
+        opportunities,
+      );
 
       expect(ranked.length).toBe(2);
       expect(ranked[0].position.symbol).toBe('ETHUSDT'); // Higher APY first
@@ -205,12 +287,21 @@ describe('IdleFundsManager', () => {
 
     it('should handle positions without matching opportunities', () => {
       const positions = [
-        createMockPosition('ETHUSDT', ExchangeType.HYPERLIQUID, OrderSide.LONG, 1, 100),
+        createMockPosition(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          OrderSide.LONG,
+          1,
+          100,
+        ),
       ];
 
       const opportunities: ArbitrageOpportunity[] = [];
 
-      const ranked = manager.rankPositionsByPerformance(positions, opportunities);
+      const ranked = manager.rankPositionsByPerformance(
+        positions,
+        opportunities,
+      );
 
       expect(ranked.length).toBe(1);
       expect(ranked[0].expectedAPY).toBe(0);
@@ -229,11 +320,22 @@ describe('IdleFundsManager', () => {
       ];
 
       const positions = [
-        createMockPosition('ETHUSDT', ExchangeType.HYPERLIQUID, OrderSide.LONG, 1, 100),
+        createMockPosition(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          OrderSide.LONG,
+          1,
+          100,
+        ),
       ];
 
       const opportunities = [
-        createMockOpportunity('ETHUSDT', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, 0.5),
+        createMockOpportunity(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+          0.5,
+        ),
       ];
 
       const exchangeBalances = new Map<ExchangeType, number>();
@@ -248,7 +350,9 @@ describe('IdleFundsManager', () => {
 
       expect(result.isSuccess).toBe(true);
       expect(result.value.length).toBeGreaterThan(0);
-      const bestPerformingAlloc = result.value.find(alloc => alloc.target.reason === 'best_performing');
+      const bestPerformingAlloc = result.value.find(
+        (alloc) => alloc.target.reason === 'best_performing',
+      );
       expect(bestPerformingAlloc).toBeDefined();
       expect(bestPerformingAlloc!.target.opportunity.symbol).toBe('ETHUSDT');
     });
@@ -269,8 +373,18 @@ describe('IdleFundsManager', () => {
 
       const positions: PerpPosition[] = [];
       const opportunities = [
-        createMockOpportunity('ETHUSDT', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, 0.5),
-        createMockOpportunity('BTCUSDT', ExchangeType.HYPERLIQUID, ExchangeType.ASTER, 0.3),
+        createMockOpportunity(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+          0.5,
+        ),
+        createMockOpportunity(
+          'BTCUSDT',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.ASTER,
+          0.3,
+        ),
       ];
 
       const exchangeBalances = new Map<ExchangeType, number>();
@@ -286,16 +400,26 @@ describe('IdleFundsManager', () => {
 
       expect(result.isSuccess).toBe(true);
       expect(result.value.length).toBeGreaterThan(0);
-      const nextOpportunityAlloc = result.value.find(alloc => alloc.target.reason === 'next_opportunity');
+      const nextOpportunityAlloc = result.value.find(
+        (alloc) => alloc.target.reason === 'next_opportunity',
+      );
       expect(nextOpportunityAlloc).toBeDefined();
       // Should allocate to ETHUSDT first (higher expected return)
-      const ethAlloc = result.value.find(alloc => alloc.target.opportunity.symbol === 'ETHUSDT');
+      const ethAlloc = result.value.find(
+        (alloc) => alloc.target.opportunity.symbol === 'ETHUSDT',
+      );
       expect(ethAlloc).toBeDefined();
     });
 
     it('should return empty array if no idle funds', () => {
       const idleFunds: any[] = [];
-      const opportunities = [createMockOpportunity('ETHUSDT', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER)];
+      const opportunities = [
+        createMockOpportunity(
+          'ETHUSDT',
+          ExchangeType.HYPERLIQUID,
+          ExchangeType.LIGHTER,
+        ),
+      ];
       const positions: PerpPosition[] = [];
       const exchangeBalances = new Map<ExchangeType, number>();
 
@@ -344,7 +468,11 @@ describe('IdleFundsManager', () => {
             reason: 'unused_balance' as const,
           },
           target: {
-            opportunity: createMockOpportunity('ETHUSDT', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER),
+            opportunity: createMockOpportunity(
+              'ETHUSDT',
+              ExchangeType.HYPERLIQUID,
+              ExchangeType.LIGHTER,
+            ),
             allocation: 100,
             reason: 'best_performing' as const,
           },
@@ -359,16 +487,28 @@ describe('IdleFundsManager', () => {
         },
       } as any);
 
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG),
-      );
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .placeOrder.mockResolvedValue(
+          new PerpOrderResponse(
+            'order-1',
+            OrderStatus.FILLED,
+            'ETHUSDT',
+            OrderSide.LONG,
+          ),
+        );
 
-      const result = await manager.executeAllocations(allocations, mockAdapters);
+      const result = await manager.executeAllocations(
+        allocations,
+        mockAdapters,
+      );
 
       expect(result.isSuccess).toBe(true);
       expect(result.value.allocated).toBe(100);
       expect(result.value.allocations).toBe(1);
-      expect(mockAdapters.get(ExchangeType.HYPERLIQUID)!.placeOrder).toHaveBeenCalled();
+      expect(
+        mockAdapters.get(ExchangeType.HYPERLIQUID)!.placeOrder,
+      ).toHaveBeenCalled();
     });
 
     it('should cancel failed orders before allocating', async () => {
@@ -382,14 +522,20 @@ describe('IdleFundsManager', () => {
             symbol: 'ETHUSDT',
           },
           target: {
-            opportunity: createMockOpportunity('ETHUSDT', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER),
+            opportunity: createMockOpportunity(
+              'ETHUSDT',
+              ExchangeType.HYPERLIQUID,
+              ExchangeType.LIGHTER,
+            ),
             allocation: 100,
             reason: 'next_opportunity' as const,
           },
         },
       ];
 
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.cancelOrder.mockResolvedValue(true);
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .cancelOrder.mockResolvedValue(true);
       mockExecutionPlanBuilder.buildExecutionPlan.mockResolvedValue({
         isSuccess: true,
         value: {
@@ -397,14 +543,26 @@ describe('IdleFundsManager', () => {
           shortOrder: { price: 100.1 } as any,
         },
       } as any);
-      mockAdapters.get(ExchangeType.HYPERLIQUID)!.placeOrder.mockResolvedValue(
-        new PerpOrderResponse('order-1', OrderStatus.FILLED, 'ETHUSDT', OrderSide.LONG),
+      mockAdapters
+        .get(ExchangeType.HYPERLIQUID)!
+        .placeOrder.mockResolvedValue(
+          new PerpOrderResponse(
+            'order-1',
+            OrderStatus.FILLED,
+            'ETHUSDT',
+            OrderSide.LONG,
+          ),
+        );
+
+      const result = await manager.executeAllocations(
+        allocations,
+        mockAdapters,
       );
 
-      const result = await manager.executeAllocations(allocations, mockAdapters);
-
       expect(result.isSuccess).toBe(true);
-      expect(mockAdapters.get(ExchangeType.HYPERLIQUID)!.cancelOrder).toHaveBeenCalledWith('failed-1', 'ETHUSDT');
+      expect(
+        mockAdapters.get(ExchangeType.HYPERLIQUID)!.cancelOrder,
+      ).toHaveBeenCalledWith('failed-1', 'ETHUSDT');
     });
 
     it('should handle execution plan build failure gracefully', async () => {
@@ -416,7 +574,11 @@ describe('IdleFundsManager', () => {
             reason: 'unused_balance' as const,
           },
           target: {
-            opportunity: createMockOpportunity('ETHUSDT', ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER),
+            opportunity: createMockOpportunity(
+              'ETHUSDT',
+              ExchangeType.HYPERLIQUID,
+              ExchangeType.LIGHTER,
+            ),
             allocation: 100,
             reason: 'best_performing' as const,
           },
@@ -428,7 +590,10 @@ describe('IdleFundsManager', () => {
         error: { message: 'Build failed' } as any,
       } as any);
 
-      const result = await manager.executeAllocations(allocations, mockAdapters);
+      const result = await manager.executeAllocations(
+        allocations,
+        mockAdapters,
+      );
 
       expect(result.isSuccess).toBe(true);
       expect(result.value.allocated).toBe(0);
@@ -444,6 +609,3 @@ describe('IdleFundsManager', () => {
     });
   });
 });
-
-
-

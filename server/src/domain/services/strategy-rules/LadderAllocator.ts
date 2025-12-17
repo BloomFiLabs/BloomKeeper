@@ -5,7 +5,7 @@ import { ArbitrageExecutionPlan } from '../FundingArbitrageStrategy';
 import { PerpSpotExecutionPlan } from './PerpSpotExecutionPlanBuilder';
 import { PerpPosition } from '../../entities/PerpPosition';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
-import { Result, ok, fail } from '../../common/Result';
+import { Result } from '../../common/Result';
 import { DomainException } from '../../exceptions/DomainException';
 
 /**
@@ -57,7 +57,7 @@ export interface LadderAllocationResult {
 
 /**
  * LadderAllocator - Handles ladder-style portfolio allocation
- * 
+ *
  * Implements greedy allocation strategy:
  * 1. Top up existing positions first
  * 2. Fill new positions sequentially until capital exhausted
@@ -95,7 +95,9 @@ export class LadderAllocator {
         if (filteredTime) {
           const timeSinceFilter = now - filteredTime.getTime();
           if (timeSinceFilter < filterExpiryMs) {
-            const remainingMinutes = Math.ceil((filterExpiryMs - timeSinceFilter) / 60000);
+            const remainingMinutes = Math.ceil(
+              (filterExpiryMs - timeSinceFilter) / 60000,
+            );
             this.logger.debug(
               `Skipping filtered opportunity ${item.opportunity.symbol} - retry in ${remainingMinutes}m`,
             );
@@ -117,8 +119,10 @@ export class LadderAllocator {
         }
 
         // Check if we have ANY balance on BOTH exchanges
-        const minPositionCollateral = this.strategyConfig.minPositionSizeUsd / leverage;
-        const longBalance = exchangeBalances.get(item.opportunity.longExchange) ?? 0;
+        const minPositionCollateral =
+          this.strategyConfig.minPositionSizeUsd / leverage;
+        const longBalance =
+          exchangeBalances.get(item.opportunity.longExchange) ?? 0;
         const shortBalance = item.opportunity.shortExchange
           ? (exchangeBalances.get(item.opportunity.shortExchange) ?? 0)
           : 0;
@@ -143,7 +147,7 @@ export class LadderAllocator {
 
   /**
    * Allocate capital using ladder strategy
-   * 
+   *
    * Ladder allocation fills positions sequentially:
    * - Position 1: $0 to position1Max
    * - Position 2: position1Max+1 to position2Max
@@ -161,7 +165,7 @@ export class LadderAllocator {
 
     this.logger.log(
       `\n📊 Ladder Allocation: $${totalAvailableCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital, ` +
-      `${existingPositionsBySymbol.size} existing position(s)`,
+        `${existingPositionsBySymbol.size} existing position(s)`,
     );
 
     for (let i = 0; i < ladderOpportunities.length; i++) {
@@ -170,7 +174,8 @@ export class LadderAllocator {
       const existingPair = existingPositionsBySymbol.get(symbol);
 
       // If maxPortfolioFor35APY is null, use remaining capital as the cap
-      const maxPortfolio = item.maxPortfolioFor35APY ?? remainingCapital * leverage;
+      const maxPortfolio =
+        item.maxPortfolioFor35APY ?? remainingCapital * leverage;
       const maxCollateral = maxPortfolio / leverage;
 
       // Check if existing positions match the opportunity's exchange pair
@@ -232,7 +237,7 @@ export class LadderAllocator {
       }
     }
 
-    return ok({
+    return Result.success({
       selectedOpportunities,
       remainingCapital,
       cumulativeCapitalUsed,
@@ -286,7 +291,7 @@ export class LadderAllocator {
 
     this.logger.log(
       `   🔼 ${symbol}: Adding $${topUpAmount.toFixed(2)} ` +
-      `(${isFullyFilled ? 'FULL' : 'PARTIAL'}) | Remaining: $${(remainingCapital - topUpAmount).toFixed(2)}`,
+        `(${isFullyFilled ? 'FULL' : 'PARTIAL'}) | Remaining: $${(remainingCapital - topUpAmount).toFixed(2)}`,
     );
 
     return {
@@ -339,8 +344,8 @@ export class LadderAllocator {
 
     this.logger.log(
       `   ${isFullyFilled ? '✅' : '🔄'} ${symbol}: NEW $${partialMaxPortfolio.toFixed(2)} ` +
-      `($${partialCollateral.toFixed(2)}/${maxCollateral.toFixed(2)} collateral, ${isFullyFilled ? 'FULL' : 'PARTIAL'}) | ` +
-      `Remaining: $${(remainingCapital - partialCollateral).toFixed(2)}`,
+        `($${partialCollateral.toFixed(2)}/${maxCollateral.toFixed(2)} collateral, ${isFullyFilled ? 'FULL' : 'PARTIAL'}) | ` +
+        `Remaining: $${(remainingCapital - partialCollateral).toFixed(2)}`,
     );
 
     return {
@@ -369,4 +374,3 @@ export class LadderAllocator {
     return `${symbol}-${exchanges[0]}-${exchanges[1]}`;
   }
 }
-

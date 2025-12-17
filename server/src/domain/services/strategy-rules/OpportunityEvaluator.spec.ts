@@ -1,6 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { OpportunityEvaluator } from './OpportunityEvaluator';
-import { HistoricalFundingRateService, HistoricalMetrics } from '../../../infrastructure/services/HistoricalFundingRateService';
+import {
+  HistoricalFundingRateService,
+  HistoricalMetrics,
+} from '../../../infrastructure/services/HistoricalFundingRateService';
 import { FundingRateAggregator } from '../FundingRateAggregator';
 import { PositionLossTracker } from '../../../infrastructure/services/PositionLossTracker';
 import { CostCalculator } from './CostCalculator';
@@ -10,7 +13,11 @@ import { ArbitrageExecutionPlan } from '../FundingArbitrageStrategy';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { PerpPosition } from '../../entities/PerpPosition';
 import { OrderSide } from '../../value-objects/PerpOrder';
-import { PerpOrderRequest, OrderType, TimeInForce } from '../../value-objects/PerpOrder';
+import {
+  PerpOrderRequest,
+  OrderType,
+  TimeInForce,
+} from '../../value-objects/PerpOrder';
 
 describe('OpportunityEvaluator', () => {
   let evaluator: OpportunityEvaluator;
@@ -41,7 +48,10 @@ describe('OpportunityEvaluator', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OpportunityEvaluator,
-        { provide: HistoricalFundingRateService, useValue: mockHistoricalService },
+        {
+          provide: HistoricalFundingRateService,
+          useValue: mockHistoricalService,
+        },
         { provide: FundingRateAggregator, useValue: mockAggregator },
         { provide: PositionLossTracker, useValue: mockLossTracker },
         { provide: CostCalculator, useValue: mockCostCalculator },
@@ -70,8 +80,22 @@ describe('OpportunityEvaluator', () => {
 
     const createMockPlan = (): ArbitrageExecutionPlan => ({
       opportunity: createMockOpportunity(),
-      longOrder: new PerpOrderRequest('ETHUSDT', OrderSide.LONG, OrderType.LIMIT, 1.0, 3000, TimeInForce.GTC),
-      shortOrder: new PerpOrderRequest('ETHUSDT', OrderSide.SHORT, OrderType.LIMIT, 1.0, 3001, TimeInForce.GTC),
+      longOrder: new PerpOrderRequest(
+        'ETHUSDT',
+        OrderSide.LONG,
+        OrderType.LIMIT,
+        1.0,
+        3000,
+        TimeInForce.GTC,
+      ),
+      shortOrder: new PerpOrderRequest(
+        'ETHUSDT',
+        OrderSide.SHORT,
+        OrderType.LIMIT,
+        1.0,
+        3001,
+        TimeInForce.GTC,
+      ),
       positionSize: 1.0,
       estimatedCosts: {
         fees: 10,
@@ -105,7 +129,10 @@ describe('OpportunityEvaluator', () => {
         .mockReturnValueOnce(longMetrics)
         .mockReturnValueOnce(shortMetrics);
 
-      const result = evaluator.evaluateOpportunityWithHistory(opportunity, plan);
+      const result = evaluator.evaluateOpportunityWithHistory(
+        opportunity,
+        plan,
+      );
 
       expect(result.consistencyScore).toBe(0.75); // Average of 0.8 and 0.7
       expect(result.historicalMetrics.long).toEqual(longMetrics);
@@ -135,16 +162,22 @@ describe('OpportunityEvaluator', () => {
         .mockReturnValueOnce(longMetrics)
         .mockReturnValueOnce(shortMetrics);
 
-      const result = evaluator.evaluateOpportunityWithHistory(opportunity, plan);
+      const result = evaluator.evaluateOpportunityWithHistory(
+        opportunity,
+        plan,
+      );
 
       expect(result.worstCaseBreakEvenHours).not.toBeNull();
-      expect(result.worstCaseBreakEvenHours!).toBeGreaterThan(0);
+      expect(result.worstCaseBreakEvenHours).toBeGreaterThan(0);
     });
 
     it('should return null worst-case break-even if no plan provided', () => {
       const opportunity = createMockOpportunity();
 
-      const result = evaluator.evaluateOpportunityWithHistory(opportunity, null);
+      const result = evaluator.evaluateOpportunityWithHistory(
+        opportunity,
+        null,
+      );
 
       expect(result.worstCaseBreakEvenHours).toBeNull();
     });
@@ -155,7 +188,10 @@ describe('OpportunityEvaluator', () => {
 
       mockHistoricalService.getHistoricalMetrics.mockReturnValue(null);
 
-      const result = evaluator.evaluateOpportunityWithHistory(opportunity, plan);
+      const result = evaluator.evaluateOpportunityWithHistory(
+        opportunity,
+        plan,
+      );
 
       expect(result.consistencyScore).toBe(0);
       expect(result.historicalMetrics.long).toBeNull();
@@ -179,10 +215,26 @@ describe('OpportunityEvaluator', () => {
       timestamp: new Date(),
     });
 
-    const createMockPlan = (opportunity: ArbitrageOpportunity): ArbitrageExecutionPlan => ({
+    const createMockPlan = (
+      opportunity: ArbitrageOpportunity,
+    ): ArbitrageExecutionPlan => ({
       opportunity,
-      longOrder: new PerpOrderRequest(opportunity.symbol, OrderSide.LONG, OrderType.LIMIT, 1.0, 3000, TimeInForce.GTC),
-      shortOrder: new PerpOrderRequest(opportunity.symbol, OrderSide.SHORT, OrderType.LIMIT, 1.0, 3001, TimeInForce.GTC),
+      longOrder: new PerpOrderRequest(
+        opportunity.symbol,
+        OrderSide.LONG,
+        OrderType.LIMIT,
+        1.0,
+        3000,
+        TimeInForce.GTC,
+      ),
+      shortOrder: new PerpOrderRequest(
+        opportunity.symbol,
+        OrderSide.SHORT,
+        OrderType.LIMIT,
+        1.0,
+        3001,
+        TimeInForce.GTC,
+      ),
       positionSize: 1.0,
       estimatedCosts: {
         fees: 10,
@@ -248,7 +300,7 @@ describe('OpportunityEvaluator', () => {
       );
 
       expect(result).not.toBeNull();
-      expect(result!.opportunity.symbol).toBeDefined();
+      expect(result.opportunity.symbol).toBeDefined();
     });
 
     it('should return null if no opportunities provided', async () => {
@@ -334,10 +386,26 @@ describe('OpportunityEvaluator', () => {
       timestamp: new Date(),
     });
 
-    const createMockPlan = (opportunity: ArbitrageOpportunity): ArbitrageExecutionPlan => ({
+    const createMockPlan = (
+      opportunity: ArbitrageOpportunity,
+    ): ArbitrageExecutionPlan => ({
       opportunity,
-      longOrder: new PerpOrderRequest('ETHUSDT', OrderSide.LONG, OrderType.LIMIT, 1.0, 3000, TimeInForce.GTC),
-      shortOrder: new PerpOrderRequest('ETHUSDT', OrderSide.SHORT, OrderType.LIMIT, 1.0, 3001, TimeInForce.GTC),
+      longOrder: new PerpOrderRequest(
+        'ETHUSDT',
+        OrderSide.LONG,
+        OrderType.LIMIT,
+        1.0,
+        3000,
+        TimeInForce.GTC,
+      ),
+      shortOrder: new PerpOrderRequest(
+        'ETHUSDT',
+        OrderSide.SHORT,
+        OrderType.LIMIT,
+        1.0,
+        3001,
+        TimeInForce.GTC,
+      ),
       positionSize: 1.0,
       estimatedCosts: {
         fees: 10,
@@ -497,4 +565,3 @@ describe('OpportunityEvaluator', () => {
     });
   });
 });
-

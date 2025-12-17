@@ -26,39 +26,39 @@ export interface StrategyPerformanceMetrics {
   currentTime: Date;
   runtimeHours: number;
   runtimeDays: number;
-  
+
   // Funding metrics
   totalFundingCaptured: number; // Total funding received across all exchanges (USD)
   totalFundingPaid: number; // Total funding paid across all exchanges (USD)
   netFundingCaptured: number; // Net funding (received - paid)
-  
+
   // Position metrics
   totalPositions: number;
   totalPositionValue: number; // Total value of all positions (USD)
   totalUnrealizedPnl: number; // Unrealized P&L
   totalRealizedPnl: number; // Realized P&L from closed positions
-  
+
   // Trading metrics
   totalOrdersPlaced: number;
   totalOrdersFilled: number;
   totalOrdersFailed: number;
   arbitrageOpportunitiesFound: number;
   arbitrageOpportunitiesExecuted: number;
-  
+
   // APY calculations
   estimatedAPY: number; // Based on current funding rates and positions
   realizedAPY: number; // Based on actual funding captured
   estimatedDailyReturn: number; // Estimated daily return based on current rates
   realizedDailyReturn: number; // Actual daily return from funding captured
-  
+
   // Exchange-specific metrics
   exchangeMetrics: Map<ExchangeType, ExchangePerformanceMetrics>;
-  
+
   // Capital efficiency
   capitalDeployed: number; // Total capital deployed across all positions
   capitalUtilization: number; // Percentage of available capital being used
   averagePositionSize: number;
-  
+
   // Risk metrics
   maxDrawdown: number;
   sharpeRatio: number; // If we have enough data
@@ -89,13 +89,21 @@ export interface IPerpKeeperPerformanceLogger {
   updatePositionMetrics(
     exchange: ExchangeType,
     positions: PerpPosition[],
-    fundingRates: Array<{ symbol: string; exchange: ExchangeType; fundingRate: number }>,
+    fundingRates: Array<{
+      symbol: string;
+      exchange: ExchangeType;
+      fundingRate: number;
+    }>,
   ): void;
 
   /**
    * Record order execution
    */
-  recordOrderExecution(exchange: ExchangeType, filled: boolean, failed: boolean): void;
+  recordOrderExecution(
+    exchange: ExchangeType,
+    filled: boolean,
+    failed: boolean,
+  ): void;
 
   /**
    * Record arbitrage opportunity

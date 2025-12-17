@@ -51,18 +51,26 @@ describe('ExchangeConfig', () => {
   it('should throw error for Aster without required fields', () => {
     expect(() => {
       new ExchangeConfig(ExchangeType.ASTER, 'https://fapi.asterdex.com');
-    }).toThrow('Aster exchange requires userAddress, signerAddress, and privateKey');
+    }).toThrow(
+      'Aster exchange requires userAddress, signerAddress, and privateKey',
+    );
   });
 
   it('should throw error for Lighter without apiKey', () => {
     expect(() => {
-      new ExchangeConfig(ExchangeType.LIGHTER, 'https://mainnet.zklighter.elliot.ai');
+      new ExchangeConfig(
+        ExchangeType.LIGHTER,
+        'https://mainnet.zklighter.elliot.ai',
+      );
     }).toThrow('Lighter exchange requires apiKey');
   });
 
   it('should throw error for Hyperliquid without privateKey', () => {
     expect(() => {
-      new ExchangeConfig(ExchangeType.HYPERLIQUID, 'https://api.hyperliquid.xyz');
+      new ExchangeConfig(
+        ExchangeType.HYPERLIQUID,
+        'https://api.hyperliquid.xyz',
+      );
     }).toThrow('Hyperliquid exchange requires privateKey');
   });
 
@@ -97,5 +105,3 @@ describe('ExchangeConfig', () => {
     expect(config.getTimeout()).toBe(60000);
   });
 });
-
-

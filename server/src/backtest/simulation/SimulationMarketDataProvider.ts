@@ -33,4 +33,3 @@ export class SimulationMarketDataProvider implements IMarketDataProvider {
     return 0.0005; // Mock 0.05% fee tier
   }
 }
-

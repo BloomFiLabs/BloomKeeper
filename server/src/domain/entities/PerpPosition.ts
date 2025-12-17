@@ -91,7 +91,10 @@ export class PerpPosition {
   /**
    * Creates a new position with updated mark price and PnL
    */
-  updateMarkPrice(newMarkPrice: number, newUnrealizedPnl: number): PerpPosition {
+  updateMarkPrice(
+    newMarkPrice: number,
+    newUnrealizedPnl: number,
+  ): PerpPosition {
     return new PerpPosition(
       this.exchangeType,
       this.symbol,
@@ -108,5 +111,3 @@ export class PerpPosition {
     );
   }
 }
-
-

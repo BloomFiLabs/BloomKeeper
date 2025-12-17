@@ -126,7 +126,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       if (!longAdapter || !shortAdapter) {
         const missingExchange = !longAdapter
           ? opportunity.longExchange
-          : opportunity.shortExchange!;
+          : opportunity.shortExchange;
         return Result.failure(
           new ExchangeException(
             `Missing adapter for ${missingExchange}`,
@@ -171,7 +171,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
           return Result.failure(
             new ExchangeException(
               `Failed to get mark price: ${error.message}`,
-              opportunity.shortExchange!,
+              opportunity.shortExchange,
               { symbol: opportunity.symbol, error: error.message },
             ),
           );
@@ -253,11 +253,11 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       ) {
         return Result.failure(
           new ValidationException(
-            `Missing or zero open interest for short exchange: ${opportunity.shortExchange!}`,
+            `Missing or zero open interest for short exchange: ${opportunity.shortExchange}`,
             'MISSING_OPEN_INTEREST',
             {
               symbol: opportunity.symbol,
-              exchange: opportunity.shortExchange!,
+              exchange: opportunity.shortExchange,
             },
           ),
         );
@@ -396,7 +396,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       );
       const shortExchangeSymbol = this.aggregator.getExchangeSymbol(
         opportunity.symbol,
-        opportunity.shortExchange!,
+        opportunity.shortExchange,
       );
 
       const longSymbol =
@@ -419,7 +419,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
         shortAdapter,
         shortSymbol,
         opportunity.symbol,
-        opportunity.shortExchange!,
+        opportunity.shortExchange,
       );
 
       // Calculate slippage costs
@@ -449,7 +449,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       );
       const shortEntryFee = this.costCalculator.calculateFees(
         positionSizeUsd,
-        opportunity.shortExchange!,
+        opportunity.shortExchange,
         true,
         true,
       );
@@ -697,9 +697,9 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
           if (typeof marketIndex === 'number') {
             const orderApi = (adapter as any).orderApi;
             if (orderApi) {
-              const response = (await orderApi.getOrderBookDetails({
+              const response = await orderApi.getOrderBookDetails({
                 marketIndex,
-              } as any)) as any;
+              } as any);
               const orderBook = response?.order_book_details || response;
               const bestBid = orderBook?.bestBid || orderBook?.best_bid;
               const bestAsk = orderBook?.bestAsk || orderBook?.best_ask;

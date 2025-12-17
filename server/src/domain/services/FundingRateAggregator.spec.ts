@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { FundingRateAggregator, ExchangeFundingRate } from './FundingRateAggregator';
+import {
+  FundingRateAggregator,
+  ExchangeFundingRate,
+} from './FundingRateAggregator';
 import { AsterFundingDataProvider } from '../../infrastructure/adapters/aster/AsterFundingDataProvider';
 import { LighterFundingDataProvider } from '../../infrastructure/adapters/lighter/LighterFundingDataProvider';
 import { HyperLiquidDataProvider } from '../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider';
@@ -70,7 +73,10 @@ describe('FundingRateAggregator', () => {
         { provide: AsterFundingDataProvider, useValue: mockAsterProvider },
         { provide: LighterFundingDataProvider, useValue: mockLighterProvider },
         { provide: HyperLiquidDataProvider, useValue: mockHyperliquidProvider },
-        { provide: HyperLiquidWebSocketProvider, useValue: mockHyperliquidWsProvider },
+        {
+          provide: HyperLiquidWebSocketProvider,
+          useValue: mockHyperliquidWsProvider,
+        },
       ],
     }).compile();
 
@@ -128,9 +134,15 @@ describe('FundingRateAggregator', () => {
       const rates = await aggregator.getFundingRates('ETH');
 
       expect(rates).toHaveLength(3);
-      expect(rates.find((r) => r.exchange === ExchangeType.ASTER)).toBeDefined();
-      expect(rates.find((r) => r.exchange === ExchangeType.LIGHTER)).toBeDefined();
-      expect(rates.find((r) => r.exchange === ExchangeType.HYPERLIQUID)).toBeDefined();
+      expect(
+        rates.find((r) => r.exchange === ExchangeType.ASTER),
+      ).toBeDefined();
+      expect(
+        rates.find((r) => r.exchange === ExchangeType.LIGHTER),
+      ).toBeDefined();
+      expect(
+        rates.find((r) => r.exchange === ExchangeType.HYPERLIQUID),
+      ).toBeDefined();
 
       // Verify all providers were called
       expect(mockAsterProvider.getFundingData).toHaveBeenCalledWith({
@@ -172,7 +184,9 @@ describe('FundingRateAggregator', () => {
       };
 
       // Aster fails
-      mockAsterProvider.getFundingData.mockRejectedValue(new Error('API error'));
+      mockAsterProvider.getFundingData.mockRejectedValue(
+        new Error('API error'),
+      );
       mockLighterProvider.getFundingData.mockResolvedValue(lighterData);
       mockHyperliquidProvider.getFundingData.mockResolvedValue(hyperliquidData);
 
@@ -180,9 +194,15 @@ describe('FundingRateAggregator', () => {
 
       // Should still get 2 rates (Lighter and Hyperliquid)
       expect(rates).toHaveLength(2);
-      expect(rates.find((r) => r.exchange === ExchangeType.ASTER)).toBeUndefined();
-      expect(rates.find((r) => r.exchange === ExchangeType.LIGHTER)).toBeDefined();
-      expect(rates.find((r) => r.exchange === ExchangeType.HYPERLIQUID)).toBeDefined();
+      expect(
+        rates.find((r) => r.exchange === ExchangeType.ASTER),
+      ).toBeUndefined();
+      expect(
+        rates.find((r) => r.exchange === ExchangeType.LIGHTER),
+      ).toBeDefined();
+      expect(
+        rates.find((r) => r.exchange === ExchangeType.HYPERLIQUID),
+      ).toBeDefined();
     });
 
     it('should filter out null responses from exchanges', async () => {
@@ -211,7 +231,8 @@ describe('FundingRateAggregator', () => {
     });
 
     it('should execute all fetches in parallel (timing test)', async () => {
-      const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      const delay = (ms: number) =>
+        new Promise((resolve) => setTimeout(resolve, ms));
 
       // Each provider takes 100ms
       mockAsterProvider.getFundingData.mockImplementation(async () => {
@@ -408,7 +429,9 @@ describe('FundingRateAggregator', () => {
     it('providers should implement getExchangeType correctly', () => {
       expect(mockAsterProvider.getExchangeType()).toBe(ExchangeType.ASTER);
       expect(mockLighterProvider.getExchangeType()).toBe(ExchangeType.LIGHTER);
-      expect(mockHyperliquidProvider.getExchangeType()).toBe(ExchangeType.HYPERLIQUID);
+      expect(mockHyperliquidProvider.getExchangeType()).toBe(
+        ExchangeType.HYPERLIQUID,
+      );
     });
 
     it('providers should implement getExchangeSymbol correctly', () => {

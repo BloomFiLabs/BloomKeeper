@@ -3,7 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { ethers } from 'ethers';
 import * as crypto from 'crypto';
-import { ExchangeConfig, ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
+import {
+  ExchangeConfig,
+  ExchangeType,
+} from '../../../domain/value-objects/ExchangeConfig';
 import {
   PerpOrderRequest,
   PerpOrderResponse,
@@ -13,13 +16,17 @@ import {
   TimeInForce,
 } from '../../../domain/value-objects/PerpOrder';
 import { PerpPosition } from '../../../domain/entities/PerpPosition';
-import { IPerpExchangeAdapter, ExchangeError, FundingPayment } from '../../../domain/ports/IPerpExchangeAdapter';
+import {
+  IPerpExchangeAdapter,
+  ExchangeError,
+  FundingPayment,
+} from '../../../domain/ports/IPerpExchangeAdapter';
 import { DiagnosticsService } from '../../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../../domain/services/MarketQualityFilter';
 
 /**
  * AsterExchangeAdapter - Implements IPerpExchangeAdapter for Aster DEX
- * 
+ *
  * Based on the existing open-perp-position.ts script logic
  */
 @Injectable()
@@ -42,7 +49,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
   ) {
     // Load configuration from environment
     // Remove trailing slash if present (causes 403 errors)
-    let baseUrl = this.configService.get<string>('ASTER_BASE_URL') || 'https://fapi.asterdex.com';
+    let baseUrl =
+      this.configService.get<string>('ASTER_BASE_URL') ||
+      'https://fapi.asterdex.com';
     baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
     const user = this.configService.get<string>('ASTER_USER');
     const signer = this.configService.get<string>('ASTER_SIGNER');
@@ -55,10 +64,14 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     // For read-only: can use API key/secret if provided
     if (!user || !signer || !privateKey) {
       if (!apiKey || !apiSecret) {
-        throw new Error('Aster exchange requires either (ASTER_USER, ASTER_SIGNER, ASTER_PRIVATE_KEY) for trading OR (ASTER_API_KEY, ASTER_API_SECRET) for read-only access');
+        throw new Error(
+          'Aster exchange requires either (ASTER_USER, ASTER_SIGNER, ASTER_PRIVATE_KEY) for trading OR (ASTER_API_KEY, ASTER_API_SECRET) for read-only access',
+        );
       }
       // Read-only mode with API keys
-      this.logger.warn('Aster adapter in read-only mode (API keys only - trading disabled)');
+      this.logger.warn(
+        'Aster adapter in read-only mode (API keys only - trading disabled)',
+      );
     }
 
     // Store API keys for read-only endpoints
@@ -68,7 +81,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     // Normalize private key (if provided)
     let normalizedPrivateKey: string | undefined;
     if (privateKey) {
-      normalizedPrivateKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      normalizedPrivateKey = privateKey.startsWith('0x')
+        ? privateKey
+        : `0x${privateKey}`;
       this.wallet = new ethers.Wallet(normalizedPrivateKey);
     } else {
       this.wallet = null;
@@ -111,7 +126,12 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Record an error to diagnostics service and market quality filter
    */
-  private recordError(type: string, message: string, symbol?: string, context?: Record<string, any>): void {
+  private recordError(
+    type: string,
+    message: string,
+    symbol?: string,
+    context?: Record<string, any>,
+  ): void {
     if (this.diagnosticsService) {
       this.diagnosticsService.recordError({
         type,
@@ -180,21 +200,26 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
    * Based on Aster API docs: HMAC SHA256 of query string + request body
    * For GET requests, only query string is used
    */
-  private signParamsWithApiKey(params: Record<string, any>): Record<string, any> {
+  private signParamsWithApiKey(
+    params: Record<string, any>,
+  ): Record<string, any> {
     if (!this.apiKey || !this.apiSecret) {
       throw new Error('API key and secret required for HMAC authentication');
     }
 
     const cleanParams = Object.fromEntries(
-      Object.entries(params).filter(([, value]) => value !== null && value !== undefined),
+      Object.entries(params).filter(
+        ([, value]) => value !== null && value !== undefined,
+      ),
     );
 
     // Aster API requires timestamp in milliseconds
     cleanParams.timestamp = Date.now(); // Milliseconds
-    cleanParams.recvWindow = cleanParams.recvWindow ?? this.config.recvWindow ?? 50000;
+    cleanParams.recvWindow =
+      cleanParams.recvWindow ?? this.config.recvWindow ?? 50000;
 
     // Create query string for HMAC signing
-    // IMPORTANT: 
+    // IMPORTANT:
     // 1. Signature must be calculated WITHOUT the signature parameter itself
     // 2. Parameters must be sorted alphabetically
     // 3. For GET requests, only query string is signed (no request body)
@@ -229,18 +254,26 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     nonce: number,
   ): Record<string, any> {
     if (!this.wallet) {
-      throw new Error('Wallet required for Ethereum signature authentication. Provide ASTER_USER, ASTER_SIGNER, and ASTER_PRIVATE_KEY for trading.');
+      throw new Error(
+        'Wallet required for Ethereum signature authentication. Provide ASTER_USER, ASTER_SIGNER, and ASTER_PRIVATE_KEY for trading.',
+      );
     }
 
     const cleanParams = Object.fromEntries(
-      Object.entries(params).filter(([, value]) => value !== null && value !== undefined),
+      Object.entries(params).filter(
+        ([, value]) => value !== null && value !== undefined,
+      ),
     );
 
-    cleanParams.recvWindow = cleanParams.recvWindow ?? this.config.recvWindow ?? 50000;
+    cleanParams.recvWindow =
+      cleanParams.recvWindow ?? this.config.recvWindow ?? 50000;
     cleanParams.timestamp = Math.floor(Date.now());
 
     const trimmedParams = this.trimDict(cleanParams);
-    const jsonStr = JSON.stringify(trimmedParams, Object.keys(trimmedParams).sort());
+    const jsonStr = JSON.stringify(
+      trimmedParams,
+      Object.keys(trimmedParams).sort(),
+    );
 
     const abiCoder = ethers.AbiCoder.defaultAbiCoder();
     const encoded = abiCoder.encode(
@@ -284,10 +317,16 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     try {
       const response = await this.client.get('/fapi/v1/exchangeInfo');
       if (response.data?.symbols) {
-        const symbolInfo = response.data.symbols.find((s: any) => s.symbol === symbol);
-        if (symbolInfo?.leverageBrackets && symbolInfo.leverageBrackets.length > 0) {
+        const symbolInfo = response.data.symbols.find(
+          (s: any) => s.symbol === symbol,
+        );
+        if (
+          symbolInfo?.leverageBrackets &&
+          symbolInfo.leverageBrackets.length > 0
+        ) {
           // Get the highest leverage bracket
-          const maxBracket = symbolInfo.leverageBrackets[symbolInfo.leverageBrackets.length - 1];
+          const maxBracket =
+            symbolInfo.leverageBrackets[symbolInfo.leverageBrackets.length - 1];
           return parseFloat(maxBracket.leverage || '1');
         }
         // Fallback: check if there's a maxLeverage field
@@ -298,7 +337,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Default to 1x if we can't find it
       return 1;
     } catch (error: any) {
-      this.logger.debug(`Failed to get max leverage for ${symbol}: ${error.message}`);
+      this.logger.debug(
+        `Failed to get max leverage for ${symbol}: ${error.message}`,
+      );
       return 1; // Default to 1x
     }
   }
@@ -348,7 +389,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Log but don't throw - leverage might already be set correctly
       this.logger.debug(
         `Failed to set leverage for ${symbol} to ${leverage}x: ${error.message}. ` +
-        `This may be okay if leverage is already set correctly.`
+          `This may be okay if leverage is already set correctly.`,
       );
     }
   }
@@ -359,7 +400,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Aster requires leverage to be set before placing orders
       const maxLeverage = await this.getMaxLeverage(request.symbol);
       let desiredLeverage: number;
-      
+
       if (request.reduceOnly) {
         // For closing orders (reduce-only), use the position's current leverage
         // This ensures we can close positions even if max leverage changed
@@ -413,13 +454,13 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
           Math.floor(maxLeverage * 0.8),
         );
       }
-      
+
       if (desiredLeverage > 1 && desiredLeverage <= maxLeverage) {
         await this.setLeverage(request.symbol, desiredLeverage);
       } else if (desiredLeverage > maxLeverage) {
         this.logger.warn(
           `⚠️ Desired leverage ${desiredLeverage}x exceeds max leverage ${maxLeverage}x for ${request.symbol}. ` +
-          `Setting to max leverage ${maxLeverage}x instead.`,
+            `Setting to max leverage ${maxLeverage}x instead.`,
         );
         await this.setLeverage(request.symbol, maxLeverage);
       }
@@ -429,12 +470,13 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
 
       // Get precision and stepSize for quantity, and pricePrecision and tickSize for price
       // Fetch exchange info if not cached
-      const { precision, stepSize, pricePrecision, tickSize } = await this.getSymbolPrecision(request.symbol);
-      
+      const { precision, stepSize, pricePrecision, tickSize } =
+        await this.getSymbolPrecision(request.symbol);
+
       // Round to nearest stepSize multiple first, then format to precision
       // This ensures we comply with Aster's LOT_SIZE filter requirements
       const roundedSize = Math.round(request.size / stepSize) * stepSize;
-      
+
       let quantity: string;
       if (stepSize >= 1 && precision === 0) {
         // For integer quantities, use toFixed(0) to ensure clean string format
@@ -460,7 +502,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         // Round to nearest tickSize multiple first, then format to pricePrecision
         // This ensures we comply with Aster's PRICE_FILTER requirements
         const roundedPrice = Math.round(request.price / tickSize) * tickSize;
-        
+
         let price: string;
         if (tickSize >= 1 && pricePrecision === 0) {
           // For integer prices, use toFixed(0) to ensure clean string format
@@ -468,7 +510,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         } else {
           price = roundedPrice.toFixed(pricePrecision);
         }
-        
+
         orderParams.price = price;
         orderParams.timeInForce = request.timeInForce || TimeInForce.GTC;
       }
@@ -482,13 +524,18 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         }
       }
 
-      const response = await this.client.post('/fapi/v3/order', formData.toString(), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+      const response = await this.client.post(
+        '/fapi/v3/order',
+        formData.toString(),
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
         },
-      });
+      );
 
-      const orderId = response.data.orderId?.toString() || response.data.orderId;
+      const orderId =
+        response.data.orderId?.toString() || response.data.orderId;
       const status = this.mapAsterOrderStatus(response.data.status);
 
       // Record success for market quality tracking
@@ -500,7 +547,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         request.symbol,
         request.side,
         request.clientOrderId,
-        response.data.executedQty ? parseFloat(response.data.executedQty) : undefined,
+        response.data.executedQty
+          ? parseFloat(response.data.executedQty)
+          : undefined,
         response.data.avgPrice ? parseFloat(response.data.avgPrice) : undefined,
         response.data.msg,
         new Date(),
@@ -511,18 +560,22 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       if (error.response) {
         // Extract the actual error message from the API response
         const responseData = error.response.data;
-        const apiErrorMsg = responseData?.msg || responseData?.message || responseData?.error || JSON.stringify(responseData);
+        const apiErrorMsg =
+          responseData?.msg ||
+          responseData?.message ||
+          responseData?.error ||
+          JSON.stringify(responseData);
         errorDetail = `${error.response.status}: ${apiErrorMsg}`;
-        
+
         this.logger.error(
           `Failed to place order: ${errorDetail}. ` +
-          `Full response: ${JSON.stringify(responseData)}`
+            `Full response: ${JSON.stringify(responseData)}`,
         );
         // Log request parameters for debugging (without sensitive data)
         // Note: Log formatted quantity, not raw size, to match what was actually sent
         this.logger.debug(
           `Order request params: symbol=${request.symbol}, ` +
-          `side=${request.side}, type=${request.type}, rawSize=${request.size}, formattedQuantity=${formattedQuantity}`
+            `side=${request.side}, type=${request.type}, rawSize=${request.size}, formattedQuantity=${formattedQuantity}`,
         );
       } else {
         this.logger.error(`Failed to place order: ${error.message}`);
@@ -578,15 +631,15 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
    * Fetches exchange info to get filters from LOT_SIZE and PRICE_FILTER
    * Caches results to avoid repeated API calls
    */
-  private async getSymbolPrecision(symbol: string): Promise<{ 
-    precision: number; 
+  private async getSymbolPrecision(symbol: string): Promise<{
+    precision: number;
     stepSize: number;
     pricePrecision: number;
     tickSize: number;
   }> {
     // Check cache first
     if (
-      this.symbolPrecisionCache.has(symbol) && 
+      this.symbolPrecisionCache.has(symbol) &&
       this.symbolStepSizeCache.has(symbol) &&
       this.symbolPricePrecisionCache.has(symbol) &&
       this.symbolTickSizeCache.has(symbol)
@@ -602,44 +655,54 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     try {
       // Fetch exchange info to get stepSize and tickSize
       const response = await this.client.get('/fapi/v1/exchangeInfo');
-      const symbolInfo = response.data.symbols?.find((s: any) => s.symbol === symbol);
-      
+      const symbolInfo = response.data.symbols?.find(
+        (s: any) => s.symbol === symbol,
+      );
+
       if (symbolInfo) {
         // Get quantity precision from LOT_SIZE filter
-        const quantityFilter = symbolInfo.filters?.find((f: any) => f.filterType === 'LOT_SIZE');
+        const quantityFilter = symbolInfo.filters?.find(
+          (f: any) => f.filterType === 'LOT_SIZE',
+        );
         let precision = 4; // Default
         let stepSize = 0.0001; // Default
-        
+
         if (quantityFilter?.stepSize) {
           const stepSizeStr = quantityFilter.stepSize;
           stepSize = parseFloat(stepSizeStr);
           precision = this.calculatePrecision(stepSizeStr);
         }
-        
+
         // Get price precision from PRICE_FILTER
-        const priceFilter = symbolInfo.filters?.find((f: any) => f.filterType === 'PRICE_FILTER');
+        const priceFilter = symbolInfo.filters?.find(
+          (f: any) => f.filterType === 'PRICE_FILTER',
+        );
         let pricePrecision = 8; // Default
         let tickSize = 0.00000001; // Default
-        
+
         if (priceFilter?.tickSize) {
           const tickSizeStr = priceFilter.tickSize;
           tickSize = parseFloat(tickSizeStr);
           pricePrecision = this.calculatePrecision(tickSizeStr);
         }
-        
+
         // Cache all values
         this.symbolPrecisionCache.set(symbol, precision);
         this.symbolStepSizeCache.set(symbol, stepSize);
         this.symbolPricePrecisionCache.set(symbol, pricePrecision);
         this.symbolTickSizeCache.set(symbol, tickSize);
-        
+
         // Log precision only at debug level, less verbose
-        this.logger.debug(`Symbol ${symbol}: qty precision=${precision}, price precision=${pricePrecision}`);
-        
+        this.logger.debug(
+          `Symbol ${symbol}: qty precision=${precision}, price precision=${pricePrecision}`,
+        );
+
         return { precision, stepSize, pricePrecision, tickSize };
       }
     } catch (error: any) {
-      this.logger.warn(`Could not fetch exchange info for ${symbol}, using default precision: ${error.message}`);
+      this.logger.warn(
+        `Could not fetch exchange info for ${symbol}, using default precision: ${error.message}`,
+      );
     }
 
     // Default values if we can't fetch exchange info
@@ -647,14 +710,14 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     const defaultStepSize = 0.0001;
     const defaultPricePrecision = 8;
     const defaultTickSize = 0.00000001;
-    
+
     this.symbolPrecisionCache.set(symbol, defaultPrecision);
     this.symbolStepSizeCache.set(symbol, defaultStepSize);
     this.symbolPricePrecisionCache.set(symbol, defaultPricePrecision);
     this.symbolTickSizeCache.set(symbol, defaultTickSize);
-    
-    return { 
-      precision: defaultPrecision, 
+
+    return {
+      precision: defaultPrecision,
       stepSize: defaultStepSize,
       pricePrecision: defaultPricePrecision,
       tickSize: defaultTickSize,
@@ -680,10 +743,10 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     try {
       // Always fetch fresh positions (no caching to ensure we see latest state)
       this.logger.debug('Fetching fresh positions from Aster...');
-      
+
       // Use API key authentication if available, otherwise use Ethereum signature
       let params: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         // Use HMAC-based API key authentication
@@ -701,7 +764,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // This matches the Aster API documentation format
       const queryParams: string[] = [];
       const signatureParam: string[] = [];
-      
+
       for (const [key, value] of Object.entries(params)) {
         if (key === 'signature') {
           signatureParam.push(`signature=${value}`);
@@ -709,45 +772,54 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
           queryParams.push(`${key}=${encodeURIComponent(String(value))}`);
         }
       }
-      
+
       // Sort query params (excluding signature)
       queryParams.sort();
-      
-      // Build final query string with signature as last parameter
-      const queryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
-      const response = await this.client.get(`/fapi/v2/positionRisk?${queryString}`, {
-        headers,
-      });
+      // Build final query string with signature as last parameter
+      const queryString =
+        queryParams.join('&') +
+        (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+
+      const response = await this.client.get(
+        `/fapi/v2/positionRisk?${queryString}`,
+        {
+          headers,
+        },
+      );
 
       const positions: PerpPosition[] = [];
       if (Array.isArray(response.data)) {
-        this.logger.debug(`🔍 Aster API returned ${response.data.length} position entries`);
-        
+        this.logger.debug(
+          `🔍 Aster API returned ${response.data.length} position entries`,
+        );
+
         // Log first few raw entries to see what we're getting
         const sampleEntries = response.data.slice(0, 5);
-        this.logger.debug(`📋 Sample Aster raw position entries (first 5): ${JSON.stringify(sampleEntries, null, 2)}`);
-        
+        this.logger.debug(
+          `📋 Sample Aster raw position entries (first 5): ${JSON.stringify(sampleEntries, null, 2)}`,
+        );
+
         // Count positions with non-zero amounts
         let nonZeroCount = 0;
         let zeroCount = 0;
-        
+
         for (const pos of response.data) {
           const positionAmt = parseFloat(pos.positionAmt || '0');
-          
+
           // Log details for positions we're filtering out
           if (positionAmt === 0) {
             zeroCount++;
             if (zeroCount <= 3) {
               this.logger.debug(
                 `🚫 Filtered out Aster position: symbol="${pos.symbol}", positionAmt="${pos.positionAmt}" (parsed: ${positionAmt}), ` +
-                `markPrice="${pos.markPrice}", entryPrice="${pos.entryPrice}"`
+                  `markPrice="${pos.markPrice}", entryPrice="${pos.entryPrice}"`,
               );
             }
           } else {
             nonZeroCount++;
           }
-          
+
           if (positionAmt !== 0) {
             const side = positionAmt > 0 ? OrderSide.LONG : OrderSide.SHORT;
             const markPrice = parseFloat(pos.markPrice || '0');
@@ -768,32 +840,38 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
               undefined,
               new Date(),
             );
-            
+
             this.logger.debug(
               `📍 Aster Position: symbol="${pos.symbol}", side=${side}, size=${Math.abs(positionAmt)}, ` +
-              `entryPrice=${entryPrice}, markPrice=${markPrice}, pnl=${unrealizedPnl}`
+                `entryPrice=${entryPrice}, markPrice=${markPrice}, pnl=${unrealizedPnl}`,
             );
-            
+
             positions.push(position);
           }
         }
-        
+
         this.logger.debug(
-          `📊 Aster position filtering summary: ${nonZeroCount} non-zero positions, ${zeroCount} zero positions filtered out`
+          `📊 Aster position filtering summary: ${nonZeroCount} non-zero positions, ${zeroCount} zero positions filtered out`,
         );
       }
 
-      this.logger.debug(`✅ Aster getPositions() returning ${positions.length} positions: ${positions.map(p => `${p.symbol}(${p.side})`).join(', ')}`);
+      this.logger.debug(
+        `✅ Aster getPositions() returning ${positions.length} positions: ${positions.map((p) => `${p.symbol}(${p.side})`).join(', ')}`,
+      );
       return positions;
     } catch (error: any) {
       // Handle authentication errors gracefully (401 = invalid/expired credentials)
       if (error.response?.status === 401) {
-        this.logger.warn('Aster API authentication failed - positions query requires valid API credentials');
+        this.logger.warn(
+          'Aster API authentication failed - positions query requires valid API credentials',
+        );
         return []; // Return empty array instead of throwing to allow system to continue
       }
       this.logger.error(`Failed to get positions: ${error.message}`);
       // Return empty array instead of throwing to allow system to continue
-      this.logger.warn('Returning empty positions due to error - Aster positions query may need valid API keys');
+      this.logger.warn(
+        'Returning empty positions due to error - Aster positions query may need valid API keys',
+      );
       return [];
     }
   }
@@ -861,7 +939,10 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 
-  async getOrderStatus(orderId: string, symbol?: string): Promise<PerpOrderResponse> {
+  async getOrderStatus(
+    orderId: string,
+    symbol?: string,
+  ): Promise<PerpOrderResponse> {
     try {
       if (!symbol) {
         throw new Error('Symbol is required for getting order status on Aster');
@@ -906,13 +987,14 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
   }
 
   // Price cache: key = symbol, value = { price: number, timestamp: number }
-  private priceCache: Map<string, { price: number; timestamp: number }> = new Map();
+  private priceCache: Map<string, { price: number; timestamp: number }> =
+    new Map();
   private readonly PRICE_CACHE_TTL = 10000; // 10 seconds cache
 
   async getMarkPrice(symbol: string): Promise<number> {
     // Check cache first
     const cached = this.priceCache.get(symbol);
-    if (cached && (Date.now() - cached.timestamp) < this.PRICE_CACHE_TTL) {
+    if (cached && Date.now() - cached.timestamp < this.PRICE_CACHE_TTL) {
       return cached.price;
     }
 
@@ -922,8 +1004,10 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       try {
         if (attempt > 0) {
           const delay = Math.pow(2, attempt) * 1000; // 2s, 4s delays
-          await new Promise(resolve => setTimeout(resolve, delay));
-          this.logger.debug(`Retrying mark price fetch for ${symbol} (attempt ${attempt + 1}/3)`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          this.logger.debug(
+            `Retrying mark price fetch for ${symbol} (attempt ${attempt + 1}/3)`,
+          );
         }
 
         const response = await this.client.get('/fapi/v1/ticker/price', {
@@ -945,7 +1029,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
           // Last attempt failed
           this.logger.error(
             `Failed to get mark price for ${symbol} after 3 attempts: ${error.message}. ` +
-            `Status: ${error.response?.status}, Response: ${JSON.stringify(error.response?.data)}`
+              `Status: ${error.response?.status}, Response: ${JSON.stringify(error.response?.data)}`,
           );
         }
       }
@@ -964,13 +1048,15 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     try {
       // Always fetch fresh balance (no caching to ensure we see latest state)
       this.logger.debug('Fetching fresh balance from Aster...');
-      
+
       // Aster API requires Ethereum signature authentication (not HMAC API keys)
       // Based on official docs: https://github.com/asterdex/api-docs
       // Balance endpoint: GET /fapi/v3/balance (USER_DATA authentication type)
       // Authentication requires: user, signer, nonce, signature (Ethereum signature)
       if (!this.wallet) {
-        this.logger.warn('Aster balance query requires Ethereum signature authentication. Provide ASTER_USER, ASTER_SIGNER, and ASTER_PRIVATE_KEY.');
+        this.logger.warn(
+          'Aster balance query requires Ethereum signature authentication. Provide ASTER_USER, ASTER_SIGNER, and ASTER_PRIVATE_KEY.',
+        );
         return 0;
       }
 
@@ -989,7 +1075,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       if (Array.isArray(response.data) && response.data.length > 0) {
         const usdtBalance = response.data.find((b: any) => b.asset === 'USDT');
         if (usdtBalance) {
-          const balance = parseFloat(usdtBalance.availableBalance || usdtBalance.balance || '0');
+          const balance = parseFloat(
+            usdtBalance.availableBalance || usdtBalance.balance || '0',
+          );
           this.logger.debug(`Aster balance retrieved: $${balance.toFixed(2)}`);
           return balance;
         }
@@ -1001,16 +1089,18 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       if (error.response) {
         this.logger.error(
           `Aster balance request failed: ${error.response.status} ${error.response.statusText}. ` +
-          `Response: ${JSON.stringify(error.response.data)}. ` +
-          `Request params: ${JSON.stringify(error.config?.params || {})}`
+            `Response: ${JSON.stringify(error.response.data)}. ` +
+            `Request params: ${JSON.stringify(error.config?.params || {})}`,
         );
       } else {
         this.logger.error(`Failed to get balance: ${error.message}`);
       }
-      
+
       // Handle authentication errors gracefully (401 = invalid/expired credentials, 400 = bad request format)
       if (error.response?.status === 401) {
-        this.logger.warn('Aster API authentication failed - balance query requires valid API credentials');
+        this.logger.warn(
+          'Aster API authentication failed - balance query requires valid API credentials',
+        );
         return 0;
       }
       if (error.response?.status === 400) {
@@ -1018,19 +1108,23 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         if (errorMsg.includes('Signature') || errorMsg.includes('signature')) {
           this.logger.warn(
             'Aster API signature validation failed. The signature format may be incorrect. ' +
-            'Possible fixes: 1) Try timestamp in milliseconds instead of seconds, ' +
-            '2) Remove URL encoding from query string values, ' +
-            '3) Check Aster API docs for exact signature format. ' +
-            `Current timestamp format: seconds (${Math.floor(Date.now() / 1000)})`
+              'Possible fixes: 1) Try timestamp in milliseconds instead of seconds, ' +
+              '2) Remove URL encoding from query string values, ' +
+              '3) Check Aster API docs for exact signature format. ' +
+              `Current timestamp format: seconds (${Math.floor(Date.now() / 1000)})`,
           );
         } else {
-          this.logger.warn(`Aster API returned Bad Request: ${JSON.stringify(error.response?.data)}`);
+          this.logger.warn(
+            `Aster API returned Bad Request: ${JSON.stringify(error.response?.data)}`,
+          );
         }
         return 0;
       }
-      
+
       // Return 0 instead of throwing to allow system to continue
-      this.logger.warn('Returning 0 balance due to error - Aster balance query may need valid API keys');
+      this.logger.warn(
+        'Returning 0 balance due to error - Aster balance query may need valid API keys',
+      );
       return 0;
     }
   }
@@ -1039,7 +1133,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     try {
       // Use API key authentication if available, otherwise use Ethereum signature
       let params: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         // Use HMAC-based API key authentication
@@ -1057,7 +1151,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // This matches the Aster API documentation format
       const queryParams: string[] = [];
       const signatureParam: string[] = [];
-      
+
       for (const [key, value] of Object.entries(params)) {
         if (key === 'signature') {
           signatureParam.push(`signature=${value}`);
@@ -1065,27 +1159,36 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
           queryParams.push(`${key}=${encodeURIComponent(String(value))}`);
         }
       }
-      
+
       // Sort query params (excluding signature)
       queryParams.sort();
-      
-      // Build final query string with signature as last parameter
-      const queryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
-      const response = await this.client.get(`/fapi/v2/account?${queryString}`, {
-        headers,
-      });
+      // Build final query string with signature as last parameter
+      const queryString =
+        queryParams.join('&') +
+        (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+
+      const response = await this.client.get(
+        `/fapi/v2/account?${queryString}`,
+        {
+          headers,
+        },
+      );
 
       return parseFloat(response.data.totalWalletBalance || '0');
     } catch (error: any) {
       // Handle authentication errors gracefully (401 = invalid/expired credentials)
       if (error.response?.status === 401) {
-        this.logger.warn('Aster API authentication failed - equity query requires valid API credentials');
+        this.logger.warn(
+          'Aster API authentication failed - equity query requires valid API credentials',
+        );
         return 0; // Return 0 instead of throwing to allow system to continue
       }
       this.logger.error(`Failed to get equity: ${error.message}`);
       // Return 0 instead of throwing to allow system to continue
-      this.logger.warn('Returning 0 equity due to error - Aster equity query may need valid API keys');
+      this.logger.warn(
+        'Returning 0 equity due to error - Aster equity query may need valid API keys',
+      );
       return 0;
     }
   }
@@ -1097,7 +1200,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
   async getAvailableMargin(): Promise<number> {
     try {
       let params: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         params = this.signParamsWithApiKey({});
@@ -1111,7 +1214,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
 
       const queryParams: string[] = [];
       const signatureParam: string[] = [];
-      
+
       for (const [key, value] of Object.entries(params)) {
         if (key === 'signature') {
           signatureParam.push(`signature=${value}`);
@@ -1120,26 +1223,35 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         }
       }
       queryParams.sort();
-      const queryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+      const queryString =
+        queryParams.join('&') +
+        (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
-      const response = await this.client.get(`/fapi/v2/account?${queryString}`, {
-        headers,
-      });
+      const response = await this.client.get(
+        `/fapi/v2/account?${queryString}`,
+        {
+          headers,
+        },
+      );
 
       // Aster provides availableBalance which is margin available for new positions
-      const availableBalance = parseFloat(response.data.availableBalance || '0');
-      
+      const availableBalance = parseFloat(
+        response.data.availableBalance || '0',
+      );
+
       // Apply 15% safety buffer (10% maintenance + 5% execution)
       const availableMargin = availableBalance * 0.85;
-      
+
       this.logger.debug(
         `Aster available margin: availableBalance=$${availableBalance.toFixed(2)}, ` +
-        `withBuffer=$${Math.max(0, availableMargin).toFixed(2)}`
+          `withBuffer=$${Math.max(0, availableMargin).toFixed(2)}`,
       );
-      
+
       return Math.max(0, availableMargin);
     } catch (error: any) {
-      this.logger.warn(`Failed to get available margin: ${error.message}, falling back to getBalance`);
+      this.logger.warn(
+        `Failed to get available margin: ${error.message}, falling back to getBalance`,
+      );
       try {
         const balance = await this.getBalance();
         return balance * 0.7; // 30% buffer as fallback
@@ -1181,11 +1293,13 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Aster API: type 1 = spot to futures, type 2 = futures to spot
       const transferType = toPerp ? 1 : 2;
       const direction = toPerp ? 'spot → futures' : 'futures → spot';
-      this.logger.log(`Transferring $${amount.toFixed(2)} ${direction} on Aster...`);
+      this.logger.log(
+        `Transferring $${amount.toFixed(2)} ${direction} on Aster...`,
+      );
 
       // Use API key authentication if available
       let params: Record<string, any>;
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       if (this.apiKey && this.apiSecret) {
         params = this.signParamsWithApiKey({
@@ -1195,7 +1309,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         });
         headers['X-MBX-APIKEY'] = this.apiKey;
       } else {
-        throw new Error('API key and secret required for transfers. Provide ASTER_API_KEY and ASTER_API_SECRET.');
+        throw new Error(
+          'API key and secret required for transfers. Provide ASTER_API_KEY and ASTER_API_SECRET.',
+        );
       }
 
       // Manually build query string to ensure signature is last
@@ -1209,21 +1325,33 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         }
       }
       queryParams.sort(); // Sort other params
-      const finalQueryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+      const finalQueryString =
+        queryParams.join('&') +
+        (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
-      const response = await this.client.post(`/fapi/v1/transfer?${finalQueryString}`, {}, { headers });
+      const response = await this.client.post(
+        `/fapi/v1/transfer?${finalQueryString}`,
+        {},
+        { headers },
+      );
 
       if (response.data && response.data.tranId) {
         const tranId = response.data.tranId;
-        this.logger.log(`✅ Transfer successful: ${direction} - Transaction ID: ${tranId}`);
+        this.logger.log(
+          `✅ Transfer successful: ${direction} - Transaction ID: ${tranId}`,
+        );
         return tranId.toString();
       } else {
         throw new Error(`Transfer failed: ${JSON.stringify(response.data)}`);
       }
     } catch (error: any) {
-      this.logger.error(`Failed to transfer ${toPerp ? 'spot → futures' : 'futures → spot'}: ${error.message}`);
+      this.logger.error(
+        `Failed to transfer ${toPerp ? 'spot → futures' : 'futures → spot'}: ${error.message}`,
+      );
       if (error.response) {
-        this.logger.debug(`Aster API error response: ${JSON.stringify(error.response.data)}`);
+        this.logger.debug(
+          `Aster API error response: ${JSON.stringify(error.response.data)}`,
+        );
       }
       throw new ExchangeError(
         `Failed to transfer: ${error.message}`,
@@ -1234,7 +1362,11 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 
-  async depositExternal(amount: number, asset: string, destination?: string): Promise<string> {
+  async depositExternal(
+    amount: number,
+    asset: string,
+    destination?: string,
+  ): Promise<string> {
     try {
       if (amount <= 0) {
         throw new Error('Deposit amount must be greater than 0');
@@ -1245,36 +1377,46 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         throw new Error(`Only USDC deposits are supported. Received: ${asset}`);
       }
 
-      this.logger.log(`Depositing $${amount.toFixed(2)} ${asset} to Aster via Treasury contract...`);
+      this.logger.log(
+        `Depositing $${amount.toFixed(2)} ${asset} to Aster via Treasury contract...`,
+      );
 
       // Aster Treasury contract address on Arbitrum
       // Transaction: 0xd63c6bce751a8d2230bb574a6571cb160a52f992ab876ba30b21f568a7175bd5
-      const ASTER_TREASURY_CONTRACT = '0x9E36CB86a159d479cEd94Fa05036f235Ac40E1d5';
-      const USDC_CONTRACT_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'; // USDC on Arbitrum
-      
+      const ASTER_TREASURY_CONTRACT =
+        '0x9E36CB86a159d479cEd94Fa05036f235Ac40E1d5';
+      const USDC_CONTRACT_ADDRESS =
+        '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'; // USDC on Arbitrum
+
       // Get Arbitrum RPC URL
-      const arbitrumRpcUrl = this.configService.get<string>('ARBITRUM_RPC_URL') ||
-                             this.configService.get<string>('ARB_RPC_URL') ||
-                             'https://arb1.arbitrum.io/rpc'; // Public RPC fallback
-      
+      const arbitrumRpcUrl =
+        this.configService.get<string>('ARBITRUM_RPC_URL') ||
+        this.configService.get<string>('ARB_RPC_URL') ||
+        'https://arb1.arbitrum.io/rpc'; // Public RPC fallback
+
       // Get private key for signing transactions
-      const privateKey = this.configService.get<string>('PRIVATE_KEY') || 
-                        this.configService.get<string>('ASTER_PRIVATE_KEY');
+      const privateKey =
+        this.configService.get<string>('PRIVATE_KEY') ||
+        this.configService.get<string>('ASTER_PRIVATE_KEY');
       if (!privateKey) {
-        throw new Error('PRIVATE_KEY or ASTER_PRIVATE_KEY required for on-chain deposits');
+        throw new Error(
+          'PRIVATE_KEY or ASTER_PRIVATE_KEY required for on-chain deposits',
+        );
       }
 
-      const normalizedPrivateKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      const normalizedPrivateKey = privateKey.startsWith('0x')
+        ? privateKey
+        : `0x${privateKey}`;
       const provider = new ethers.JsonRpcProvider(arbitrumRpcUrl);
       const wallet = new ethers.Wallet(normalizedPrivateKey, provider);
 
       this.logger.debug(
         `Aster deposit details:\n` +
-        `  Treasury contract: ${ASTER_TREASURY_CONTRACT}\n` +
-        `  USDC contract: ${USDC_CONTRACT_ADDRESS}\n` +
-        `  Amount: ${amount} USDC\n` +
-        `  Wallet: ${wallet.address}\n` +
-        `  RPC: ${arbitrumRpcUrl}`
+          `  Treasury contract: ${ASTER_TREASURY_CONTRACT}\n` +
+          `  USDC contract: ${USDC_CONTRACT_ADDRESS}\n` +
+          `  Amount: ${amount} USDC\n` +
+          `  Wallet: ${wallet.address}\n` +
+          `  RPC: ${arbitrumRpcUrl}`,
       );
 
       // ERC20 ABI for USDC (approve, transfer, allowance, balanceOf, decimals)
@@ -1292,8 +1434,16 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         'function deposit(address currency, uint256 amount, uint256 broker) external',
       ];
 
-      const usdcContract = new ethers.Contract(USDC_CONTRACT_ADDRESS, erc20Abi, wallet);
-      const treasuryContract = new ethers.Contract(ASTER_TREASURY_CONTRACT, treasuryAbi, wallet);
+      const usdcContract = new ethers.Contract(
+        USDC_CONTRACT_ADDRESS,
+        erc20Abi,
+        wallet,
+      );
+      const treasuryContract = new ethers.Contract(
+        ASTER_TREASURY_CONTRACT,
+        treasuryAbi,
+        wallet,
+      );
 
       // Get USDC decimals (convert BigInt to number)
       const decimalsBigInt = await usdcContract.decimals();
@@ -1303,19 +1453,27 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Check USDC balance
       const balanceWei = await usdcContract.balanceOf(wallet.address);
       const balanceFormatted = Number(ethers.formatUnits(balanceWei, decimals));
-      
+
       if (balanceFormatted < amount) {
         throw new Error(
-          `Insufficient USDC balance. Required: ${amount.toFixed(2)} USDC, Available: ${balanceFormatted.toFixed(2)} USDC`
+          `Insufficient USDC balance. Required: ${amount.toFixed(2)} USDC, Available: ${balanceFormatted.toFixed(2)} USDC`,
         );
       }
 
       // Check current allowance
-      const currentAllowance = await usdcContract.allowance(wallet.address, ASTER_TREASURY_CONTRACT);
+      const currentAllowance = await usdcContract.allowance(
+        wallet.address,
+        ASTER_TREASURY_CONTRACT,
+      );
       if (currentAllowance < amountWei) {
         // Approve Treasury contract to spend USDC
-        this.logger.log(`Approving Aster Treasury to spend ${amount.toFixed(2)} USDC...`);
-        const approveTx = await usdcContract.approve(ASTER_TREASURY_CONTRACT, amountWei);
+        this.logger.log(
+          `Approving Aster Treasury to spend ${amount.toFixed(2)} USDC...`,
+        );
+        const approveTx = await usdcContract.approve(
+          ASTER_TREASURY_CONTRACT,
+          amountWei,
+        );
         await approveTx.wait();
         this.logger.log(`✅ Approval confirmed: ${approveTx.hash}`);
       }
@@ -1326,12 +1484,12 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       const depositTx = await treasuryContract.deposit(
         USDC_CONTRACT_ADDRESS,
         amountWei,
-        1 // broker ID = 1 (default)
+        1, // broker ID = 1 (default)
       );
 
       this.logger.log(`⏳ Deposit transaction submitted: ${depositTx.hash}`);
       const receipt = await depositTx.wait();
-      
+
       if (receipt.status === 1) {
         this.logger.log(`✅ Deposit successful! Transaction: ${receipt.hash}`);
         return receipt.hash;
@@ -1342,7 +1500,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       if (error instanceof ExchangeError) {
         throw error;
       }
-      
+
       this.logger.error(`Failed to deposit ${asset}: ${error.message}`);
       if (error.transactionHash) {
         this.logger.debug(`Transaction hash: ${error.transactionHash}`);
@@ -1356,33 +1514,45 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 
-  async withdrawExternal(amount: number, asset: string, destination: string): Promise<string> {
+  async withdrawExternal(
+    amount: number,
+    asset: string,
+    destination: string,
+  ): Promise<string> {
     try {
       if (amount <= 0) {
         throw new Error('Withdrawal amount must be greater than 0');
       }
 
       if (!destination || !destination.match(/^0x[a-fA-F0-9]{40}$/)) {
-        throw new Error('Invalid destination address. Must be a valid Ethereum address (0x followed by 40 hex characters)');
+        throw new Error(
+          'Invalid destination address. Must be a valid Ethereum address (0x followed by 40 hex characters)',
+        );
       }
 
-      this.logger.log(`Withdrawing $${amount.toFixed(2)} ${asset} to ${destination} on Aster...`);
+      this.logger.log(
+        `Withdrawing $${amount.toFixed(2)} ${asset} to ${destination} on Aster...`,
+      );
 
-      if (!this.wallet || !this.config.userAddress || !this.config.signerAddress) {
+      if (
+        !this.wallet ||
+        !this.config.userAddress ||
+        !this.config.signerAddress
+      ) {
         throw new Error(
           'Wallet, user address, and signer address required for withdrawals. ' +
-          'Provide ASTER_USER, ASTER_SIGNER, and ASTER_PRIVATE_KEY.'
+            'Provide ASTER_USER, ASTER_SIGNER, and ASTER_PRIVATE_KEY.',
         );
       }
 
       // Aster withdrawal uses EIP712 signature (not regular Ethereum message signature)
       // Endpoint: /fapi/aster/user-withdraw (uses API key + HMAC signature with PRIVATE_KEY)
       // Documentation: https://github.com/asterdex/api-docs/blob/master/aster-deposit-withdrawal.md
-      
+
       // Chain ID: 42161 (Arbitrum), 56 (BSC), 1 (Ethereum)
       // Default to Arbitrum (42161) as that's where most withdrawals go
       const chainId = 42161; // Arbitrum One
-      
+
       // Get withdrawal fee from API (per Aster documentation section 3)
       // Endpoint: /bapi/futures/v1/public/future/aster/estimate-withdraw-fee
       let fee: string;
@@ -1397,10 +1567,13 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
               accountType: 'spot',
             },
             timeout: 10000,
-          }
+          },
         );
-        
-        if (feeResponse.data?.success && feeResponse.data?.data?.gasCost !== undefined) {
+
+        if (
+          feeResponse.data?.success &&
+          feeResponse.data?.data?.gasCost !== undefined
+        ) {
           // gasCost is the estimated withdrawal fee in token units
           fee = feeResponse.data.data.gasCost.toString();
           this.logger.debug(`Withdrawal fee from API: ${fee} ${asset}`);
@@ -1413,16 +1586,16 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         // Fallback to a default fee if API call fails
         fee = '0.5'; // Match test script fallback
         this.logger.warn(
-          `Failed to query withdrawal fee from API: ${feeError.message}. Using default: ${fee}`
+          `Failed to query withdrawal fee from API: ${feeError.message}. Using default: ${fee}`,
         );
       }
-      
+
       // Generate nonce (timestamp in milliseconds, then multiply by 1000 for microseconds)
       // Per Aster docs: "use the current timestamp in milliseconds and multiply '1000'"
       const nonceMs = Date.now();
       const nonceValue = nonceMs * 1000; // Convert to microseconds
       const nonceString = nonceValue.toString(); // String for request body
-      
+
       // Map chainId to chain name (required for EIP712 signature)
       const chainNameMap: Record<number, string> = {
         56: 'BSC',
@@ -1430,7 +1603,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         1: 'ETH',
       };
       const destinationChain = chainNameMap[chainId] || 'Arbitrum';
-      
+
       // Build EIP712 domain (per Aster documentation)
       const domain = {
         name: 'Aster',
@@ -1438,7 +1611,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         chainId: chainId, // The chainId of the withdraw chain
         verifyingContract: '0x0000000000000000000000000000000000000000', // Fixed zero address
       };
-      
+
       // Build EIP712 types (per Aster documentation)
       const types = {
         Action: [
@@ -1452,7 +1625,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
           { name: 'aster chain', type: 'string' },
         ],
       };
-      
+
       // Build EIP712 message (per Aster documentation)
       // Note: nonce must be a number (not BigInt) for ethers.js signTypedData
       // ethers.js will handle the conversion to uint256 internally
@@ -1460,7 +1633,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Aster API rejects amounts with too many decimal places (error: "amount or fee has too many decimal places")
       // USDC/USDT typically use 2 decimal places, so format to 2 decimals
       const amountString = amount.toFixed(2);
-      
+
       const message = {
         type: 'Withdraw',
         destination: destination.toLowerCase(),
@@ -1471,52 +1644,59 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         nonce: nonceValue, // Use number, ethers.js will convert to uint256
         'aster chain': 'Mainnet',
       };
-      
+
       // Use /fapi/aster/user-withdraw endpoint (matches web interface and EIP712 test script)
       // This endpoint uses API key + HMAC signature with PRIVATE_KEY, and includes EIP712 userSignature
       if (!this.apiKey) {
         throw new Error(
-          'API key required for withdrawals. ' +
-          'Provide ASTER_API_KEY.'
+          'API key required for withdrawals. ' + 'Provide ASTER_API_KEY.',
         );
       }
 
       // For HMAC signature, use PRIVATE_KEY (per user requirement)
       // User explicitly stated: "PRIVATE_KEY needs to be used for this call from the .env"
       // CRITICAL: Use PRIVATE_KEY for BOTH EIP712 and HMAC signatures (no fallback)
-      const privateKeyForBoth = this.configService.get<string>('PRIVATE_KEY') || process.env.PRIVATE_KEY;
+      const privateKeyForBoth =
+        this.configService.get<string>('PRIVATE_KEY') ||
+        process.env.PRIVATE_KEY;
       if (!privateKeyForBoth) {
         throw new Error(
           'PRIVATE_KEY required for withdrawal signatures. ' +
-          'Provide PRIVATE_KEY in .env.'
+            'Provide PRIVATE_KEY in .env.',
         );
       }
-      
+
       // Create EIP712 wallet using PRIVATE_KEY (same key as HMAC)
-      const normalizedEip712Key = privateKeyForBoth.startsWith('0x') ? privateKeyForBoth : `0x${privateKeyForBoth}`;
+      const normalizedEip712Key = privateKeyForBoth.startsWith('0x')
+        ? privateKeyForBoth
+        : `0x${privateKeyForBoth}`;
       const eip712Wallet = new ethers.Wallet(normalizedEip712Key);
-      
+
       this.logger.debug(
         `Using PRIVATE_KEY for both EIP712 and HMAC signatures ` +
-        `(wallet: ${eip712Wallet.address})`
+          `(wallet: ${eip712Wallet.address})`,
       );
-      
+
       // Sign using EIP712 typed data
       // CRITICAL: Use the same private key as HMAC (PRIVATE_KEY || ASTER_PRIVATE_KEY)
       // This ensures both signatures match the test script behavior
       this.logger.debug(
         `EIP712 signature: domain=${JSON.stringify(domain)}, ` +
-        `message=${JSON.stringify(message)}`
+          `message=${JSON.stringify(message)}`,
       );
-      
-      const userSignature = await eip712Wallet.signTypedData(domain, types, message);
-      
+
+      const userSignature = await eip712Wallet.signTypedData(
+        domain,
+        types,
+        message,
+      );
+
       // Debug: Log signature details for troubleshooting
       this.logger.debug(
         `EIP712 signature generated: ${userSignature.substring(0, 20)}... ` +
-        `(wallet: ${eip712Wallet.address})`
+          `(wallet: ${eip712Wallet.address})`,
       );
-      
+
       // Remove 0x prefix if present for HMAC
       const privateKeyHex = privateKeyForBoth.replace(/^0x/, '');
 
@@ -1526,7 +1706,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Match script exactly: generate timestamp once and use it
       const timestamp = Date.now();
       const recvWindow = 60000;
-      
+
       const hmacParams: Record<string, any> = {
         chainId: chainId.toString(),
         asset: asset.toUpperCase(),
@@ -1541,7 +1721,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
 
       // Remove null/undefined values
       const cleanParams = Object.fromEntries(
-        Object.entries(hmacParams).filter(([, value]) => value !== null && value !== undefined),
+        Object.entries(hmacParams).filter(
+          ([, value]) => value !== null && value !== undefined,
+        ),
       );
 
       // Build query string for HMAC signing (sorted alphabetically)
@@ -1554,25 +1736,27 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Create HMAC SHA256 signature using PRIVATE_KEY
       this.logger.debug(
         `HMAC signing details:\n` +
-        `  Private key source: PRIVATE_KEY\n` +
-        `  Private key (first 10 chars): ${privateKeyHex.substring(0, 10)}...\n` +
-        `  Query string: ${queryString}\n` +
-        `  Query string length: ${queryString.length}`
+          `  Private key source: PRIVATE_KEY\n` +
+          `  Private key (first 10 chars): ${privateKeyHex.substring(0, 10)}...\n` +
+          `  Query string: ${queryString}\n` +
+          `  Query string length: ${queryString.length}`,
       );
-      
+
       const hmacSignature = crypto
         .createHmac('sha256', privateKeyHex)
         .update(queryString)
         .digest('hex');
-      
+
       this.logger.debug(`HMAC signature: ${hmacSignature}`);
-      this.logger.debug(`Full final query string: ${queryString}&signature=${hmacSignature}`);
+      this.logger.debug(
+        `Full final query string: ${queryString}&signature=${hmacSignature}`,
+      );
 
       // Build final query string: include all params + signature last
       const finalQueryString = `${queryString}&signature=${hmacSignature}`;
 
       this.logger.debug(
-        `Withdrawal via fapi/aster/user-withdraw endpoint: ${this.config.baseUrl}/fapi/aster/user-withdraw?${finalQueryString.substring(0, 200)}...`
+        `Withdrawal via fapi/aster/user-withdraw endpoint: ${this.config.baseUrl}/fapi/aster/user-withdraw?${finalQueryString.substring(0, 200)}...`,
       );
 
       // Use /fapi/aster/user-withdraw endpoint (matches web interface EIP712 flow)
@@ -1592,7 +1776,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
                 'Content-Type': 'application/json',
               },
               timeout: 30000,
-            }
+            },
           );
 
           // Handle response (per Aster API documentation section 6)
@@ -1601,18 +1785,23 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
             const withdrawId = response.data.withdrawId;
             const hash = response.data.hash || 'unknown';
             this.logger.log(
-              `✅ Withdrawal successful - Withdrawal ID: ${withdrawId}, Hash: ${hash}`
+              `✅ Withdrawal successful - Withdrawal ID: ${withdrawId}, Hash: ${hash}`,
             );
             return withdrawId.toString();
-          } else if (response.data && (response.data.id || response.data.tranId)) {
+          } else if (
+            response.data &&
+            (response.data.id || response.data.tranId)
+          ) {
             // Fallback for other response formats
             const withdrawId = response.data.id || response.data.tranId;
             this.logger.log(
-              `✅ Withdrawal successful - Withdrawal ID: ${withdrawId}`
+              `✅ Withdrawal successful - Withdrawal ID: ${withdrawId}`,
             );
             return withdrawId.toString();
           } else {
-            throw new Error(`Withdrawal failed: ${JSON.stringify(response.data)}`);
+            throw new Error(
+              `Withdrawal failed: ${JSON.stringify(response.data)}`,
+            );
           }
         } catch (error: any) {
           lastError = error;
@@ -1622,24 +1811,28 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
           // Check if it's a retryable error
           const retryableErrors = [-1000, -1001, -1007, -1016]; // UNKNOWN, DISCONNECTED, TIMEOUT, SERVICE_SHUTTING_DOWN
           const isRetryable = retryableErrors.includes(errorCode);
-          
+
           // Check for specific error messages that need longer delays
-          const isMultiChainLimit = errorMsg && errorMsg.toLowerCase().includes('multi chain limit');
-          const isRateLimit = errorMsg && (errorMsg.toLowerCase().includes('rate limit') || errorMsg.toLowerCase().includes('too many'));
-          
+          const isMultiChainLimit =
+            errorMsg && errorMsg.toLowerCase().includes('multi chain limit');
+          const isRateLimit =
+            errorMsg &&
+            (errorMsg.toLowerCase().includes('rate limit') ||
+              errorMsg.toLowerCase().includes('too many'));
+
           // Signature mismatch is NOT retryable - it means the signature is wrong, retrying won't help
           // Only retry on transient server errors, not authentication/signature errors
-          const isSignatureError = errorMsg && (
-            errorMsg.toLowerCase().includes('signature mismatch') ||
-            errorMsg.toLowerCase().includes('signature') ||
-            errorCode === -1022 // INVALID_SIGNATURE
-          );
-          
+          const isSignatureError =
+            errorMsg &&
+            (errorMsg.toLowerCase().includes('signature mismatch') ||
+              errorMsg.toLowerCase().includes('signature') ||
+              errorCode === -1022); // INVALID_SIGNATURE
+
           // Don't retry on signature errors - they indicate a code issue, not a transient server error
           if (isSignatureError) {
             this.logger.error(
               `Signature error detected - this indicates a code issue, not a transient error. ` +
-              `Error: ${errorMsg}. Please check signature generation logic.`
+                `Error: ${errorMsg}. Please check signature generation logic.`,
             );
             throw new ExchangeError(
               `Withdrawal signature mismatch: ${errorMsg}. This indicates a code issue with signature generation.`,
@@ -1652,23 +1845,24 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
           if (isRetryable && attempt < maxRetries) {
             // Use longer delay for rate limits (30s, 60s, 90s)
             // Use shorter delay for other retryable errors (2s, 4s, 6s)
-            const delay = (isMultiChainLimit || isRateLimit) 
-              ? 30000 * attempt // 30s, 60s, 90s for rate limits
-              : retryDelay * attempt; // 2s, 4s, 6s for other errors
-            
+            const delay =
+              isMultiChainLimit || isRateLimit
+                ? 30000 * attempt // 30s, 60s, 90s for rate limits
+                : retryDelay * attempt; // 2s, 4s, 6s for other errors
+
             // Silenced rate limit warnings - only show errors
             if (isRateLimit || isMultiChainLimit) {
               this.logger.debug(
                 `Withdrawal attempt ${attempt}/${maxRetries} failed with retryable error ` +
-                `(${errorCode}: ${errorMsg}). Retrying in ${delay}ms...`
+                  `(${errorCode}: ${errorMsg}). Retrying in ${delay}ms...`,
               );
             } else {
               this.logger.warn(
                 `Withdrawal attempt ${attempt}/${maxRetries} failed with retryable error ` +
-                `(${errorCode}: ${errorMsg}). Retrying in ${delay}ms...`
+                  `(${errorCode}: ${errorMsg}). Retrying in ${delay}ms...`,
               );
             }
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await new Promise((resolve) => setTimeout(resolve, delay));
             continue;
           } else {
             // Not retryable or max retries reached
@@ -1680,17 +1874,20 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // If we get here, all retries failed
       const errorCode = lastError?.response?.data?.code;
       const errorMsg = lastError?.response?.data?.msg || lastError?.message;
-      
+
       // Provide helpful error messages based on error code
       let errorMessage = `Withdrawal failed after ${maxRetries} attempts`;
       if (errorCode === -1000) {
         // Check for specific error messages
         if (errorMsg && errorMsg.toLowerCase().includes('multi chain limit')) {
-          errorMessage = 'Multi-chain withdrawal rate limit reached. Aster limits withdrawals across different chains. Please wait before retrying or reduce withdrawal frequency.';
+          errorMessage =
+            'Multi-chain withdrawal rate limit reached. Aster limits withdrawals across different chains. Please wait before retrying or reduce withdrawal frequency.';
         } else if (errorMsg && errorMsg.toLowerCase().includes('rate limit')) {
-          errorMessage = 'Withdrawal rate limit reached. Please wait before retrying.';
+          errorMessage =
+            'Withdrawal rate limit reached. Please wait before retrying.';
         } else {
-          errorMessage = 'Service unavailable (UNKNOWN error). Please try again later.';
+          errorMessage =
+            'Service unavailable (UNKNOWN error). Please try again later.';
         }
       } else if (errorCode === -1001) {
         errorMessage = 'Internal error (DISCONNECTED). Please try again later.';
@@ -1699,11 +1896,14 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       } else if (errorCode === -1016) {
         errorMessage = 'Service is shutting down. Please try again later.';
       } else if (errorCode === -1022) {
-        errorMessage = 'Invalid signature. Check API key and secret configuration.';
+        errorMessage =
+          'Invalid signature. Check API key and secret configuration.';
       } else if (errorCode === -1021) {
-        errorMessage = 'Timestamp outside recvWindow. Check system clock synchronization.';
+        errorMessage =
+          'Timestamp outside recvWindow. Check system clock synchronization.';
       } else if (errorCode === -2015) {
-        errorMessage = 'Invalid API key, IP, or permissions. Check API key configuration.';
+        errorMessage =
+          'Invalid API key, IP, or permissions. Check API key configuration.';
       } else if (errorCode === -2018) {
         errorMessage = 'Insufficient balance for withdrawal.';
       } else if (errorMsg) {
@@ -1715,9 +1915,13 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       if (error instanceof ExchangeError) {
         throw error;
       }
-      this.logger.error(`Failed to withdraw ${asset} to ${destination}: ${error.message}`);
+      this.logger.error(
+        `Failed to withdraw ${asset} to ${destination}: ${error.message}`,
+      );
       if (error.response) {
-        this.logger.debug(`Aster API error response: ${JSON.stringify(error.response.data)}`);
+        this.logger.debug(
+          `Aster API error response: ${JSON.stringify(error.response.data)}`,
+        );
       }
       throw new ExchangeError(
         `Failed to withdraw: ${error.message}`,
@@ -1735,15 +1939,18 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
    * @param endTime Optional end time in milliseconds (default: now)
    * @returns Array of funding payments
    */
-  async getFundingPayments(startTime?: number, endTime?: number): Promise<FundingPayment[]> {
+  async getFundingPayments(
+    startTime?: number,
+    endTime?: number,
+  ): Promise<FundingPayment[]> {
     try {
       const now = Date.now();
-      const start = startTime || now - (7 * 24 * 60 * 60 * 1000); // Default: 7 days ago
+      const start = startTime || now - 7 * 24 * 60 * 60 * 1000; // Default: 7 days ago
       const end = endTime || now;
 
       this.logger.debug(
         `Fetching funding payments from Aster ` +
-        `(${new Date(start).toISOString()} to ${new Date(end).toISOString()})`
+          `(${new Date(start).toISOString()} to ${new Date(end).toISOString()})`,
       );
 
       // Try with API key authentication first (HMAC)
@@ -1758,7 +1965,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         // Build query string with signature last
         const queryParams: string[] = [];
         const signatureParam: string[] = [];
-        
+
         for (const [key, value] of Object.entries(params)) {
           if (key === 'signature') {
             signatureParam.push(`signature=${value}`);
@@ -1766,24 +1973,29 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
             queryParams.push(`${key}=${value}`);
           }
         }
-        
+
         queryParams.sort();
-        const queryString = queryParams.join('&') + (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
+        const queryString =
+          queryParams.join('&') +
+          (signatureParam.length > 0 ? `&${signatureParam[0]}` : '');
 
         try {
-          const response = await this.client.get(`/fapi/v1/income?${queryString}`, {
-            headers: {
-              'X-MBX-APIKEY': this.apiKey,
+          const response = await this.client.get(
+            `/fapi/v1/income?${queryString}`,
+            {
+              headers: {
+                'X-MBX-APIKEY': this.apiKey,
+              },
+              timeout: 30000,
             },
-            timeout: 30000,
-          });
+          );
 
           if (Array.isArray(response.data)) {
             const payments: FundingPayment[] = [];
-            
+
             for (const entry of response.data) {
               const amount = parseFloat(entry.income || '0');
-              
+
               payments.push({
                 exchange: ExchangeType.ASTER,
                 symbol: entry.symbol || 'UNKNOWN',
@@ -1794,11 +2006,15 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
               });
             }
 
-            this.logger.debug(`Retrieved ${payments.length} funding payments from Aster`);
+            this.logger.debug(
+              `Retrieved ${payments.length} funding payments from Aster`,
+            );
             return payments;
           }
         } catch (hmacError: any) {
-          this.logger.debug(`HMAC auth failed for funding payments: ${hmacError.message}`);
+          this.logger.debug(
+            `HMAC auth failed for funding payments: ${hmacError.message}`,
+          );
           // Fall through to try Ethereum signature
         }
       }
@@ -1806,12 +2022,15 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       // Try with Ethereum signature authentication
       if (this.wallet) {
         const nonce = Math.floor(Date.now() * 1000);
-        const params = this.signParams({
-          incomeType: 'FUNDING_FEE',
-          startTime: start,
-          endTime: end,
-          limit: 1000,
-        }, nonce);
+        const params = this.signParams(
+          {
+            incomeType: 'FUNDING_FEE',
+            startTime: start,
+            endTime: end,
+            limit: 1000,
+          },
+          nonce,
+        );
 
         try {
           const response = await this.client.get('/fapi/v3/income', {
@@ -1821,10 +2040,10 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
 
           if (Array.isArray(response.data)) {
             const payments: FundingPayment[] = [];
-            
+
             for (const entry of response.data) {
               const amount = parseFloat(entry.income || '0');
-              
+
               payments.push({
                 exchange: ExchangeType.ASTER,
                 symbol: entry.symbol || 'UNKNOWN',
@@ -1835,16 +2054,22 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
               });
             }
 
-            this.logger.debug(`Retrieved ${payments.length} funding payments from Aster`);
+            this.logger.debug(
+              `Retrieved ${payments.length} funding payments from Aster`,
+            );
             return payments;
           }
         } catch (ethError: any) {
-          this.logger.debug(`Ethereum signature auth failed for funding payments: ${ethError.message}`);
+          this.logger.debug(
+            `Ethereum signature auth failed for funding payments: ${ethError.message}`,
+          );
         }
       }
 
       // All methods failed
-      this.logger.warn('Could not fetch funding payments from Aster - both auth methods failed');
+      this.logger.warn(
+        'Could not fetch funding payments from Aster - both auth methods failed',
+      );
       return [];
     } catch (error: any) {
       this.logger.error(`Failed to get funding payments: ${error.message}`);
@@ -1853,4 +2078,3 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
     }
   }
 }
-

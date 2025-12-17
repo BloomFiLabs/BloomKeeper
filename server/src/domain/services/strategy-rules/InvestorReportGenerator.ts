@@ -13,7 +13,7 @@ export interface OptimalPortfolioAllocation {
 
 /**
  * InvestorReportGenerator - Generates comprehensive investor reports
- * 
+ *
  * Creates detailed risk analysis reports including:
  * - Expected returns and confidence intervals
  * - Risk metrics (VaR, drawdown, Sharpe ratio)
@@ -63,20 +63,24 @@ export class InvestorReportGenerator {
   /**
    * Log expected returns section
    */
-  private logExpectedReturns(riskMetrics: PortfolioRiskMetrics & { dataQuality?: any }): void {
+  private logExpectedReturns(
+    riskMetrics: PortfolioRiskMetrics & { dataQuality?: any },
+  ): void {
     this.logger.log('\nEXPECTED RETURNS:');
-    this.logger.log(`  Expected APY: ${(riskMetrics.expectedAPY * 100).toFixed(2)}%`);
+    this.logger.log(
+      `  Expected APY: ${(riskMetrics.expectedAPY * 100).toFixed(2)}%`,
+    );
 
     if (riskMetrics.dataQuality?.hasSufficientDataForConfidenceInterval) {
       this.logger.log(
         `  ${(riskMetrics.expectedAPYConfidenceInterval.confidence * 100).toFixed(0)}% Confidence Interval: ` +
-        `${(riskMetrics.expectedAPYConfidenceInterval.lower * 100).toFixed(2)}% - ` +
-        `${(riskMetrics.expectedAPYConfidenceInterval.upper * 100).toFixed(2)}%`,
+          `${(riskMetrics.expectedAPYConfidenceInterval.lower * 100).toFixed(2)}% - ` +
+          `${(riskMetrics.expectedAPYConfidenceInterval.upper * 100).toFixed(2)}%`,
       );
     } else {
       this.logger.log(
         `  ${(riskMetrics.expectedAPYConfidenceInterval.confidence * 100).toFixed(0)}% Confidence Interval: ` +
-        `N/A (insufficient historical data)`,
+          `N/A (insufficient historical data)`,
       );
     }
   }
@@ -84,13 +88,18 @@ export class InvestorReportGenerator {
   /**
    * Log risk metrics section
    */
-  private logRiskMetrics(riskMetrics: PortfolioRiskMetrics & { dataQuality?: any }): void {
+  private logRiskMetrics(
+    riskMetrics: PortfolioRiskMetrics & { dataQuality?: any },
+  ): void {
     this.logger.log('\nRISK METRICS:');
     this.logger.log(
       `  Worst-Case APY: ${(riskMetrics.worstCaseAPY * 100).toFixed(2)}% (if all spreads reverse)`,
     );
 
-    if (riskMetrics.dataQuality?.hasSufficientDataForVaR && riskMetrics.valueAtRisk95 !== 0) {
+    if (
+      riskMetrics.dataQuality?.hasSufficientDataForVaR &&
+      riskMetrics.valueAtRisk95 !== 0
+    ) {
       this.logger.log(
         `  Value at Risk (95%): -$${(Math.abs(riskMetrics.valueAtRisk95) / 1000).toFixed(1)}k (worst month loss)`,
       );
@@ -100,7 +109,10 @@ export class InvestorReportGenerator {
       );
     }
 
-    if (riskMetrics.dataQuality?.hasSufficientDataForDrawdown && riskMetrics.maximumDrawdown !== 0) {
+    if (
+      riskMetrics.dataQuality?.hasSufficientDataForDrawdown &&
+      riskMetrics.maximumDrawdown !== 0
+    ) {
       this.logger.log(
         `  Maximum Drawdown: -$${(Math.abs(riskMetrics.maximumDrawdown) / 1000).toFixed(1)}k (estimated)`,
       );
@@ -110,33 +122,37 @@ export class InvestorReportGenerator {
       );
     }
 
-    this.logger.log(`  Sharpe Ratio: ${riskMetrics.sharpeRatio.toFixed(2)} (risk-adjusted return)`);
+    this.logger.log(
+      `  Sharpe Ratio: ${riskMetrics.sharpeRatio.toFixed(2)} (risk-adjusted return)`,
+    );
   }
 
   /**
    * Log historical validation section
    */
-  private logHistoricalValidation(riskMetrics: PortfolioRiskMetrics & { dataQuality?: any }): void {
+  private logHistoricalValidation(
+    riskMetrics: PortfolioRiskMetrics & { dataQuality?: any },
+  ): void {
     this.logger.log('\nHISTORICAL VALIDATION:');
 
     if (riskMetrics.dataQuality?.hasSufficientDataForBacktest) {
       this.logger.log(
         `  Last 30 Days: ${(riskMetrics.historicalBacktest.last30Days.apy * 100).toFixed(2)}% APY ` +
-        `${riskMetrics.historicalBacktest.last30Days.realized ? '(realized)' : '(estimated)'}`,
+          `${riskMetrics.historicalBacktest.last30Days.realized ? '(realized)' : '(estimated)'}`,
       );
       this.logger.log(
         `  Last 90 Days: ${(riskMetrics.historicalBacktest.last90Days.apy * 100).toFixed(2)}% APY ` +
-        `${riskMetrics.historicalBacktest.last90Days.realized ? '(realized)' : '(estimated)'}`,
+          `${riskMetrics.historicalBacktest.last90Days.realized ? '(realized)' : '(estimated)'}`,
       );
 
       if (riskMetrics.historicalBacktest.worstMonth.month !== 'N/A') {
         this.logger.log(
           `  Worst Month: ${(riskMetrics.historicalBacktest.worstMonth.apy * 100).toFixed(2)}% APY ` +
-          `(${riskMetrics.historicalBacktest.worstMonth.month})`,
+            `(${riskMetrics.historicalBacktest.worstMonth.month})`,
         );
         this.logger.log(
           `  Best Month: ${(riskMetrics.historicalBacktest.bestMonth.apy * 100).toFixed(2)}% APY ` +
-          `(${riskMetrics.historicalBacktest.bestMonth.month})`,
+            `(${riskMetrics.historicalBacktest.bestMonth.month})`,
         );
       } else {
         this.logger.log(`  Worst/Best Month: N/A (insufficient monthly data)`);
@@ -158,7 +174,7 @@ export class InvestorReportGenerator {
       const riskEmoji = this.getRiskEmoji(scenario.riskLevel);
       this.logger.log(
         `  ${index + 1}. ${scenario.scenario}: ${(scenario.apy * 100).toFixed(2)}% APY → ` +
-        `${riskEmoji} ${scenario.riskLevel} risk, ${scenario.timeToRecover} to recover`,
+          `${riskEmoji} ${scenario.riskLevel} risk, ${scenario.timeToRecover} to recover`,
       );
       this.logger.log(`     ${scenario.description}`);
     });
@@ -173,13 +189,16 @@ export class InvestorReportGenerator {
   ): void {
     this.logger.log('\nCONCENTRATION RISK:');
 
-    const concentrationEmoji = this.getRiskEmoji(riskMetrics.concentrationRisk.riskLevel);
-    const exceedsThreshold = riskMetrics.concentrationRisk.maxAllocationPercent > 25;
+    const concentrationEmoji = this.getRiskEmoji(
+      riskMetrics.concentrationRisk.riskLevel,
+    );
+    const exceedsThreshold =
+      riskMetrics.concentrationRisk.maxAllocationPercent > 25;
 
     this.logger.log(
       `  Max Allocation: ${riskMetrics.concentrationRisk.maxAllocationPercent.toFixed(1)}% ` +
-      `${concentrationEmoji} ${riskMetrics.concentrationRisk.riskLevel} RISK` +
-      `${exceedsThreshold ? ' - exceeds 25% threshold' : ''}`,
+        `${concentrationEmoji} ${riskMetrics.concentrationRisk.riskLevel} RISK` +
+        `${exceedsThreshold ? ' - exceeds 25% threshold' : ''}`,
     );
     this.logger.log(
       `  Top 3 Allocations: ${riskMetrics.concentrationRisk.top3AllocationPercent.toFixed(1)}%`,
@@ -205,14 +224,18 @@ export class InvestorReportGenerator {
           maxSymbol = symbol;
         }
       });
-      this.logger.log(`  Recommendation: Reduce ${maxSymbol} allocation to <25%`);
+      this.logger.log(
+        `  Recommendation: Reduce ${maxSymbol} allocation to <25%`,
+      );
     }
   }
 
   /**
    * Log correlation risk section
    */
-  private logCorrelationRisk(riskMetrics: PortfolioRiskMetrics & { dataQuality?: any }): void {
+  private logCorrelationRisk(
+    riskMetrics: PortfolioRiskMetrics & { dataQuality?: any },
+  ): void {
     this.logger.log('\nCORRELATION RISK:');
 
     if (
@@ -237,7 +260,7 @@ export class InvestorReportGenerator {
 
       this.logger.log(
         `  Average Correlation: ${riskMetrics.correlationRisk.averageCorrelation.toFixed(3)} ` +
-        `(${correlationLevel} - opportunities are mostly ${independenceDesc})`,
+          `(${correlationLevel} - opportunities are mostly ${independenceDesc})`,
       );
       this.logger.log(
         `  Max Correlation: ${riskMetrics.correlationRisk.maxCorrelation.toFixed(3)} ${correlationEmoji}`,
@@ -247,9 +270,13 @@ export class InvestorReportGenerator {
         this.logger.log(
           `  Highly Correlated Pairs (|correlation| > 0.7): ${riskMetrics.correlationRisk.correlatedPairs.length} pairs`,
         );
-        riskMetrics.correlationRisk.correlatedPairs.slice(0, 5).forEach((pair) => {
-          this.logger.log(`    - ${pair.pair1} / ${pair.pair2}: ${pair.correlation.toFixed(3)}`);
-        });
+        riskMetrics.correlationRisk.correlatedPairs
+          .slice(0, 5)
+          .forEach((pair) => {
+            this.logger.log(
+              `    - ${pair.pair1} / ${pair.pair2}: ${pair.correlation.toFixed(3)}`,
+            );
+          });
       } else {
         this.logger.log(
           `  Highly Correlated Pairs: None (all pairs have |correlation| ≤ 0.7)`,
@@ -272,7 +299,7 @@ export class InvestorReportGenerator {
       const riskEmoji = this.getRiskEmoji(item.riskLevel);
       this.logger.log(
         `  ${item.symbol}: $${(item.allocation / 1000).toFixed(1)}k (${item.allocationPercent.toFixed(1)}%) | ` +
-        `Stability: ${(item.stabilityScore * 100).toFixed(0)}% | Risk: ${riskEmoji} ${item.riskLevel}`,
+          `Stability: ${(item.stabilityScore * 100).toFixed(0)}% | Risk: ${riskEmoji} ${item.riskLevel}`,
       );
     });
   }
@@ -294,4 +321,3 @@ export class InvestorReportGenerator {
     }
   }
 }
-

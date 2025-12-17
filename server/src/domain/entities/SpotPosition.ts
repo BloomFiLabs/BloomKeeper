@@ -77,7 +77,10 @@ export class SpotPosition {
   /**
    * Creates a new position with updated current price and PnL
    */
-  updateCurrentPrice(newCurrentPrice: number, newUnrealizedPnl: number): SpotPosition {
+  updateCurrentPrice(
+    newCurrentPrice: number,
+    newUnrealizedPnl: number,
+  ): SpotPosition {
     return new SpotPosition(
       this.exchangeType,
       this.symbol,
@@ -91,8 +94,3 @@ export class SpotPosition {
     );
   }
 }
-
-
-
-
-

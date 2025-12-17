@@ -3,7 +3,10 @@ import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
 import { CostCalculator } from './CostCalculator';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
-import type { IFundingRatePredictionService, EnsemblePredictionResult } from '../../ports/IFundingRatePredictor';
+import type {
+  IFundingRatePredictionService,
+  EnsemblePredictionResult,
+} from '../../ports/IFundingRatePredictor';
 
 /**
  * Configuration for prediction-based break-even calculation
@@ -291,14 +294,20 @@ export class PredictedBreakEvenCalculator {
     shortPrediction: EnsemblePredictionResult | null,
     opportunity: ArbitrageOpportunity,
   ): number {
-    if (longPrediction?.lowerBound !== undefined && 
-        shortPrediction?.upperBound !== undefined) {
+    if (
+      longPrediction?.lowerBound !== undefined &&
+      shortPrediction?.upperBound !== undefined
+    ) {
       // Worst case: long at lower bound, short at upper bound
       return longPrediction.lowerBound - shortPrediction.upperBound;
     }
 
     // Fallback: use current spread with 30% haircut
-    const currentSpread = this.calculatePredictedSpread(null, null, opportunity);
+    const currentSpread = this.calculatePredictedSpread(
+      null,
+      null,
+      opportunity,
+    );
     return currentSpread * 0.7;
   }
 
@@ -310,14 +319,20 @@ export class PredictedBreakEvenCalculator {
     shortPrediction: EnsemblePredictionResult | null,
     opportunity: ArbitrageOpportunity,
   ): number {
-    if (longPrediction?.upperBound !== undefined && 
-        shortPrediction?.lowerBound !== undefined) {
+    if (
+      longPrediction?.upperBound !== undefined &&
+      shortPrediction?.lowerBound !== undefined
+    ) {
       // Best case: long at upper bound, short at lower bound
       return longPrediction.upperBound - shortPrediction.lowerBound;
     }
 
     // Fallback: use current spread with 30% bonus
-    const currentSpread = this.calculatePredictedSpread(null, null, opportunity);
+    const currentSpread = this.calculatePredictedSpread(
+      null,
+      null,
+      opportunity,
+    );
     return currentSpread * 1.3;
   }
 
@@ -437,7 +452,10 @@ export class PredictedBreakEvenCalculator {
     }
 
     // Skip if break-even longer than reliable horizon
-    if (breakEven.confidenceAdjustedBreakEvenHours > breakEven.reliableHorizonHours) {
+    if (
+      breakEven.confidenceAdjustedBreakEvenHours >
+      breakEven.reliableHorizonHours
+    ) {
       return {
         recommendation: 'skip',
         reason: `Break-even ${breakEven.confidenceAdjustedBreakEvenHours.toFixed(1)}h exceeds reliable horizon ${breakEven.reliableHorizonHours}h`,
@@ -454,7 +472,11 @@ export class PredictedBreakEvenCalculator {
     }
 
     // Strong buy: high score, fast break-even, high confidence
-    if (score >= 0.7 && breakEven.predictedBreakEvenHours < 24 && breakEven.confidence >= 0.8) {
+    if (
+      score >= 0.7 &&
+      breakEven.predictedBreakEvenHours < 24 &&
+      breakEven.confidence >= 0.8
+    ) {
       return {
         recommendation: 'strong_buy',
         reason: `High score ${score.toFixed(2)}, fast break-even ${breakEven.predictedBreakEvenHours.toFixed(1)}h, high confidence ${(breakEven.confidence * 100).toFixed(0)}%`,
@@ -490,4 +512,3 @@ export class PredictedBreakEvenCalculator {
     return this.predictionService !== undefined;
   }
 }
-

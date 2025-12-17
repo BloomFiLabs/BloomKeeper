@@ -54,7 +54,9 @@ describe('AsterFundingDataProvider', () => {
       mockAxiosInstance.get
         .mockResolvedValueOnce({ data: { lastFundingRate: '0.0001' } }) // getCurrentFundingRate
         .mockResolvedValueOnce({ data: { price: '3000' } }) // getMarkPrice
-        .mockResolvedValueOnce({ data: { openInterest: '1000', markPrice: '3000' } }); // getOpenInterest
+        .mockResolvedValueOnce({
+          data: { openInterest: '1000', markPrice: '3000' },
+        }); // getOpenInterest
 
       const result = await provider.getFundingData({
         normalizedSymbol: 'ETH',
@@ -104,9 +106,12 @@ describe('AsterFundingDataProvider', () => {
       const rate = await provider.getCurrentFundingRate('ETHUSDT');
 
       expect(rate).toBe(0.0001);
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/fapi/v1/premiumIndex', {
-        params: { symbol: 'ETHUSDT' },
-      });
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+        '/fapi/v1/premiumIndex',
+        {
+          params: { symbol: 'ETHUSDT' },
+        },
+      );
     });
 
     it('should handle fundingRate field', async () => {
@@ -122,10 +127,9 @@ describe('AsterFundingDataProvider', () => {
 
   describe('getOpenInterest', () => {
     it('should calculate OI in USD', async () => {
-      mockAxiosInstance.get
-        .mockResolvedValueOnce({
-          data: { openInterest: '1000', markPrice: '3000' },
-        });
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: { openInterest: '1000', markPrice: '3000' },
+      });
 
       const oi = await provider.getOpenInterest('ETHUSDT');
 
@@ -143,4 +147,3 @@ describe('AsterFundingDataProvider', () => {
     });
   });
 });
-

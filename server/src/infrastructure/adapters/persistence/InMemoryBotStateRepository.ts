@@ -22,7 +22,9 @@ export class InMemoryBotStateRepository implements IBotStateRepository {
 
   async saveCandles(candles: Candle[], poolId: string): Promise<void> {
     const existing = this.candles.get(poolId) || [];
-    const existingTimestamps = new Set(existing.map((c) => c.timestamp.getTime()));
+    const existingTimestamps = new Set(
+      existing.map((c) => c.timestamp.getTime()),
+    );
 
     // Add new candles, avoiding duplicates
     const newCandles = candles.filter(
@@ -35,7 +37,9 @@ export class InMemoryBotStateRepository implements IBotStateRepository {
 
     // Keep only last 1000 candles per pool
     this.candles.set(poolId, allCandles.slice(-1000));
-    this.logger.debug(`Saved ${newCandles.length} candles for pool ${poolId} in memory`);
+    this.logger.debug(
+      `Saved ${newCandles.length} candles for pool ${poolId} in memory`,
+    );
   }
 
   async getCandles(poolId: string, limit: number): Promise<Candle[]> {
@@ -50,4 +54,3 @@ export class InMemoryBotStateRepository implements IBotStateRepository {
     this.logger.debug('Cleared all in-memory state');
   }
 }
-

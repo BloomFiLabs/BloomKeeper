@@ -20,7 +20,7 @@ import { PerformanceTracker } from './services/PerformanceTracker';
   ],
   providers: [
     // StrategyBotService disabled - using perp keeper only
-    DeribitAdapter, 
+    DeribitAdapter,
     PerformanceTracker,
     // HyperLiquidDataProvider and HyperLiquidExecutor removed - use PerpKeeperModule instead
   ],

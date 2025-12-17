@@ -1,7 +1,20 @@
-import { Injectable, Logger, OnModuleInit, Optional, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  Optional,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, Interval } from '@nestjs/schedule';
-import { Contract, Wallet, JsonRpcProvider, formatUnits, parseUnits } from 'ethers';
+import {
+  Contract,
+  Wallet,
+  JsonRpcProvider,
+  formatUnits,
+  parseUnits,
+} from 'ethers';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import { PerpKeeperService } from '../../application/services/PerpKeeperService';
 import { ProfitTracker } from './ProfitTracker';
@@ -42,7 +55,7 @@ export interface HarvestHistoryEntry {
 
 /**
  * RewardHarvester - Harvests accumulated profits and sends them to the vault
- * 
+ *
  * Responsibilities:
  * 1. Run every 24 hours (configurable via HARVEST_INTERVAL_HOURS)
  * 2. Calculate accumulated profits using ProfitTracker
@@ -53,16 +66,16 @@ export interface HarvestHistoryEntry {
 @Injectable()
 export class RewardHarvester implements OnModuleInit {
   private readonly logger = new Logger(RewardHarvester.name);
-  
+
   private wallet: Wallet | null = null;
   private provider: JsonRpcProvider | null = null;
   private strategyContract: Contract | null = null;
   private usdcContract: Contract | null = null;
-  
+
   // Harvest history (last 30 entries)
   private readonly harvestHistory: HarvestHistoryEntry[] = [];
   private readonly MAX_HISTORY = 30;
-  
+
   // Last harvest info
   private lastHarvestResult: HarvestResult | null = null;
 
@@ -89,24 +102,39 @@ export class RewardHarvester implements OnModuleInit {
 
   constructor(
     private readonly configService: ConfigService,
-    @Optional() @Inject(forwardRef(() => PerpKeeperService))
+    @Optional()
+    @Inject(forwardRef(() => PerpKeeperService))
     private readonly keeperService?: PerpKeeperService,
     @Optional() private readonly profitTracker?: ProfitTracker,
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
   ) {
-    this.strategyAddress = this.configService.get<string>('KEEPER_STRATEGY_ADDRESS', '');
+    this.strategyAddress = this.configService.get<string>(
+      'KEEPER_STRATEGY_ADDRESS',
+      '',
+    );
     this.usdcAddress = this.configService.get<string>(
       'USDC_ADDRESS',
       '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // Arbitrum native USDC
     );
-    this.rpcUrl = this.configService.get<string>('ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc');
-    this.minHarvestAmountUsd = this.configService.get<number>('MIN_HARVEST_AMOUNT_USD', 10);
-    this.harvestIntervalHours = this.configService.get<number>('HARVEST_INTERVAL_HOURS', 24);
+    this.rpcUrl = this.configService.get<string>(
+      'ARBITRUM_RPC_URL',
+      'https://arb1.arbitrum.io/rpc',
+    );
+    this.minHarvestAmountUsd = this.configService.get<number>(
+      'MIN_HARVEST_AMOUNT_USD',
+      10,
+    );
+    this.harvestIntervalHours = this.configService.get<number>(
+      'HARVEST_INTERVAL_HOURS',
+      24,
+    );
   }
 
   async onModuleInit() {
     if (!this.strategyAddress) {
-      this.logger.warn('KEEPER_STRATEGY_ADDRESS not configured, RewardHarvester disabled');
+      this.logger.warn(
+        'KEEPER_STRATEGY_ADDRESS not configured, RewardHarvester disabled',
+      );
       return;
     }
 
@@ -118,27 +146,39 @@ export class RewardHarvester implements OnModuleInit {
    */
   private async initialize(): Promise<void> {
     const privateKey = this.configService.get<string>('KEEPER_PRIVATE_KEY');
-    
+
     if (!privateKey) {
-      this.logger.warn('KEEPER_PRIVATE_KEY not configured, cannot send rewards');
+      this.logger.warn(
+        'KEEPER_PRIVATE_KEY not configured, cannot send rewards',
+      );
       return;
     }
 
     try {
       this.provider = new JsonRpcProvider(this.rpcUrl);
       this.wallet = new Wallet(privateKey, this.provider);
-      this.strategyContract = new Contract(this.strategyAddress, this.STRATEGY_ABI, this.provider);
-      this.usdcContract = new Contract(this.usdcAddress, this.ERC20_ABI, this.wallet);
+      this.strategyContract = new Contract(
+        this.strategyAddress,
+        this.STRATEGY_ABI,
+        this.provider,
+      );
+      this.usdcContract = new Contract(
+        this.usdcAddress,
+        this.ERC20_ABI,
+        this.wallet,
+      );
 
       this.logger.log(
         `RewardHarvester initialized - Strategy: ${this.strategyAddress}, ` +
-        `Keeper: ${this.wallet.address}, Min harvest: $${this.minHarvestAmountUsd}`,
+          `Keeper: ${this.wallet.address}, Min harvest: $${this.minHarvestAmountUsd}`,
       );
-      
+
       // Initial diagnostics update
       await this.updateDiagnostics();
     } catch (error: any) {
-      this.logger.error(`Failed to initialize RewardHarvester: ${error.message}`);
+      this.logger.error(
+        `Failed to initialize RewardHarvester: ${error.message}`,
+      );
     }
   }
 
@@ -158,7 +198,7 @@ export class RewardHarvester implements OnModuleInit {
 
     try {
       const profitSummary = await this.profitTracker.getProfitSummary();
-      
+
       this.diagnosticsService.updateRewardsData({
         accruedProfits: profitSummary.totalAccruedProfit,
         lastHarvestTime: this.profitTracker.getLastHarvestTimestamp(),
@@ -180,9 +220,13 @@ export class RewardHarvester implements OnModuleInit {
    */
   @Cron('0 0 * * *') // Midnight UTC daily
   async harvestRewards(): Promise<HarvestResult> {
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
     this.logger.log('🌾 Starting scheduled reward harvest...');
-    this.logger.log('═══════════════════════════════════════════════════════════════');
+    this.logger.log(
+      '═══════════════════════════════════════════════════════════════',
+    );
 
     return this.executeHarvest();
   }
@@ -213,7 +257,9 @@ export class RewardHarvester implements OnModuleInit {
       // Step 1: Calculate total profits
       if (!this.profitTracker) {
         result.errors.push('ProfitTracker not available');
-        this.logger.warn('ProfitTracker not available, cannot calculate profits');
+        this.logger.warn(
+          'ProfitTracker not available, cannot calculate profits',
+        );
         return result;
       }
 
@@ -221,15 +267,21 @@ export class RewardHarvester implements OnModuleInit {
       result.totalProfitsFound = profitSummary.totalAccruedProfit;
 
       this.logger.log(`📊 Profit Summary:`);
-      this.logger.log(`   Total Balance: $${profitSummary.totalBalance.toFixed(2)}`);
-      this.logger.log(`   Deployed Capital: $${profitSummary.totalDeployedCapital.toFixed(2)}`);
-      this.logger.log(`   Accrued Profits: $${profitSummary.totalAccruedProfit.toFixed(2)}`);
+      this.logger.log(
+        `   Total Balance: $${profitSummary.totalBalance.toFixed(2)}`,
+      );
+      this.logger.log(
+        `   Deployed Capital: $${profitSummary.totalDeployedCapital.toFixed(2)}`,
+      );
+      this.logger.log(
+        `   Accrued Profits: $${profitSummary.totalAccruedProfit.toFixed(2)}`,
+      );
 
       // Check minimum threshold
       if (result.totalProfitsFound < this.minHarvestAmountUsd) {
         this.logger.log(
           `⏳ Profits ($${result.totalProfitsFound.toFixed(2)}) below minimum threshold ` +
-          `($${this.minHarvestAmountUsd.toFixed(2)}). Skipping harvest.`,
+            `($${this.minHarvestAmountUsd.toFixed(2)}). Skipping harvest.`,
         );
         result.success = true; // Not an error, just nothing to harvest
         this.lastHarvestResult = result;
@@ -268,10 +320,10 @@ export class RewardHarvester implements OnModuleInit {
         if (sendResult.success) {
           result.totalSentToVault = sendResult.amount;
           result.success = true;
-          
+
           // Record harvest in ProfitTracker
           this.profitTracker.recordHarvest(result.totalSentToVault);
-          
+
           this.logger.log(
             `✅ Harvest complete! Sent $${result.totalSentToVault.toFixed(2)} to vault.`,
           );
@@ -285,11 +337,10 @@ export class RewardHarvester implements OnModuleInit {
 
       // Record in history
       this.recordHarvestHistory(result);
-      
     } catch (error: any) {
       result.errors.push(`Harvest failed: ${error.message}`);
       this.logger.error(`Harvest failed: ${error.message}`);
-      
+
       // Record error in diagnostics
       if (this.diagnosticsService) {
         this.diagnosticsService.recordError({
@@ -337,10 +388,14 @@ export class RewardHarvester implements OnModuleInit {
 
       // Check if adapter supports external withdrawals
       if (typeof (adapter as any).withdrawExternal !== 'function') {
-        throw new Error(`${exchangeType} adapter does not support external withdrawals`);
+        throw new Error(
+          `${exchangeType} adapter does not support external withdrawals`,
+        );
       }
 
-      this.logger.log(`📤 Withdrawing $${amount.toFixed(2)} from ${exchangeType}...`);
+      this.logger.log(
+        `📤 Withdrawing $${amount.toFixed(2)} from ${exchangeType}...`,
+      );
 
       // Withdraw to keeper's Arbitrum wallet
       const txHash = await (adapter as any).withdrawExternal(
@@ -351,12 +406,15 @@ export class RewardHarvester implements OnModuleInit {
 
       result.success = true;
       result.amountWithdrawn = amount;
-      
-      this.logger.log(`✅ Withdrawal from ${exchangeType} successful: ${txHash}`);
-      
+
+      this.logger.log(
+        `✅ Withdrawal from ${exchangeType} successful: ${txHash}`,
+      );
     } catch (error: any) {
       result.error = error.message;
-      this.logger.warn(`Failed to withdraw from ${exchangeType}: ${error.message}`);
+      this.logger.warn(
+        `Failed to withdraw from ${exchangeType}: ${error.message}`,
+      );
     }
 
     return result;
@@ -373,25 +431,31 @@ export class RewardHarvester implements OnModuleInit {
     const maxWaitTime = 10 * 60 * 1000; // 10 minutes
     const checkInterval = 15 * 1000; // 15 seconds
     const startTime = Date.now();
-    
+
     // Get initial balance
-    const initialBalance = await this.usdcContract.balanceOf(this.wallet.address);
+    const initialBalance = await this.usdcContract.balanceOf(
+      this.wallet.address,
+    );
     const initialBalanceUsdc = Number(formatUnits(initialBalance, 6));
-    
-    this.logger.log(`Initial keeper balance: $${initialBalanceUsdc.toFixed(2)}`);
-    
+
+    this.logger.log(
+      `Initial keeper balance: $${initialBalanceUsdc.toFixed(2)}`,
+    );
+
     // Wait for balance to increase
     while (Date.now() - startTime < maxWaitTime) {
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
-      
-      const currentBalance = await this.usdcContract.balanceOf(this.wallet.address);
+      await new Promise((resolve) => setTimeout(resolve, checkInterval));
+
+      const currentBalance = await this.usdcContract.balanceOf(
+        this.wallet.address,
+      );
       const currentBalanceUsdc = Number(formatUnits(currentBalance, 6));
       const increase = currentBalanceUsdc - initialBalanceUsdc;
-      
+
       this.logger.debug(
         `Balance check: $${currentBalanceUsdc.toFixed(2)} (increase: $${increase.toFixed(2)})`,
       );
-      
+
       // Accept if we received at least 80% of expected (accounting for fees)
       if (increase >= expectedAmount * 0.8) {
         this.logger.log(
@@ -400,7 +464,7 @@ export class RewardHarvester implements OnModuleInit {
         return;
       }
     }
-    
+
     this.logger.warn(
       `⚠️ Timeout waiting for funds. Expected: $${expectedAmount.toFixed(2)}`,
     );
@@ -409,7 +473,9 @@ export class RewardHarvester implements OnModuleInit {
   /**
    * Send USDC to the strategy contract
    */
-  private async sendToStrategy(amount: number): Promise<{ success: boolean; amount: number; error?: string }> {
+  private async sendToStrategy(
+    amount: number,
+  ): Promise<{ success: boolean; amount: number; error?: string }> {
     if (!this.usdcContract || !this.wallet || !this.strategyAddress) {
       return { success: false, amount: 0, error: 'Not initialized' };
     }
@@ -418,25 +484,33 @@ export class RewardHarvester implements OnModuleInit {
       // Get current keeper balance
       const balance = await this.usdcContract.balanceOf(this.wallet.address);
       const balanceUsdc = Number(formatUnits(balance, 6));
-      
+
       // Send the lesser of available balance or expected amount
       const amountToSend = Math.min(amount, balanceUsdc);
-      
+
       if (amountToSend < 1) {
-        return { success: false, amount: 0, error: 'Insufficient balance to send' };
+        return {
+          success: false,
+          amount: 0,
+          error: 'Insufficient balance to send',
+        };
       }
 
       const amountWei = parseUnits(amountToSend.toFixed(6), 6);
 
-      this.logger.log(`📤 Sending $${amountToSend.toFixed(2)} USDC to strategy contract...`);
+      this.logger.log(
+        `📤 Sending $${amountToSend.toFixed(2)} USDC to strategy contract...`,
+      );
 
-      const tx = await this.usdcContract.transfer(this.strategyAddress, amountWei);
+      const tx = await this.usdcContract.transfer(
+        this.strategyAddress,
+        amountWei,
+      );
       const receipt = await tx.wait();
 
       this.logger.log(`✅ Transfer successful in block ${receipt.blockNumber}`);
-      
+
       return { success: true, amount: amountToSend };
-      
     } catch (error: any) {
       return { success: false, amount: 0, error: error.message };
     }
@@ -491,7 +565,7 @@ export class RewardHarvester implements OnModuleInit {
     const now = new Date();
     const nextMidnight = new Date(now);
     nextMidnight.setUTCHours(24, 0, 0, 0); // Next midnight UTC
-    
+
     return nextMidnight.getTime() - now.getTime();
   }
 
@@ -531,4 +605,3 @@ export class RewardHarvester implements OnModuleInit {
     };
   }
 }
-

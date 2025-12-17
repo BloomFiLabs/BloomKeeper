@@ -87,7 +87,11 @@ describe('DomainException', () => {
 
   describe('OrderExecutionException', () => {
     it('should create order execution exception', () => {
-      const ex = new OrderExecutionException('test', 'ORDER_ID_123', 'HYPERLIQUID');
+      const ex = new OrderExecutionException(
+        'test',
+        'ORDER_ID_123',
+        'HYPERLIQUID',
+      );
       expect(ex.message).toBe('Order execution failed: test');
       expect(ex.orderId).toBe('ORDER_ID_123');
       expect(ex.exchange).toBe('HYPERLIQUID');

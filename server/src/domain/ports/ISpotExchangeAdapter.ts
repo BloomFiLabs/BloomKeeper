@@ -1,5 +1,8 @@
 import { ExchangeConfig, ExchangeType } from '../value-objects/ExchangeConfig';
-import { SpotOrderRequest, SpotOrderResponse } from '../value-objects/SpotOrder';
+import {
+  SpotOrderRequest,
+  SpotOrderResponse,
+} from '../value-objects/SpotOrder';
 import { SpotPosition } from '../entities/SpotPosition';
 
 /**
@@ -19,7 +22,7 @@ export class SpotExchangeError extends Error {
 
 /**
  * ISpotExchangeAdapter - Interface for spot exchange adapters
- * 
+ *
  * This interface abstracts the operations needed to interact with spot trading
  * on exchanges (Hyperliquid, Aster, Lighter, Extended). Each exchange will have its own implementation.
  */
@@ -73,7 +76,10 @@ export interface ISpotExchangeAdapter {
    * @returns Order response with current status
    * @throws SpotExchangeError if order fetch fails
    */
-  getSpotOrderStatus(orderId: string, symbol?: string): Promise<SpotOrderResponse>;
+  getSpotOrderStatus(
+    orderId: string,
+    symbol?: string,
+  ): Promise<SpotOrderResponse>;
 
   /**
    * Get spot balance for an asset
@@ -112,8 +118,3 @@ export interface ISpotExchangeAdapter {
    */
   testConnection(): Promise<void>;
 }
-
-
-
-
-

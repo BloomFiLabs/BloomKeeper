@@ -1,7 +1,11 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IFundingDataProvider as ILegacyFundingDataProvider } from '../../../domain/strategies/FundingRateStrategy';
-import { IFundingDataProvider, FundingRateData, FundingDataRequest } from '../../../domain/ports/IFundingDataProvider';
+import {
+  IFundingDataProvider,
+  FundingRateData,
+  FundingDataRequest,
+} from '../../../domain/ports/IFundingDataProvider';
 import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
 import axios from 'axios';
 import { HyperLiquidWebSocketProvider } from './HyperLiquidWebSocketProvider';
@@ -32,17 +36,19 @@ interface HyperLiquidMetaAndAssetCtxs {
 
 /**
  * HyperLiquidDataProvider - Fetches funding rate and market data from HyperLiquid API
- * 
+ *
  * Uses WebSocket for real-time funding rates (eliminates rate limits)
  * Falls back to REST API if WebSocket is unavailable
- * 
+ *
  * API Docs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api
  */
 @Injectable()
-export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFundingDataProvider, OnModuleInit {
+export class HyperLiquidDataProvider
+  implements ILegacyFundingDataProvider, IFundingDataProvider, OnModuleInit
+{
   private readonly logger = new Logger(HyperLiquidDataProvider.name);
   private readonly API_URL = 'https://api.hyperliquid.xyz/info';
-  
+
   // Asset name to index mapping (populated on first call)
   private assetIndexMap: Map<string, number> = new Map();
   private lastMetaFetch: number = 0;
@@ -78,14 +84,14 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
     // Fallback to REST API
     const data = await this.fetchMetaAndAssetCtxs();
     const index = await this.getAssetIndex(asset, data.meta);
-    
+
     if (index === -1) {
       throw new Error(`Asset ${asset} not found on HyperLiquid`);
     }
 
     const assetCtx = data.assetCtxs[index];
     const fundingRate = parseFloat(assetCtx.funding);
-    
+
     return fundingRate;
   }
 
@@ -110,17 +116,17 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
     // Fallback to REST API
     const data = await this.fetchMetaAndAssetCtxs();
     const index = await this.getAssetIndex(asset, data.meta);
-    
+
     if (index === -1) {
       throw new Error(`Asset ${asset} not found on HyperLiquid`);
     }
 
     const assetCtx = data.assetCtxs[index];
     const premium = parseFloat(assetCtx.premium);
-    
+
     // Clamp to typical funding rate bounds
     const predicted = Math.max(-0.0005, Math.min(0.0005, premium));
-    
+
     return predicted;
   }
 
@@ -133,23 +139,27 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
     try {
       const data = await this.fetchMetaAndAssetCtxs();
       const index = await this.getAssetIndex(asset, data.meta);
-      
+
       if (index === -1) {
-        this.logger.error(`Hyperliquid OI: Asset ${asset} not found in universe`);
+        this.logger.error(
+          `Hyperliquid OI: Asset ${asset} not found in universe`,
+        );
         throw new Error(`Asset ${asset} not found on HyperLiquid`);
       }
 
       const assetCtx = data.assetCtxs[index];
-      
+
       const openInterest = parseFloat(assetCtx.openInterest);
       const markPrice = parseFloat(assetCtx.markPx);
-      
+
       // OI is in contracts, multiply by mark price for USD value
       const oiUsd = openInterest * markPrice;
-      
+
       return oiUsd;
     } catch (error: any) {
-      this.logger.error(`Failed to get Hyperliquid open interest for ${asset}: ${error.message}`);
+      this.logger.error(
+        `Failed to get Hyperliquid open interest for ${asset}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -172,7 +182,7 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
     // Fallback to REST API
     const data = await this.fetchMetaAndAssetCtxs();
     const index = await this.getAssetIndex(asset, data.meta);
-    
+
     if (index === -1) {
       throw new Error(`Asset ${asset} not found on HyperLiquid`);
     }
@@ -189,7 +199,7 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
   async getOraclePrice(asset: string): Promise<number> {
     const data = await this.fetchMetaAndAssetCtxs();
     const index = await this.getAssetIndex(asset, data.meta);
-    
+
     if (index === -1) {
       throw new Error(`Asset ${asset} not found on HyperLiquid`);
     }
@@ -203,7 +213,7 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
    */
   async getAvailableAssets(): Promise<string[]> {
     const data = await this.fetchMetaAndAssetCtxs();
-    return data.meta.universe.map(u => u.name);
+    return data.meta.universe.map((u) => u.name);
   }
 
   /**
@@ -220,17 +230,20 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
   }> {
     const data = await this.fetchMetaAndAssetCtxs();
     const index = await this.getAssetIndex(asset, data.meta);
-    
+
     if (index === -1) {
       throw new Error(`Asset ${asset} not found on HyperLiquid`);
     }
 
     const ctx = data.assetCtxs[index];
     const markPrice = parseFloat(ctx.markPx);
-    
+
     return {
       fundingRate: parseFloat(ctx.funding),
-      predictedFunding: Math.max(-0.0005, Math.min(0.0005, parseFloat(ctx.premium))),
+      predictedFunding: Math.max(
+        -0.0005,
+        Math.min(0.0005, parseFloat(ctx.premium)),
+      ),
       openInterest: parseFloat(ctx.openInterest) * markPrice,
       markPrice,
       oraclePrice: parseFloat(ctx.oraclePx),
@@ -245,7 +258,7 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
   async get24hVolume(asset: string): Promise<number> {
     const data = await this.fetchMetaAndAssetCtxs();
     const index = await this.getAssetIndex(asset, data.meta);
-    
+
     if (index === -1) {
       throw new Error(`Asset ${asset} not found on HyperLiquid`);
     }
@@ -256,12 +269,16 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
 
   // --- Private Methods ---
 
-  private async fetchMetaAndAssetCtxs(retries: number = 3): Promise<HyperLiquidMetaAndAssetCtxs> {
+  private async fetchMetaAndAssetCtxs(
+    retries: number = 3,
+  ): Promise<HyperLiquidMetaAndAssetCtxs> {
     // Rate limiting: ensure minimum interval between requests
     const now = Date.now();
     const timeSinceLastRequest = now - this.lastRequestTime;
     if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL) {
-      await new Promise(resolve => setTimeout(resolve, this.MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.MIN_REQUEST_INTERVAL - timeSinceLastRequest),
+      );
     }
     this.lastRequestTime = Date.now();
 
@@ -272,7 +289,7 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
       });
 
       const data = response.data;
-      
+
       // Update asset index map
       if (Date.now() - this.lastMetaFetch > this.META_CACHE_TTL) {
         this.assetIndexMap.clear();
@@ -291,22 +308,29 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
       if (error.response?.status === 429 && retries > 0) {
         const backoffDelay = Math.min(1000 * Math.pow(2, 3 - retries), 10000); // Max 10s
         // Silenced 429 warnings - only show errors
-        this.logger.debug(`HyperLiquid rate limited, retrying in ${backoffDelay}ms (${retries} retries left)`);
-        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+        this.logger.debug(
+          `HyperLiquid rate limited, retrying in ${backoffDelay}ms (${retries} retries left)`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffDelay));
         return this.fetchMetaAndAssetCtxs(retries - 1);
       }
 
       this.logger.error(`Failed to fetch HyperLiquid data: ${error.message}`);
       if (error.response) {
-        throw new Error(`HyperLiquid API error ${error.response.status}: ${error.response.statusText}`);
+        throw new Error(
+          `HyperLiquid API error ${error.response.status}: ${error.response.statusText}`,
+        );
       }
       throw error;
     }
   }
 
-  private async getAssetIndex(asset: string, meta: HyperLiquidMeta): Promise<number> {
+  private async getAssetIndex(
+    asset: string,
+    meta: HyperLiquidMeta,
+  ): Promise<number> {
     const normalizedAsset = asset.toUpperCase();
-    
+
     // Check cache first
     if (this.assetIndexMap.has(normalizedAsset)) {
       return this.assetIndexMap.get(normalizedAsset)!;
@@ -314,7 +338,7 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
 
     // Search in meta
     const index = meta.universe.findIndex(
-      u => u.name.toUpperCase() === normalizedAsset
+      (u) => u.name.toUpperCase() === normalizedAsset,
     );
 
     if (index !== -1) {
@@ -334,22 +358,27 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
    * Get all funding data for a symbol in a single optimized call
    * Uses WebSocket cache when available for best performance
    */
-  async getFundingData(request: FundingDataRequest): Promise<FundingRateData | null> {
+  async getFundingData(
+    request: FundingDataRequest,
+  ): Promise<FundingRateData | null> {
     const symbol = request.exchangeSymbol;
-    
+
     try {
       // Fetch all data in parallel for efficiency
-      const [currentRate, predictedRate, markPrice, openInterest, volume] = await Promise.all([
-        this.getCurrentFundingRate(symbol),
-        this.getPredictedFundingRate(symbol),
-        this.getMarkPrice(symbol),
-        this.getOpenInterest(symbol).catch(() => undefined),
-        this.get24hVolume(symbol).catch(() => undefined),
-      ]);
+      const [currentRate, predictedRate, markPrice, openInterest, volume] =
+        await Promise.all([
+          this.getCurrentFundingRate(symbol),
+          this.getPredictedFundingRate(symbol),
+          this.getMarkPrice(symbol),
+          this.getOpenInterest(symbol).catch(() => undefined),
+          this.get24hVolume(symbol).catch(() => undefined),
+        ]);
 
       // If OI is required and unavailable, return null
       if (openInterest === undefined) {
-        this.logger.debug(`Skipping Hyperliquid for ${symbol} - OI unavailable`);
+        this.logger.debug(
+          `Skipping Hyperliquid for ${symbol} - OI unavailable`,
+        );
         return null;
       }
 
@@ -364,7 +393,9 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
         timestamp: new Date(),
       };
     } catch (error: any) {
-      this.logger.debug(`Failed to get Hyperliquid funding data for ${symbol}: ${error.message}`);
+      this.logger.debug(
+        `Failed to get Hyperliquid funding data for ${symbol}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -378,12 +409,3 @@ export class HyperLiquidDataProvider implements ILegacyFundingDataProvider, IFun
     return normalizedSymbol;
   }
 }
-
-
-
-
-
-
-
-
-

@@ -1,12 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
-import { ArbitrageExecutionPlan, ArbitrageExecutionResult } from '../FundingArbitrageStrategy';
+import {
+  ArbitrageExecutionPlan,
+  ArbitrageExecutionResult,
+} from '../FundingArbitrageStrategy';
 import { PerpPosition } from '../../entities/PerpPosition';
 import { IPerpExchangeAdapter } from '../../ports/IPerpExchangeAdapter';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
-import { OrderSide, OrderType, TimeInForce, PerpOrderRequest } from '../../value-objects/PerpOrder';
-import { Result, ok, fail } from '../../common/Result';
+import {
+  OrderSide,
+  OrderType,
+  TimeInForce,
+  PerpOrderRequest,
+} from '../../value-objects/PerpOrder';
+import { Result } from '../../common/Result';
 import { DomainException } from '../../exceptions/DomainException';
 import { ExecutionPlanBuilder } from './ExecutionPlanBuilder';
 
@@ -23,7 +31,7 @@ export interface SingleLegRetryInfo {
 
 /**
  * SingleLegHandler - Handles single-leg position detection, retry, and closure
- * 
+ *
  * Single-leg positions occur when one side of an arbitrage pair fails to fill.
  * This creates price exposure that must be resolved by either:
  * 1. Opening the missing side (retry)
@@ -52,7 +60,10 @@ export class SingleLegHandler {
     filteredOpportunities: Map<string, Date>,
     filterExpiryMs: number,
     result: ArbitrageExecutionResult,
-    getLeverageForSymbol: (symbol: string, exchange: ExchangeType) => Promise<number>,
+    getLeverageForSymbol: (
+      symbol: string,
+      exchange: ExchangeType,
+    ) => Promise<number>,
   ): Promise<{
     stillSingleLeg: PerpPosition[];
     closedPositions: PerpPosition[];
@@ -97,7 +108,10 @@ export class SingleLegHandler {
     filteredOpportunities: Map<string, Date>,
     filterExpiryMs: number,
     result: ArbitrageExecutionResult,
-    getLeverageForSymbol: (symbol: string, exchange: ExchangeType) => Promise<number>,
+    getLeverageForSymbol: (
+      symbol: string,
+      exchange: ExchangeType,
+    ) => Promise<number>,
   ): Promise<{ success: boolean; closed: boolean }> {
     // Find retry info by matching symbol and exchange
     let retryInfo: SingleLegRetryInfo | undefined;
@@ -122,13 +136,11 @@ export class SingleLegHandler {
           ? retryInfo.shortExchange
           : retryInfo.longExchange;
       const missingSide =
-        position.side === OrderSide.LONG
-          ? OrderSide.SHORT
-          : OrderSide.LONG;
+        position.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
 
       this.logger.log(
         `🔄 Retry ${retryInfo.retryCount + 1}/5: Attempting to open missing ${missingSide} side ` +
-        `for ${position.symbol} on ${missingExchange}...`,
+          `for ${position.symbol} on ${missingExchange}...`,
       );
 
       const retrySuccess = await this.retryOpenMissingSide(
@@ -163,7 +175,7 @@ export class SingleLegHandler {
           filteredOpportunities.set(filterKey, new Date());
           this.logger.error(
             `❌ Filtering out ${retryInfo.opportunity.symbol} after 5 failed retry attempts. ` +
-            `Will retry in ${filterExpiryMs / 60000} minutes.`,
+              `Will retry in ${filterExpiryMs / 60000} minutes.`,
           );
 
           // Close the single-leg position
@@ -175,7 +187,7 @@ export class SingleLegHandler {
       // No retry info or already exceeded retries - close the position
       this.logger.error(
         `🚨 Closing single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType} ` +
-        `- no retry info or exceeded retry limit`,
+          `- no retry info or exceeded retry limit`,
       );
       await this.closeSingleLegPosition(position, adapters, result);
       return { success: false, closed: true };
@@ -192,7 +204,10 @@ export class SingleLegHandler {
     missingExchange: ExchangeType,
     missingSide: OrderSide,
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
-    getLeverageForSymbol: (symbol: string, exchange: ExchangeType) => Promise<number>,
+    getLeverageForSymbol: (
+      symbol: string,
+      exchange: ExchangeType,
+    ) => Promise<number>,
   ): Promise<boolean> {
     try {
       const adapter = adapters.get(missingExchange);
@@ -251,7 +266,7 @@ export class SingleLegHandler {
       }
 
       // Perp-perp plan
-      const perpPerpPlan = plan as ArbitrageExecutionPlan;
+      const perpPerpPlan = plan;
       const orderRequest =
         missingSide === OrderSide.LONG
           ? perpPerpPlan.longOrder
@@ -344,14 +359,14 @@ export class SingleLegHandler {
         if (orderAge < this.PENDING_ORDER_GRACE_PERIOD_MS) {
           this.logger.debug(
             `⏳ Waiting for ${pendingOrdersForSymbol.length} pending ${missingSide} order(s) for ${symbol} ` +
-            `on ${exchange} (${Math.round(orderAge / 1000)}s old)`,
+              `on ${exchange} (${Math.round(orderAge / 1000)}s old)`,
           );
           return true;
         } else {
           // Orders are stale - cancel them
           this.logger.warn(
             `🗑️ Cancelling ${pendingOrdersForSymbol.length} stale pending order(s) for ${symbol} ` +
-            `on ${exchange} (${Math.round(orderAge / 60000)} minutes old)`,
+              `on ${exchange} (${Math.round(orderAge / 60000)} minutes old)`,
           );
           for (const order of pendingOrdersForSymbol) {
             try {
@@ -468,4 +483,3 @@ export class SingleLegHandler {
     return `${symbol}-${exchanges[0]}-${exchanges[1]}`;
   }
 }
-

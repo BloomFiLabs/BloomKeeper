@@ -194,11 +194,11 @@ export class FundingArbitrageStrategy {
     const longTakerRate =
       this.strategyConfig.takerFeeRates.get(opportunity.longExchange) ?? 0.0005;
     const shortTakerRate = opportunity.shortExchange
-      ? (this.strategyConfig.takerFeeRates.get(opportunity.shortExchange) ?? 0.0005)
+      ? (this.strategyConfig.takerFeeRates.get(opportunity.shortExchange) ??
+        0.0005)
       : 0.0005;
 
-    const totalFees =
-      positionSizeUsd * (longTakerRate + shortTakerRate) * 2; // Entry + exit
+    const totalFees = positionSizeUsd * (longTakerRate + shortTakerRate) * 2; // Entry + exit
 
     // Conservative slippage estimate (0.05% per leg)
     const slippage = positionSizeUsd * 0.001;
@@ -221,7 +221,10 @@ export class FundingArbitrageStrategy {
     }
 
     // If no prediction available, use current
-    if (predictedBreakEven === undefined || predictionConfidence === undefined) {
+    if (
+      predictedBreakEven === undefined ||
+      predictionConfidence === undefined
+    ) {
       return currentBreakEven;
     }
 
@@ -259,7 +262,9 @@ export class FundingArbitrageStrategy {
       const historicalWeight = 1 - predictionWeight * 0.4; // Max 40% weight to prediction
 
       // Combine historical APY with prediction score
-      score = expectedAPY * historicalWeight + opportunity.predictionScore * predictionWeight * expectedAPY;
+      score =
+        expectedAPY * historicalWeight +
+        opportunity.predictionScore * predictionWeight * expectedAPY;
 
       // Boost score for strong buy recommendations
       if (opportunity.predictionRecommendation === 'strong_buy') {
@@ -272,9 +277,17 @@ export class FundingArbitrageStrategy {
     }
 
     // Penalize slow break-even
-    if (breakEvenHours !== null && breakEvenHours > 0 && isFinite(breakEvenHours)) {
-      const maxBreakEvenHours = this.strategyConfig.maxWorstCaseBreakEvenDays * 24;
-      const breakEvenPenalty = Math.max(0, 1 - breakEvenHours / maxBreakEvenHours);
+    if (
+      breakEvenHours !== null &&
+      breakEvenHours > 0 &&
+      isFinite(breakEvenHours)
+    ) {
+      const maxBreakEvenHours =
+        this.strategyConfig.maxWorstCaseBreakEvenDays * 24;
+      const breakEvenPenalty = Math.max(
+        0,
+        1 - breakEvenHours / maxBreakEvenHours,
+      );
       score *= 0.7 + 0.3 * breakEvenPenalty; // 30% of score affected by break-even
     }
 
@@ -611,9 +624,9 @@ export class FundingArbitrageStrategy {
           if (typeof marketIndex === 'number') {
             const orderApi = (adapter as any).orderApi;
             if (orderApi) {
-              const response = (await orderApi.getOrderBookDetails({
+              const response = await orderApi.getOrderBookDetails({
                 marketIndex,
-              } as any)) as any;
+              } as any);
               const orderBook = response?.order_book_details || response;
               const bestBid = orderBook?.bestBid || orderBook?.best_bid;
               const bestAsk = orderBook?.bestAsk || orderBook?.best_ask;
@@ -829,28 +842,31 @@ export class FundingArbitrageStrategy {
       // EARLY FILTERING: Remove opportunities that failed recently (with expiry check)
       // This prevents wasting time evaluating opportunities that will be skipped later
       const now = Date.now();
-      const opportunitiesAfterFailedFilter = filteredOpportunities.filter((opp) => {
-        if (!opp.shortExchange) return true; // Keep perp-spot opportunities
-        
-        const filterKey = this.getRetryKey(
-          opp.symbol,
-          opp.longExchange,
-          opp.shortExchange,
-        );
-        const filteredTime = this.filteredOpportunities.get(filterKey);
-        if (filteredTime) {
-          const timeSinceFilter = now - filteredTime.getTime();
-          if (timeSinceFilter < this.FILTER_EXPIRY_MS) {
-            return false; // Still filtered
-          } else {
-            // Filter expired - remove it
-            this.filteredOpportunities.delete(filterKey);
-          }
-        }
-        return true;
-      });
+      const opportunitiesAfterFailedFilter = filteredOpportunities.filter(
+        (opp) => {
+          if (!opp.shortExchange) return true; // Keep perp-spot opportunities
 
-      const failedFilterCount = filteredOpportunities.length - opportunitiesAfterFailedFilter.length;
+          const filterKey = this.getRetryKey(
+            opp.symbol,
+            opp.longExchange,
+            opp.shortExchange,
+          );
+          const filteredTime = this.filteredOpportunities.get(filterKey);
+          if (filteredTime) {
+            const timeSinceFilter = now - filteredTime.getTime();
+            if (timeSinceFilter < this.FILTER_EXPIRY_MS) {
+              return false; // Still filtered
+            } else {
+              // Filter expired - remove it
+              this.filteredOpportunities.delete(filterKey);
+            }
+          }
+          return true;
+        },
+      );
+
+      const failedFilterCount =
+        filteredOpportunities.length - opportunitiesAfterFailedFilter.length;
       if (failedFilterCount > 0) {
         this.logger.log(
           `⏳ Skipped ${failedFilterCount} recently failed opportunities (will retry after ${this.FILTER_EXPIRY_MS / 60000}m cooldown)`,
@@ -934,7 +950,9 @@ export class FundingArbitrageStrategy {
       }
 
       const exchangeBalances = new Map<ExchangeType, number>();
-      this.logger.log(`💰 Fetching balances for ${uniqueExchanges.size} exchange(s)...`);
+      this.logger.log(
+        `💰 Fetching balances for ${uniqueExchanges.size} exchange(s)...`,
+      );
       for (const exchange of uniqueExchanges) {
         const adapter = adapters.get(exchange);
         if (adapter) {
@@ -988,8 +1006,10 @@ export class FundingArbitrageStrategy {
       // This ensures all exchanges have sufficient balance to execute opportunities
       if (this.balanceRebalancer && opportunitiesAfterFailedFilter.length > 0) {
         try {
-          this.logger.log('⚖️ Proactively rebalancing capital across exchanges...');
-          
+          this.logger.log(
+            '⚖️ Proactively rebalancing capital across exchanges...',
+          );
+
           // Calculate total capital and target per exchange
           const totalCapital = Array.from(exchangeBalances.values()).reduce(
             (sum, balance) => sum + balance,
@@ -1004,21 +1024,23 @@ export class FundingArbitrageStrategy {
           });
 
           // Only rebalance if we have multiple exchanges and sufficient capital
-          if (
-            uniqueExchangesForRebalance.size > 1 &&
-            totalCapital > 0
-          ) {
+          if (uniqueExchangesForRebalance.size > 1 && totalCapital > 0) {
             // Calculate target balance per exchange (equal distribution)
             const targetBalancePerExchange =
               totalCapital / uniqueExchangesForRebalance.size;
-            const minRequiredBalance = this.strategyConfig.minPositionSizeUsd / this.leverage;
+            const minRequiredBalance =
+              this.strategyConfig.minPositionSizeUsd / this.leverage;
 
             // Check if rebalancing is needed
             let needsRebalancing = false;
             for (const exchange of uniqueExchangesForRebalance) {
               const currentBalance = exchangeBalances.get(exchange) || 0;
               // Need rebalancing if any exchange has less than minimum required
-              if (currentBalance < minRequiredBalance && totalCapital > minRequiredBalance * uniqueExchangesForRebalance.size) {
+              if (
+                currentBalance < minRequiredBalance &&
+                totalCapital >
+                  minRequiredBalance * uniqueExchangesForRebalance.size
+              ) {
                 needsRebalancing = true;
                 break;
               }
@@ -1037,7 +1059,10 @@ export class FundingArbitrageStrategy {
                 opportunitiesAfterFailedFilter,
               );
 
-              if (rebalanceResult.success && rebalanceResult.totalTransferred > 0) {
+              if (
+                rebalanceResult.success &&
+                rebalanceResult.totalTransferred > 0
+              ) {
                 this.logger.log(
                   `✅ Rebalanced $${rebalanceResult.totalTransferred.toFixed(2)} across ${rebalanceResult.transfersExecuted} transfer(s)`,
                 );
@@ -1055,8 +1080,12 @@ export class FundingArbitrageStrategy {
                       }
 
                       const deployableBalance =
-                        await this.balanceManager.getDeployableCapital(adapter, exchange);
-                      const marginUsed = marginUsedPerExchange.get(exchange) ?? 0;
+                        await this.balanceManager.getDeployableCapital(
+                          adapter,
+                          exchange,
+                        );
+                      const marginUsed =
+                        marginUsedPerExchange.get(exchange) ?? 0;
                       const availableBalance = Math.max(
                         0,
                         deployableBalance - marginUsed,
@@ -1073,14 +1102,18 @@ export class FundingArbitrageStrategy {
                   }
                 }
               } else if (rebalanceResult.success) {
-                this.logger.debug('No rebalancing needed - balances already optimal');
+                this.logger.debug(
+                  'No rebalancing needed - balances already optimal',
+                );
               } else {
                 this.logger.warn(
                   `Rebalancing completed with issues: ${rebalanceResult.errors.length} error(s)`,
                 );
               }
             } else {
-              this.logger.debug('No rebalancing needed - all exchanges have sufficient balance');
+              this.logger.debug(
+                'No rebalancing needed - all exchanges have sufficient balance',
+              );
             }
           }
         } catch (error: any) {
@@ -1206,13 +1239,13 @@ export class FundingArbitrageStrategy {
           if (plan) {
             // Check if this is a perp-spot plan
             if ('perpOrder' in plan && 'spotOrder' in plan) {
-              const perpSpotPlan = plan as PerpSpotExecutionPlan;
+              const perpSpotPlan = plan;
               const avgMarkPrice =
                 opportunity.longMarkPrice || opportunity.shortMarkPrice || 0;
               positionValueUsd = perpSpotPlan.positionSize.toUSD(avgMarkPrice);
               netReturn = perpSpotPlan.expectedNetReturn;
             } else {
-              const perpPerpPlan = plan as ArbitrageExecutionPlan;
+              const perpPerpPlan = plan;
               const avgMarkPrice =
                 opportunity.longMarkPrice && opportunity.shortMarkPrice
                   ? (opportunity.longMarkPrice + opportunity.shortMarkPrice) / 2
@@ -1252,7 +1285,7 @@ export class FundingArbitrageStrategy {
                 // Even though we place LIMIT orders, they may cross the spread and execute as taker
                 // especially on illiquid markets or when the price moves against us.
                 // This gives a more realistic break-even time.
-                // 
+                //
                 // Fee comparison (per side):
                 // - Hyperliquid: Maker 0.015%, Taker 0.02% (33% higher)
                 // - Aster: Maker 0.005%, Taker 0.04% (8x higher!)
@@ -1275,14 +1308,14 @@ export class FundingArbitrageStrategy {
                       opportunity.shortExchange,
                     ) || 0.0005
                   : 0.0005;
-                
+
                 // Use taker fees for conservative break-even estimate
                 // Entry: assume taker (crossing spread for immediate fill)
                 // Exit: assume taker (need to close quickly)
                 const longEntryFee = positionSizeUsd * longTakerFeeRate;
                 const shortEntryFee = positionSizeUsd * shortTakerFeeRate;
                 const totalEntryFees = longEntryFee + shortEntryFee;
-                
+
                 // Exit fees - also use taker rates for conservative estimate
                 const longExitFee = positionSizeUsd * longTakerFeeRate;
                 const shortExitFee = positionSizeUsd * shortTakerFeeRate;
@@ -1348,9 +1381,9 @@ export class FundingArbitrageStrategy {
 
           // Enrich opportunity with prediction-based break-even data
           const totalCosts = plan
-            ? plan.estimatedCosts?.total ?? 0
+            ? (plan.estimatedCosts?.total ?? 0)
             : this.estimateTotalCosts(opportunity, positionValueUsd);
-          
+
           const enrichedOpportunity =
             await this.opportunityEvaluator.enrichOpportunityWithPredictions(
               opportunity,
@@ -1517,7 +1550,7 @@ export class FundingArbitrageStrategy {
             item.maxPortfolioFor35APY !== undefined
               ? ` | Max: $${(item.maxPortfolioFor35APY / 1000).toFixed(1)}k`
               : '';
-          
+
           // Format break-even time
           let breakEvenStr = '';
           if (item.breakEvenHours !== null && isFinite(item.breakEvenHours)) {
@@ -1531,7 +1564,7 @@ export class FundingArbitrageStrategy {
           } else if (!isProfitable) {
             breakEvenStr = ' | BE: N/A (unprofitable)';
           }
-          
+
           this.logger.log(
             `${prefix} ${item.opportunity.symbol}: ` +
               `APY: ${(item.opportunity.expectedReturn?.toPercent() || 0).toFixed(2)}% | ` +
@@ -1592,7 +1625,11 @@ export class FundingArbitrageStrategy {
 
             // Format break-even time for allocation
             let breakEvenInfo = '';
-            if (opportunity?.breakEvenHours !== null && opportunity?.breakEvenHours !== undefined && isFinite(opportunity.breakEvenHours)) {
+            if (
+              opportunity?.breakEvenHours !== null &&
+              opportunity?.breakEvenHours !== undefined &&
+              isFinite(opportunity.breakEvenHours)
+            ) {
               if (opportunity.breakEvenHours < 1) {
                 breakEvenInfo = ` | BE: ${Math.round(opportunity.breakEvenHours * 60)}min`;
               } else if (opportunity.breakEvenHours < 24) {
@@ -1796,13 +1833,15 @@ export class FundingArbitrageStrategy {
           const filterKey = this.getRetryKey(
             item.opportunity.symbol,
             item.opportunity.longExchange,
-            item.opportunity.shortExchange!,
+            item.opportunity.shortExchange,
           );
           const filteredTime = this.filteredOpportunities.get(filterKey);
           if (filteredTime) {
             const timeSinceFilter = Date.now() - filteredTime.getTime();
             if (timeSinceFilter < this.FILTER_EXPIRY_MS) {
-              const remainingMinutes = Math.ceil((this.FILTER_EXPIRY_MS - timeSinceFilter) / 60000);
+              const remainingMinutes = Math.ceil(
+                (this.FILTER_EXPIRY_MS - timeSinceFilter) / 60000,
+              );
               this.logger.debug(
                 `Skipping filtered opportunity ${item.opportunity.symbol} (${item.opportunity.longExchange}/${item.opportunity.shortExchange}) - retry in ${remainingMinutes}m`,
               );
@@ -2432,7 +2471,7 @@ export class FundingArbitrageStrategy {
             this.singleLegRetries.set(retryKey, {
               retryCount: 0,
               longExchange: opp.opportunity.longExchange,
-              shortExchange: opp.opportunity.shortExchange!,
+              shortExchange: opp.opportunity.shortExchange,
               opportunity: opp.opportunity,
               lastRetryTime: new Date(),
             });
@@ -2852,7 +2891,7 @@ export class FundingArbitrageStrategy {
     let totalExpectedHourlyReturn = 0;
     let totalBreakEvenHours = 0;
     let totalEstimatedAPY = 0;
-    let totalRealizedPnl = 0;
+    const totalRealizedPnl = 0;
     let totalUnrealizedPnl = 0;
 
     // Group positions by symbol (arbitrage pairs: long + short)
@@ -3403,7 +3442,7 @@ export class FundingArbitrageStrategy {
       }
 
       // Perp-perp plan
-      const perpPerpPlan = plan as ArbitrageExecutionPlan;
+      const perpPerpPlan = plan;
       const orderRequest =
         missingSide === OrderSide.LONG
           ? perpPerpPlan.longOrder
@@ -3667,7 +3706,7 @@ export class FundingArbitrageStrategy {
         ) || 0.0005;
       const shortFeeRate =
         this.strategyConfig.exchangeFeeRates.get(
-          worstCase.opportunity.shortExchange!,
+          worstCase.opportunity.shortExchange,
         ) || 0.0005;
       const avgMarkPrice =
         worstCase.opportunity.longMarkPrice &&
@@ -3681,13 +3720,13 @@ export class FundingArbitrageStrategy {
       const positionSizeUsd = worstCase.plan.positionSize.toUSD(avgMarkPrice);
       const entryCost = (longFeeRate + shortFeeRate) * positionSizeUsd;
 
-      this.lossTracker.recordPositionEntry(
+      await this.lossTracker.recordPositionEntry(
         worstCase.opportunity.symbol,
         worstCase.opportunity.longExchange,
         entryCost / 2,
         positionSizeUsd / 2,
       );
-      this.lossTracker.recordPositionEntry(
+      await this.lossTracker.recordPositionEntry(
         worstCase.opportunity.symbol,
         worstCase.opportunity.shortExchange,
         entryCost / 2,
@@ -3697,7 +3736,7 @@ export class FundingArbitrageStrategy {
       // Place orders (handle both perp-perp and perp-spot)
       if (worstCase.plan && 'perpOrder' in worstCase.plan) {
         // Perp-spot plan
-        const perpSpotPlan = worstCase.plan as PerpSpotExecutionPlan;
+        const perpSpotPlan = worstCase.plan;
         const spotAdapter = spotAdapters.get(
           worstCase.opportunity.spotExchange!,
         );
@@ -3721,7 +3760,7 @@ export class FundingArbitrageStrategy {
         }
       } else {
         // Perp-perp plan
-        const perpPerpPlan = worstCase.plan as ArbitrageExecutionPlan;
+        const perpPerpPlan = worstCase.plan;
         const longResponse = await longAdapter.placeOrder(
           perpPerpPlan.longOrder,
         );

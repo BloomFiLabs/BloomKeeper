@@ -100,4 +100,3 @@ describe('SpotPosition', () => {
     }).toThrow('Entry price must be greater than 0');
   });
 });
-

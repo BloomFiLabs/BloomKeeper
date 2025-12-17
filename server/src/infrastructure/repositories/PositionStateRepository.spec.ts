@@ -2,7 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PositionStateRepository, PersistedPositionState } from './PositionStateRepository';
+import {
+  PositionStateRepository,
+  PersistedPositionState,
+} from './PositionStateRepository';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 
 // Mock fs module
@@ -15,7 +18,7 @@ describe('PositionStateRepository', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    
+
     mockConfigService = {
       get: jest.fn((key: string, defaultValue?: any) => {
         if (key === 'POSITION_STATE_DIR') return 'test-data';
@@ -41,8 +44,12 @@ describe('PositionStateRepository', () => {
 
   describe('generateId', () => {
     it('should generate IDs with correct format', () => {
-      const id = repository.generateId('ETHUSDT', ExchangeType.LIGHTER, ExchangeType.ASTER);
-      
+      const id = repository.generateId(
+        'ETHUSDT',
+        ExchangeType.LIGHTER,
+        ExchangeType.ASTER,
+      );
+
       expect(id).toContain('ETHUSDT');
       expect(id).toContain('LIGHTER');
       expect(id).toContain('ASTER');
@@ -51,10 +58,18 @@ describe('PositionStateRepository', () => {
     });
 
     it('should generate different IDs when called with delay', async () => {
-      const id1 = repository.generateId('ETHUSDT', ExchangeType.LIGHTER, ExchangeType.ASTER);
-      await new Promise(resolve => setTimeout(resolve, 2));
-      const id2 = repository.generateId('ETHUSDT', ExchangeType.LIGHTER, ExchangeType.ASTER);
-      
+      const id1 = repository.generateId(
+        'ETHUSDT',
+        ExchangeType.LIGHTER,
+        ExchangeType.ASTER,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      const id2 = repository.generateId(
+        'ETHUSDT',
+        ExchangeType.LIGHTER,
+        ExchangeType.ASTER,
+      );
+
       // IDs should be different due to timestamp
       expect(id1).not.toBe(id2);
     });
@@ -103,7 +118,9 @@ describe('PositionStateRepository', () => {
       await repository.save(state);
       const retrieved = repository.get('test-id-2');
 
-      expect(retrieved?.updatedAt.getTime()).toBeGreaterThan(originalDate.getTime());
+      expect(retrieved?.updatedAt.getTime()).toBeGreaterThan(
+        originalDate.getTime(),
+      );
     });
   });
 
@@ -124,7 +141,10 @@ describe('PositionStateRepository', () => {
       };
 
       await repository.save(state);
-      await repository.update('test-id-3', { shortFilled: true, status: 'COMPLETE' });
+      await repository.update('test-id-3', {
+        shortFilled: true,
+        status: 'COMPLETE',
+      });
 
       const retrieved = repository.get('test-id-3');
       expect(retrieved?.shortFilled).toBe(true);
@@ -133,7 +153,7 @@ describe('PositionStateRepository', () => {
 
     it('should not throw for non-existent position', async () => {
       await expect(
-        repository.update('non-existent', { status: 'CLOSED' })
+        repository.update('non-existent', { status: 'CLOSED' }),
       ).resolves.not.toThrow();
     });
   });
@@ -262,9 +282,9 @@ describe('PositionStateRepository', () => {
       });
 
       expect(repository.get('to-delete')).toBeDefined();
-      
+
       await repository.delete('to-delete');
-      
+
       expect(repository.get('to-delete')).toBeUndefined();
     });
   });
@@ -447,7 +467,9 @@ describe('PositionStateRepository', () => {
         ],
       }).compile();
 
-      const newRepo = module.get<PositionStateRepository>(PositionStateRepository);
+      const newRepo = module.get<PositionStateRepository>(
+        PositionStateRepository,
+      );
       await newRepo.onModuleInit();
 
       const loaded = newRepo.get('loaded-1');
@@ -466,14 +488,15 @@ describe('PositionStateRepository', () => {
         ],
       }).compile();
 
-      const newRepo = module.get<PositionStateRepository>(PositionStateRepository);
-      
+      const newRepo = module.get<PositionStateRepository>(
+        PositionStateRepository,
+      );
+
       // Should not throw
       await expect(newRepo.onModuleInit()).resolves.not.toThrow();
-      
+
       // Should start with empty state
       expect(newRepo.getAll()).toHaveLength(0);
     });
   });
 });
-

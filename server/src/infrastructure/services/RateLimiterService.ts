@@ -39,31 +39,31 @@ export interface RateLimiterUsage {
  * Based on documented API limits and observed behavior
  */
 const DEFAULT_LIMITS: RateLimitConfig[] = [
-  { 
-    exchange: ExchangeType.LIGHTER, 
-    maxRequestsPerSecond: 5,   // Conservative - Lighter has strict limits
-    maxRequestsPerMinute: 100 
+  {
+    exchange: ExchangeType.LIGHTER,
+    maxRequestsPerSecond: 5, // Conservative - Lighter has strict limits
+    maxRequestsPerMinute: 100,
   },
-  { 
-    exchange: ExchangeType.HYPERLIQUID, 
-    maxRequestsPerSecond: 10, 
-    maxRequestsPerMinute: 200 
+  {
+    exchange: ExchangeType.HYPERLIQUID,
+    maxRequestsPerSecond: 10,
+    maxRequestsPerMinute: 200,
   },
-  { 
-    exchange: ExchangeType.ASTER, 
-    maxRequestsPerSecond: 10, 
-    maxRequestsPerMinute: 200 
+  {
+    exchange: ExchangeType.ASTER,
+    maxRequestsPerSecond: 10,
+    maxRequestsPerMinute: 200,
   },
-  { 
-    exchange: ExchangeType.EXTENDED, 
-    maxRequestsPerSecond: 10, 
-    maxRequestsPerMinute: 200 
+  {
+    exchange: ExchangeType.EXTENDED,
+    maxRequestsPerSecond: 10,
+    maxRequestsPerMinute: 200,
   },
 ];
 
 /**
  * RateLimiterService - Global rate limiter for exchange API calls
- * 
+ *
  * Features:
  * - Per-exchange rate limiting with configurable limits
  * - Sliding window algorithm for accurate rate tracking
@@ -93,7 +93,7 @@ export class RateLimiterService {
     this.logger.log('RateLimiter initialized with limits:');
     for (const [exchange, config] of this.limits) {
       this.logger.log(
-        `  ${exchange}: ${config.maxRequestsPerSecond}/s, ${config.maxRequestsPerMinute}/min`
+        `  ${exchange}: ${config.maxRequestsPerSecond}/s, ${config.maxRequestsPerMinute}/min`,
       );
     }
   }
@@ -105,10 +105,10 @@ export class RateLimiterService {
     // Example config: RATE_LIMIT_LIGHTER_PER_SECOND=3
     for (const exchange of Object.values(ExchangeType)) {
       const perSecond = this.configService.get<number>(
-        `RATE_LIMIT_${exchange}_PER_SECOND`
+        `RATE_LIMIT_${exchange}_PER_SECOND`,
       );
       const perMinute = this.configService.get<number>(
-        `RATE_LIMIT_${exchange}_PER_MINUTE`
+        `RATE_LIMIT_${exchange}_PER_MINUTE`,
       );
 
       if (perSecond || perMinute) {
@@ -127,7 +127,7 @@ export class RateLimiterService {
   /**
    * Acquire a rate limit slot for the given exchange
    * Will wait if rate limit is exceeded
-   * 
+   *
    * @param exchange - The exchange to acquire a slot for
    * @returns Promise that resolves when a slot is available
    */
@@ -146,8 +146,10 @@ export class RateLimiterService {
     const now = Date.now();
 
     // Check if we're at the limit
-    const withinSecondLimit = bucket.secondWindow.length < config.maxRequestsPerSecond;
-    const withinMinuteLimit = bucket.minuteWindow.length < config.maxRequestsPerMinute;
+    const withinSecondLimit =
+      bucket.secondWindow.length < config.maxRequestsPerSecond;
+    const withinMinuteLimit =
+      bucket.minuteWindow.length < config.maxRequestsPerMinute;
 
     if (withinSecondLimit && withinMinuteLimit) {
       // We have capacity - record and proceed
@@ -158,11 +160,11 @@ export class RateLimiterService {
 
     // We're at the limit - need to wait
     const waitTime = this.calculateWaitTime(bucket, config, now);
-    
+
     this.logger.debug(
       `Rate limit reached for ${exchange}, waiting ${waitTime}ms ` +
-      `(${bucket.secondWindow.length}/${config.maxRequestsPerSecond}/s, ` +
-      `${bucket.minuteWindow.length}/${config.maxRequestsPerMinute}/min)`
+        `(${bucket.secondWindow.length}/${config.maxRequestsPerSecond}/s, ` +
+        `${bucket.minuteWindow.length}/${config.maxRequestsPerMinute}/min)`,
     );
 
     // Wait for the calculated time
@@ -174,12 +176,12 @@ export class RateLimiterService {
         if (index > -1) {
           bucket.waitQueue.splice(index, 1);
         }
-        
+
         // Re-prune and record
         this.pruneWindows(bucket);
         bucket.secondWindow.push(Date.now());
         bucket.minuteWindow.push(Date.now());
-        
+
         resolve();
       }, waitTime);
     });
@@ -187,7 +189,7 @@ export class RateLimiterService {
 
   /**
    * Try to acquire a rate limit slot without waiting
-   * 
+   *
    * @param exchange - The exchange to try acquiring a slot for
    * @returns true if slot was acquired, false if rate limited
    */
@@ -201,8 +203,10 @@ export class RateLimiterService {
 
     this.pruneWindows(bucket);
 
-    const withinSecondLimit = bucket.secondWindow.length < config.maxRequestsPerSecond;
-    const withinMinuteLimit = bucket.minuteWindow.length < config.maxRequestsPerMinute;
+    const withinSecondLimit =
+      bucket.secondWindow.length < config.maxRequestsPerSecond;
+    const withinMinuteLimit =
+      bucket.minuteWindow.length < config.maxRequestsPerMinute;
 
     if (withinSecondLimit && withinMinuteLimit) {
       const now = Date.now();
@@ -247,11 +251,11 @@ export class RateLimiterService {
    */
   getAllUsage(): Map<ExchangeType, RateLimiterUsage> {
     const usage = new Map<ExchangeType, RateLimiterUsage>();
-    
+
     for (const exchange of this.limits.keys()) {
       usage.set(exchange, this.getUsage(exchange));
     }
-    
+
     return usage;
   }
 
@@ -271,8 +275,8 @@ export class RateLimiterService {
       this.limits.set(exchange, { ...existing, ...config });
       this.logger.log(
         `Updated rate limit for ${exchange}: ` +
-        `${this.limits.get(exchange)?.maxRequestsPerSecond}/s, ` +
-        `${this.limits.get(exchange)?.maxRequestsPerMinute}/min`
+          `${this.limits.get(exchange)?.maxRequestsPerSecond}/s, ` +
+          `${this.limits.get(exchange)?.maxRequestsPerMinute}/min`,
       );
     }
   }
@@ -286,7 +290,7 @@ export class RateLimiterService {
       bucket.secondWindow = [];
       bucket.minuteWindow = [];
       // Release all waiting requests
-      bucket.waitQueue.forEach(resolve => resolve());
+      bucket.waitQueue.forEach((resolve) => resolve());
       bucket.waitQueue = [];
     }
   }
@@ -337,9 +341,7 @@ export class RateLimiterService {
     const oneSecondAgo = now - 1000;
     const oneMinuteAgo = now - 60000;
 
-    bucket.secondWindow = bucket.secondWindow.filter(t => t > oneSecondAgo);
-    bucket.minuteWindow = bucket.minuteWindow.filter(t => t > oneMinuteAgo);
+    bucket.secondWindow = bucket.secondWindow.filter((t) => t > oneSecondAgo);
+    bucket.minuteWindow = bucket.minuteWindow.filter((t) => t > oneMinuteAgo);
   }
 }
-
-

@@ -224,15 +224,36 @@ describe('OptimalLeverageService', () => {
 
     it('should return correct risk levels at different distances', () => {
       // 3x leverage: ~33% distance -> LOW
-      const lowRisk = service.getLiquidationRisk('BTC', ExchangeType.HYPERLIQUID, 3, 50000, 50000, 'LONG');
+      const lowRisk = service.getLiquidationRisk(
+        'BTC',
+        ExchangeType.HYPERLIQUID,
+        3,
+        50000,
+        50000,
+        'LONG',
+      );
       expect(lowRisk.riskLevel).toBe('LOW');
 
       // 8x leverage: ~12.5% distance -> MEDIUM
-      const mediumRisk = service.getLiquidationRisk('BTC', ExchangeType.HYPERLIQUID, 8, 50000, 50000, 'LONG');
+      const mediumRisk = service.getLiquidationRisk(
+        'BTC',
+        ExchangeType.HYPERLIQUID,
+        8,
+        50000,
+        50000,
+        'LONG',
+      );
       expect(mediumRisk.riskLevel).toBe('MEDIUM');
 
       // 15x leverage: ~6.6% distance -> HIGH
-      const highRisk = service.getLiquidationRisk('BTC', ExchangeType.HYPERLIQUID, 15, 50000, 50000, 'LONG');
+      const highRisk = service.getLiquidationRisk(
+        'BTC',
+        ExchangeType.HYPERLIQUID,
+        15,
+        50000,
+        50000,
+        'LONG',
+      );
       expect(highRisk.riskLevel).toBe('HIGH');
     });
   });
@@ -312,7 +333,8 @@ describe('OptimalLeverageService', () => {
         mockHistoricalService as IHistoricalFundingRateService,
       );
 
-      const result = await serviceWithoutFunding.getWinRateAdjustedLeverage('BTC');
+      const result =
+        await serviceWithoutFunding.getWinRateAdjustedLeverage('BTC');
 
       expect(result).toBe(0.5); // Default
     });
@@ -541,17 +563,27 @@ describe('OptimalLeverageService', () => {
       // Verify the relationship
       const expectedLeverage = 1 + 9 * result.compositeScore;
       // The actual leverage might be constrained by safety rules
-      expect(result.optimalLeverage).toBeLessThanOrEqual(expectedLeverage + 0.5);
+      expect(result.optimalLeverage).toBeLessThanOrEqual(
+        expectedLeverage + 0.5,
+      );
     });
   });
 
   describe('Caching behavior', () => {
     it('should cache volatility results', async () => {
       // First call
-      const result1 = await service.getAssetVolatility('BTC', ExchangeType.HYPERLIQUID, 24);
-      
+      const result1 = await service.getAssetVolatility(
+        'BTC',
+        ExchangeType.HYPERLIQUID,
+        24,
+      );
+
       // Second call should use cache
-      const result2 = await service.getAssetVolatility('BTC', ExchangeType.HYPERLIQUID, 24);
+      const result2 = await service.getAssetVolatility(
+        'BTC',
+        ExchangeType.HYPERLIQUID,
+        24,
+      );
 
       // Results should be the same (from cache)
       expect(result1.dailyVolatility).toBe(result2.dailyVolatility);
@@ -559,8 +591,16 @@ describe('OptimalLeverageService', () => {
     });
 
     it('should use different cache keys for different symbols', async () => {
-      const btcResult = await service.getAssetVolatility('BTC', ExchangeType.HYPERLIQUID, 24);
-      const ethResult = await service.getAssetVolatility('ETH', ExchangeType.HYPERLIQUID, 24);
+      const btcResult = await service.getAssetVolatility(
+        'BTC',
+        ExchangeType.HYPERLIQUID,
+        24,
+      );
+      const ethResult = await service.getAssetVolatility(
+        'ETH',
+        ExchangeType.HYPERLIQUID,
+        24,
+      );
 
       // Timestamps could be different if not cached
       expect(btcResult.symbol).toBe('BTC');
@@ -568,5 +608,3 @@ describe('OptimalLeverageService', () => {
     });
   });
 });
-
-

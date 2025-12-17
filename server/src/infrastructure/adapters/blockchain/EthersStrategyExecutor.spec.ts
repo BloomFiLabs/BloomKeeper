@@ -22,13 +22,14 @@ describe('EthersStrategyExecutor', () => {
     mockConfigService = {
       get: jest.fn((key: string) => {
         if (key === 'RPC_URL') return 'http://localhost:8545';
-        if (key === 'KEEPER_PRIVATE_KEY') return '0x1234567890123456789012345678901234567890123456789012345678901234'; // Dummy key
+        if (key === 'KEEPER_PRIVATE_KEY')
+          return '0x1234567890123456789012345678901234567890123456789012345678901234'; // Dummy key
         return null;
       }),
     };
 
     mockWallet = {
-        address: '0xKeeperAddress'
+      address: '0xKeeperAddress',
     };
     (Wallet as unknown as jest.Mock).mockImplementation(() => mockWallet);
 
@@ -54,34 +55,41 @@ describe('EthersStrategyExecutor', () => {
 
   it('should call rebalance on the contract', async () => {
     const strategyAddress = '0xStrategyAddress';
-    const mockTx = { hash: '0xTxHash', wait: jest.fn().mockResolvedValue({ hash: '0xReceiptHash' }) };
-    
+    const mockTx = {
+      hash: '0xTxHash',
+      wait: jest.fn().mockResolvedValue({ hash: '0xReceiptHash' }),
+    };
+
     mockContract.rebalance.mockResolvedValue(mockTx);
 
     const result = await executor.rebalance(strategyAddress);
 
-    expect(Contract).toHaveBeenCalledWith(strategyAddress, expect.any(Array), mockWallet);
+    expect(Contract).toHaveBeenCalledWith(
+      strategyAddress,
+      expect.any(Array),
+      mockWallet,
+    );
     expect(mockContract.rebalance).toHaveBeenCalled();
     expect(result).toBe('0xReceiptHash');
   });
 
   it('should call emergencyExit on the contract', async () => {
-      const strategyAddress = '0xStrategyAddress';
-      const mockTx = { hash: '0xTxHash', wait: jest.fn().mockResolvedValue({ hash: '0xReceiptHash' }) };
-      
-      mockContract.emergencyExit.mockResolvedValue(mockTx);
-  
-      const result = await executor.emergencyExit(strategyAddress);
-  
-      expect(Contract).toHaveBeenCalledWith(strategyAddress, expect.any(Array), mockWallet);
-      expect(mockContract.emergencyExit).toHaveBeenCalled();
-      expect(result).toBe('0xReceiptHash');
-    });
+    const strategyAddress = '0xStrategyAddress';
+    const mockTx = {
+      hash: '0xTxHash',
+      wait: jest.fn().mockResolvedValue({ hash: '0xReceiptHash' }),
+    };
+
+    mockContract.emergencyExit.mockResolvedValue(mockTx);
+
+    const result = await executor.emergencyExit(strategyAddress);
+
+    expect(Contract).toHaveBeenCalledWith(
+      strategyAddress,
+      expect.any(Array),
+      mockWallet,
+    );
+    expect(mockContract.emergencyExit).toHaveBeenCalled();
+    expect(result).toBe('0xReceiptHash');
+  });
 });
-
-
-
-
-
-
-

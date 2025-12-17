@@ -45,12 +45,7 @@ describe('PerpSpotBalanceManager', () => {
     });
 
     it('should calculate optimal distribution for 3x leverage', () => {
-      const result = manager.calculateOptimalDistribution(
-        1000,
-        1000,
-        3000,
-        3,
-      );
+      const result = manager.calculateOptimalDistribution(1000, 1000, 3000, 3);
 
       // Total capital = 2000
       // Optimal: perpBalance = 2000 / 4 = 500
@@ -161,7 +156,9 @@ describe('PerpSpotBalanceManager', () => {
     it('should handle transfer failures gracefully', async () => {
       mockPerpAdapter.getBalance.mockResolvedValue(1000);
       mockSpotAdapter.getSpotBalance.mockResolvedValue(500);
-      mockSpotAdapter.transferInternal.mockRejectedValue(new Error('Transfer failed'));
+      mockSpotAdapter.transferInternal.mockRejectedValue(
+        new Error('Transfer failed'),
+      );
 
       const result = await manager.ensureOptimalBalanceDistribution(
         ExchangeType.HYPERLIQUID,
@@ -177,4 +174,3 @@ describe('PerpSpotBalanceManager', () => {
     });
   });
 });
-

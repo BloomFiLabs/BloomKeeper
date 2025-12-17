@@ -20,7 +20,7 @@ describe('RetryPolicy', () => {
     it('should retry on transient failures', async () => {
       const networkError: any = new Error('Network error');
       networkError.code = 'ECONNRESET';
-      
+
       const fn = jest
         .fn()
         .mockRejectedValueOnce(networkError)
@@ -42,7 +42,7 @@ describe('RetryPolicy', () => {
       const networkError: any = new Error('Network error');
       networkError.code = 'ECONNRESET';
       const fn = jest.fn().mockRejectedValue(networkError);
-      
+
       const config = {
         ...DEFAULT_RETRY_POLICY_CONFIG,
         maxRetries: 2,
@@ -69,7 +69,7 @@ describe('RetryPolicy', () => {
       const networkError: any = new Error('Network error');
       networkError.code = 'ECONNRESET';
       const fn = jest.fn().mockRejectedValue(networkError);
-      
+
       const config = {
         ...DEFAULT_RETRY_POLICY_CONFIG,
         maxRetries: 3, // Reduced for faster test
@@ -96,7 +96,7 @@ describe('RetryPolicy', () => {
       const networkError: any = new Error('Persistent error');
       networkError.code = 'ECONNRESET';
       const fn = jest.fn().mockRejectedValue(networkError);
-      
+
       const config = {
         ...DEFAULT_RETRY_POLICY_CONFIG,
         maxRetries: 2,

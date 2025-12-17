@@ -62,8 +62,13 @@ export class PerpOrderRequest {
       throw new Error('Limit price is required for LIMIT orders');
     }
 
-    if ((type === OrderType.STOP_LOSS || type === OrderType.TAKE_PROFIT) && !stopPrice) {
-      throw new Error('Stop price is required for STOP_LOSS and TAKE_PROFIT orders');
+    if (
+      (type === OrderType.STOP_LOSS || type === OrderType.TAKE_PROFIT) &&
+      !stopPrice
+    ) {
+      throw new Error(
+        'Stop price is required for STOP_LOSS and TAKE_PROFIT orders',
+      );
     }
   }
 

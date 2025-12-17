@@ -24,7 +24,9 @@ export class PrismaBotStateRepository implements IBotStateRepository {
       entity.priceUpper,
       entity.lastRebalancePrice,
       entity.lastRebalanceAt,
-      entity.currentVolatility ? new Volatility(entity.currentVolatility) : undefined,
+      entity.currentVolatility
+        ? new Volatility(entity.currentVolatility)
+        : undefined,
       entity.currentHurst ? new HurstExponent(entity.currentHurst) : undefined,
       entity.isActive,
     );
@@ -85,4 +87,3 @@ export class PrismaBotStateRepository implements IBotStateRepository {
     );
   }
 }
-

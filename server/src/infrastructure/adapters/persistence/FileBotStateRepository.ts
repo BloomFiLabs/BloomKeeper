@@ -21,14 +21,17 @@ interface FileState {
 
 interface FileStorage {
   states: Record<string, FileState>;
-  candles: Record<string, Array<{
-    timestamp: string;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-  }>>;
+  candles: Record<
+    string,
+    Array<{
+      timestamp: string;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    }>
+  >;
 }
 
 @Injectable()
@@ -38,7 +41,10 @@ export class FileBotStateRepository implements IBotStateRepository {
   private cache: FileStorage | null = null;
 
   constructor(private configService: ConfigService) {
-    const dataDir = this.configService.get<string>('STORAGE_DATA_DIR', './data');
+    const dataDir = this.configService.get<string>(
+      'STORAGE_DATA_DIR',
+      './data',
+    );
     this.storagePath = path.resolve(dataDir, 'bot_state.json');
     this.ensureDataDirectory(dataDir);
   }
@@ -76,7 +82,11 @@ export class FileBotStateRepository implements IBotStateRepository {
     try {
       // Write atomically by writing to temp file then renaming
       const tempPath = `${this.storagePath}.tmp`;
-      await fs.writeFile(tempPath, JSON.stringify(this.cache, null, 2), 'utf-8');
+      await fs.writeFile(
+        tempPath,
+        JSON.stringify(this.cache, null, 2),
+        'utf-8',
+      );
       await fs.rename(tempPath, this.storagePath);
     } catch (error) {
       this.logger.error(`Failed to save storage: ${error.message}`);
@@ -96,7 +106,9 @@ export class FileBotStateRepository implements IBotStateRepository {
       state.priceUpper,
       state.lastRebalancePrice,
       new Date(state.lastRebalanceAt),
-      state.currentVolatility ? new Volatility(state.currentVolatility) : undefined,
+      state.currentVolatility
+        ? new Volatility(state.currentVolatility)
+        : undefined,
       state.currentHurst ? new HurstExponent(state.currentHurst) : undefined,
       state.isActive,
     );
@@ -143,8 +155,9 @@ export class FileBotStateRepository implements IBotStateRepository {
     }
 
     // Sort by timestamp and keep only recent candles (last 1000 per pool)
-    storage.candles[poolId].sort((a, b) => 
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    storage.candles[poolId].sort(
+      (a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
     );
     if (storage.candles[poolId].length > 1000) {
       storage.candles[poolId] = storage.candles[poolId].slice(-1000);
@@ -156,7 +169,7 @@ export class FileBotStateRepository implements IBotStateRepository {
   async getCandles(poolId: string, limit: number): Promise<Candle[]> {
     const storage = await this.loadStorage();
     const candles = storage.candles[poolId] || [];
-    
+
     // Return most recent candles
     return candles
       .slice(-limit)
@@ -173,4 +186,3 @@ export class FileBotStateRepository implements IBotStateRepository {
       );
   }
 }
-
