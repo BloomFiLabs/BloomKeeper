@@ -313,7 +313,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Get max leverage for a symbol from exchange info
    */
-  private async getMaxLeverage(symbol: string): Promise<number> {
+  async getMaxLeverage(symbol: string): Promise<number> {
     try {
       const response = await this.client.get('/fapi/v1/exchangeInfo');
       if (response.data?.symbols) {
@@ -347,8 +347,16 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
   /**
    * Set leverage for a symbol (required before placing orders on Aster)
    * Aster API endpoint: POST /fapi/v1/leverage
+   * @param symbol Trading symbol
+   * @param leverage Target leverage
+   * @param isCross Whether to use cross margin (ignored for Aster, uses account default)
+   * @returns True if leverage was set successfully
    */
-  private async setLeverage(symbol: string, leverage: number): Promise<void> {
+  async setLeverage(
+    symbol: string,
+    leverage: number,
+    isCross: boolean = true,
+  ): Promise<boolean> {
     try {
       const nonce = Math.floor(Date.now() * 1000);
       const params: Record<string, any> = {
@@ -385,12 +393,14 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       });
 
       this.logger.debug(`✅ Set leverage to ${leverage}x for ${symbol}`);
+      return true;
     } catch (error: any) {
       // Log but don't throw - leverage might already be set correctly
       this.logger.debug(
         `Failed to set leverage for ${symbol} to ${leverage}x: ${error.message}. ` +
           `This may be okay if leverage is already set correctly.`,
       );
+      return false;
     }
   }
 

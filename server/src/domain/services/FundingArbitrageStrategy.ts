@@ -73,6 +73,7 @@ export interface ArbitrageExecutionPlan {
   };
   expectedNetReturn: number; // After costs
   timestamp: Date;
+  leverage?: number; // Target leverage for the position
 }
 
 /**

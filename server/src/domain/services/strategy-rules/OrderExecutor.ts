@@ -1376,6 +1376,61 @@ export class OrderExecutor implements IOrderExecutor {
       );
     }
 
+    // PRE-FLIGHT CHECK: Get max leverage from both exchanges and use the minimum
+    // This ensures both sides can open with the same leverage
+    const targetLeverage = plan.leverage ?? this.config?.leverage ?? 2;
+    let effectiveLeverage = targetLeverage;
+
+    try {
+      // Get max leverage from both exchanges in parallel
+      const [longMaxLeverage, shortMaxLeverage] = await Promise.all([
+        longAdapter.getMaxLeverage?.(opportunity.symbol) ?? Promise.resolve(100),
+        shortAdapter.getMaxLeverage?.(opportunity.symbol) ?? Promise.resolve(100),
+      ]);
+
+      // Use the minimum of target and both exchange maxes
+      const minExchangeMax = Math.min(longMaxLeverage, shortMaxLeverage);
+      effectiveLeverage = Math.min(targetLeverage, minExchangeMax);
+
+      if (effectiveLeverage < targetLeverage) {
+        this.logger.warn(
+          `⚠️ Leverage capped from ${targetLeverage}x to ${effectiveLeverage}x for ${opportunity.symbol}: ` +
+            `${opportunity.longExchange} max=${longMaxLeverage}x, ${opportunity.shortExchange} max=${shortMaxLeverage}x`,
+        );
+      }
+    } catch (error: any) {
+      this.logger.debug(
+        `Could not fetch max leverage for ${opportunity.symbol}: ${error.message}. Using target ${targetLeverage}x`,
+      );
+    }
+
+    // PRE-FLIGHT CHECK: Set leverage on both exchanges BEFORE placing orders
+    // This ensures margin calculations are correct on both sides
+    try {
+      // Set leverage on both exchanges (in parallel if different exchanges)
+      const leverageResults = await Promise.allSettled([
+        longAdapter.setLeverage?.(opportunity.symbol, effectiveLeverage, true) ?? Promise.resolve(true),
+        shortAdapter.setLeverage?.(opportunity.symbol, effectiveLeverage, true) ?? Promise.resolve(true),
+      ]);
+
+      const longLeverageSet = leverageResults[0].status === 'fulfilled' ? leverageResults[0].value : false;
+      const shortLeverageSet = leverageResults[1].status === 'fulfilled' ? leverageResults[1].value : false;
+
+      this.logger.log(
+        `⚙️ Set leverage ${effectiveLeverage}x for ${opportunity.symbol}: ` +
+          `${opportunity.longExchange}=${longLeverageSet ? '✓' : '⚠️'}, ` +
+          `${opportunity.shortExchange}=${shortLeverageSet ? '✓' : '⚠️'}`,
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to set leverage for ${opportunity.symbol}: ${error.message}. ` +
+          `Proceeding with default exchange leverage.`,
+      );
+    }
+
+    // Use effective leverage for margin calculations
+    const leverage = effectiveLeverage;
+
     // PRE-FLIGHT CHECK: Scale position to available capital
     // Use getAvailableMargin() which accounts for existing positions and applies safety buffers
     try {
@@ -1385,7 +1440,6 @@ export class OrderExecutor implements IOrderExecutor {
       ]);
       const avgPrice =
         ((plan.longOrder.price || 0) + (plan.shortOrder.price || 0)) / 2;
-      const leverage = this.config?.leverage || 2;
       const originalPositionUsd = plan.positionSize.toUSD(avgPrice);
       const originalRequiredMargin = originalPositionUsd / leverage;
       const minMargin = Math.min(longMargin, shortMargin);
@@ -1769,12 +1823,6 @@ export class OrderExecutor implements IOrderExecutor {
               );
             }
 
-            // PRE-FLIGHT CHECK: Verify both exchanges have sufficient margin
-            // Use getAvailableMargin() which accounts for existing positions
-            const [longMargin, shortMargin] = await Promise.all([
-              this.getAdapterAvailableMargin(longAdapter),
-              this.getAdapterAvailableMargin(shortAdapter),
-            ]);
             // Check if this is a perp-spot plan
             if ('perpOrder' in plan && 'spotOrder' in plan) {
               // Perp-spot plan - skip for now (handled separately)
@@ -1784,6 +1832,59 @@ export class OrderExecutor implements IOrderExecutor {
               continue;
             }
             const perpPerpPlan = plan;
+
+            // Get target leverage from plan or fallback to config
+            const targetLeverage = perpPerpPlan.leverage ?? this.config?.leverage ?? 2;
+            let leverage = targetLeverage;
+
+            // PRE-FLIGHT CHECK: Get max leverage from both exchanges and use the minimum
+            try {
+              const [longMaxLeverage, shortMaxLeverage] = await Promise.all([
+                longAdapter.getMaxLeverage?.(opportunity.symbol) ?? Promise.resolve(100),
+                shortAdapter.getMaxLeverage?.(opportunity.symbol) ?? Promise.resolve(100),
+              ]);
+
+              const minExchangeMax = Math.min(longMaxLeverage, shortMaxLeverage);
+              leverage = Math.min(targetLeverage, minExchangeMax);
+
+              if (leverage < targetLeverage) {
+                this.logger.warn(
+                  `⚠️ Leverage capped from ${targetLeverage}x to ${leverage}x for ${opportunity.symbol}: ` +
+                    `${opportunity.longExchange} max=${longMaxLeverage}x, ${opportunity.shortExchange} max=${shortMaxLeverage}x`,
+                );
+              }
+            } catch (error: any) {
+              this.logger.debug(
+                `Could not fetch max leverage for ${opportunity.symbol}: ${error.message}`,
+              );
+            }
+
+            // PRE-FLIGHT CHECK: Set leverage on both exchanges BEFORE placing orders
+            try {
+              const leverageResults = await Promise.allSettled([
+                longAdapter.setLeverage?.(opportunity.symbol, leverage, true) ?? Promise.resolve(true),
+                shortAdapter.setLeverage?.(opportunity.symbol, leverage, true) ?? Promise.resolve(true),
+              ]);
+              const longLeverageSet = leverageResults[0].status === 'fulfilled' ? leverageResults[0].value : false;
+              const shortLeverageSet = leverageResults[1].status === 'fulfilled' ? leverageResults[1].value : false;
+              this.logger.debug(
+                `⚙️ Set leverage ${leverage}x for ${opportunity.symbol}: ` +
+                  `${opportunity.longExchange}=${longLeverageSet ? '✓' : '⚠️'}, ` +
+                  `${opportunity.shortExchange}=${shortLeverageSet ? '✓' : '⚠️'}`,
+              );
+            } catch (error: any) {
+              this.logger.warn(
+                `Failed to set leverage for ${opportunity.symbol}: ${error.message}`,
+              );
+            }
+
+            // PRE-FLIGHT CHECK: Verify both exchanges have sufficient margin
+            // Use getAvailableMargin() which accounts for existing positions
+            const [longMargin, shortMargin] = await Promise.all([
+              this.getAdapterAvailableMargin(longAdapter),
+              this.getAdapterAvailableMargin(shortAdapter),
+            ]);
+
             const avgPrice =
               ((perpPerpPlan.longOrder.price || 0) +
                 (perpPerpPlan.shortOrder.price || 0)) /
@@ -1794,7 +1895,6 @@ export class OrderExecutor implements IOrderExecutor {
             const scaledPositionUsd =
               item.maxPortfolioFor35APY ||
               perpPerpPlan.positionSize.toUSD(avgPrice);
-            const leverage = this.config?.leverage || 2;
             const requiredMargin = scaledPositionUsd / leverage;
 
             // Check if we have sufficient margin

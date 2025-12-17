@@ -655,6 +655,7 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
         },
         expectedNetReturn,
         timestamp: new Date(),
+        leverage, // Include target leverage for execution
       });
     } catch (error: any) {
       this.logger.error(`Failed to create execution plan: ${error.message}`);

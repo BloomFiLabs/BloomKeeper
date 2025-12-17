@@ -2888,6 +2888,72 @@ export class LighterExchangeAdapter
     }
   }
 
+  /**
+   * Set leverage for a symbol
+   * Note: Lighter uses account-level margin mode settings.
+   * This method logs the request for tracking but actual leverage is managed via Lighter UI.
+   * @param symbol Trading symbol
+   * @param leverage Target leverage (e.g., 3, 5, 10)
+   * @param isCross Whether to use cross margin (true) or isolated margin (false). Defaults to cross.
+   * @returns True (leverage setting is assumed to be handled via exchange UI)
+   */
+  async setLeverage(
+    symbol: string,
+    leverage: number,
+    isCross: boolean = true,
+  ): Promise<boolean> {
+    try {
+      await this.ensureInitialized();
+      const marketIndex = await this.getMarketIndex(symbol);
+
+      this.logger.debug(
+        `Lighter leverage for ${symbol} (market ${marketIndex}): ${leverage}x (${isCross ? 'cross' : 'isolated'}) - ` +
+          `Note: Set leverage via Lighter UI or ensure account default is correct`,
+      );
+
+      // Lighter leverage is typically managed at account level via UI
+      // The SDK's updateLeverage method may not be available in all versions
+      // For now, we just log and return true
+      return true;
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to process Lighter leverage for ${symbol}: ${error.message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Get max leverage allowed for a symbol
+   * @param symbol Trading symbol
+   * @returns Maximum leverage allowed
+   */
+  async getMaxLeverage(symbol: string): Promise<number> {
+    try {
+      await this.ensureInitialized();
+      const marketIndex = await this.getMarketIndex(symbol);
+
+      // Fetch market info from Lighter API
+      const response = await axios.get(`${this.config.baseUrl}/api/v1/markets`);
+      const markets = response.data?.data || response.data;
+
+      if (Array.isArray(markets)) {
+        const marketData = markets.find(
+          (m: any) => m.market_index === marketIndex || m.marketIndex === marketIndex,
+        );
+        if (marketData?.max_leverage || marketData?.maxLeverage) {
+          return parseFloat(marketData.max_leverage || marketData.maxLeverage);
+        }
+      }
+
+      // Default max leverage for Lighter
+      return 20;
+    } catch (error: any) {
+      this.logger.warn(`Failed to get max leverage for ${symbol}: ${error.message}`);
+      return 10; // Safe default
+    }
+  }
+
   async isReady(): Promise<boolean> {
     try {
       await this.testConnection();

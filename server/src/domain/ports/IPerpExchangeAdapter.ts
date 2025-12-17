@@ -210,6 +210,27 @@ export interface IPerpExchangeAdapter {
    * @returns Available USDC in the fast withdraw pool, or null
    */
   getFastWithdrawPoolAvailability?(): Promise<number | null>;
+
+  /**
+   * Set leverage for a symbol
+   * Should be called before opening positions to ensure correct margin requirements
+   * @param symbol Trading symbol
+   * @param leverage Target leverage (e.g., 3, 5, 10)
+   * @param isCross Whether to use cross margin (true) or isolated margin (false)
+   * @returns True if leverage was set successfully
+   */
+  setLeverage?(
+    symbol: string,
+    leverage: number,
+    isCross?: boolean,
+  ): Promise<boolean>;
+
+  /**
+   * Get max leverage allowed for a symbol
+   * @param symbol Trading symbol
+   * @returns Maximum leverage allowed
+   */
+  getMaxLeverage?(symbol: string): Promise<number>;
 }
 
 /**

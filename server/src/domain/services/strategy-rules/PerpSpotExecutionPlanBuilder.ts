@@ -39,6 +39,7 @@ export interface PerpSpotExecutionPlan {
   };
   expectedNetReturn: number; // After costs
   timestamp: Date;
+  leverage?: number; // Target leverage for the perp position
 }
 
 /**
