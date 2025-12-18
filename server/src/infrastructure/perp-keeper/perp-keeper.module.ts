@@ -42,6 +42,7 @@ import { DiagnosticsService } from '../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../domain/services/MarketQualityFilter';
 import { CircuitBreakerService } from '../services/CircuitBreakerService';
 import { ExecutionLockService } from '../services/ExecutionLockService';
+import { LiquidationMonitorService } from '../../domain/services/LiquidationMonitorService';
 import { PositionStateRepository } from '../repositories/PositionStateRepository';
 import { RateLimiterService } from '../services/RateLimiterService';
 import { ProfitTracker } from '../services/ProfitTracker';
@@ -584,6 +585,9 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
 
     // Execution lock service for symbol-level locking
     ExecutionLockService,
+
+    // Liquidation monitoring service - monitors position risk and triggers emergency closes
+    LiquidationMonitorService,
 
     // Position state persistence for recovery
     PositionStateRepository,

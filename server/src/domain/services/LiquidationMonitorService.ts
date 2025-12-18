@@ -1,0 +1,606 @@
+/**
+ * LiquidationMonitorService
+ *
+ * Domain service responsible for monitoring position liquidation risk
+ * and triggering emergency closes when positions approach liquidation.
+ *
+ * Design principles:
+ * - Single responsibility: Only monitors and triggers emergency closes
+ * - Dependency injection: Receives adapters and position manager as dependencies
+ * - Immutable state: Uses value objects for risk calculations
+ * - Fail-safe: Defaults to closing positions if risk cannot be determined
+ */
+
+import { Injectable, Logger } from '@nestjs/common';
+import { ExchangeType } from '../value-objects/ExchangeConfig';
+import { LiquidationRisk } from '../value-objects/LiquidationRisk';
+import {
+  ILiquidationMonitor,
+  LiquidationCheckResult,
+  LiquidationMonitorConfig,
+  PairedPosition,
+  EmergencyCloseResult,
+  DEFAULT_LIQUIDATION_MONITOR_CONFIG,
+} from '../ports/ILiquidationMonitor';
+import { IPerpExchangeAdapter } from '../ports/IPerpExchangeAdapter';
+import { PerpPosition } from '../entities/PerpPosition';
+import { PerpOrderRequest, OrderSide, OrderType, TimeInForce } from '../value-objects/PerpOrder';
+
+/**
+ * Internal type for tracking paired positions.
+ */
+interface PositionPair {
+  symbol: string;
+  long?: PerpPosition;
+  short?: PerpPosition;
+  longExchange?: ExchangeType;
+  shortExchange?: ExchangeType;
+}
+
+@Injectable()
+export class LiquidationMonitorService implements ILiquidationMonitor {
+  private readonly logger = new Logger(LiquidationMonitorService.name);
+  private config: LiquidationMonitorConfig;
+  private adapters: Map<ExchangeType, IPerpExchangeAdapter> = new Map();
+  private monitoringInterval: NodeJS.Timeout | null = null;
+  private running = false;
+
+  // Cache of last check results for diagnostics
+  private lastCheckResult: LiquidationCheckResult | null = null;
+  private lastCheckTime: Date | null = null;
+
+  constructor() {
+    this.config = { ...DEFAULT_LIQUIDATION_MONITOR_CONFIG };
+  }
+
+  /**
+   * Initialize the monitor with exchange adapters.
+   * Must be called before starting monitoring.
+   */
+  initialize(adapters: Map<ExchangeType, IPerpExchangeAdapter>): void {
+    this.adapters = adapters;
+    this.logger.log(
+      `LiquidationMonitor initialized with ${adapters.size} exchange adapter(s): ` +
+        `${Array.from(adapters.keys()).join(', ')}`,
+    );
+  }
+
+  /**
+   * Run a single liquidation check across all positions.
+   */
+  async checkLiquidationRisk(): Promise<LiquidationCheckResult> {
+    const startTime = Date.now();
+    const result: LiquidationCheckResult = {
+      timestamp: new Date(),
+      positionsChecked: 0,
+      positionsAtRisk: 0,
+      emergencyClosesTriggered: 0,
+      positions: [],
+      emergencyCloses: [],
+    };
+
+    try {
+      // Step 1: Fetch all positions from all exchanges
+      const allPositions = await this.fetchAllPositions();
+      result.positionsChecked = allPositions.length;
+
+      if (allPositions.length === 0) {
+        this.logger.debug('No positions found to monitor for liquidation risk');
+        this.lastCheckResult = result;
+        this.lastCheckTime = new Date();
+        return result;
+      }
+
+      // Step 2: Pair positions by symbol
+      const pairedPositions = this.pairPositions(allPositions);
+
+      // Step 3: Calculate liquidation risk for each pair
+      for (const pair of pairedPositions.values()) {
+        const pairedPosition = await this.calculatePairRisk(pair);
+        if (pairedPosition) {
+          result.positions.push(pairedPosition);
+
+          // Check if either leg is at risk
+          const longAtRisk = pairedPosition.longRisk.shouldEmergencyClose(
+            this.config.emergencyCloseThreshold,
+          );
+          const shortAtRisk = pairedPosition.shortRisk.shouldEmergencyClose(
+            this.config.emergencyCloseThreshold,
+          );
+
+          if (longAtRisk || shortAtRisk) {
+            result.positionsAtRisk++;
+
+            // Log warning
+            const triggerLeg = longAtRisk ? 'LONG' : 'SHORT';
+            const triggerRisk = longAtRisk
+              ? pairedPosition.longRisk
+              : pairedPosition.shortRisk;
+
+            this.logger.warn(
+              `🚨 LIQUIDATION RISK: ${pairedPosition.symbol} ${triggerLeg} leg ` +
+                `is ${(triggerRisk.proximityToLiquidation * 100).toFixed(1)}% close to liquidation! ` +
+                `Mark: $${triggerRisk.markPrice.toFixed(4)}, Liq: $${triggerRisk.liquidationPrice.toFixed(4)}`,
+            );
+
+            // Trigger emergency close if enabled
+            if (this.config.enableEmergencyClose) {
+              const closeResult = await this.executeEmergencyClose(
+                pairedPosition,
+                longAtRisk,
+                shortAtRisk,
+              );
+              result.emergencyCloses.push(closeResult);
+              result.emergencyClosesTriggered++;
+            }
+          } else if (
+            pairedPosition.longRisk.proximityToLiquidation >=
+              this.config.warningThreshold ||
+            pairedPosition.shortRisk.proximityToLiquidation >=
+              this.config.warningThreshold
+          ) {
+            // Log warning for positions approaching risk
+            this.logger.warn(
+              `⚠️ Liquidation warning: ${pairedPosition.symbol} ` +
+                `LONG: ${(pairedPosition.longRisk.proximityToLiquidation * 100).toFixed(1)}%, ` +
+                `SHORT: ${(pairedPosition.shortRisk.proximityToLiquidation * 100).toFixed(1)}%`,
+            );
+          }
+        }
+      }
+
+      const elapsed = Date.now() - startTime;
+      this.logger.debug(
+        `Liquidation check completed in ${elapsed}ms: ` +
+          `${result.positionsChecked} checked, ${result.positionsAtRisk} at risk, ` +
+          `${result.emergencyClosesTriggered} emergency closes`,
+      );
+
+      this.lastCheckResult = result;
+      this.lastCheckTime = new Date();
+      return result;
+    } catch (error: any) {
+      this.logger.error(`Liquidation check failed: ${error.message}`);
+      this.lastCheckResult = result;
+      this.lastCheckTime = new Date();
+      return result;
+    }
+  }
+
+  /**
+   * Get current liquidation risk for a specific symbol.
+   */
+  async getPositionRisk(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+  ): Promise<PairedPosition | null> {
+    try {
+      const longAdapter = this.adapters.get(longExchange);
+      const shortAdapter = this.adapters.get(shortExchange);
+
+      if (!longAdapter || !shortAdapter) {
+        return null;
+      }
+
+      const [longPositions, shortPositions] = await Promise.all([
+        longAdapter.getPositions(),
+        shortAdapter.getPositions(),
+      ]);
+
+      const longPosition = longPositions.find(
+        (p) => p.symbol === symbol && p.side === OrderSide.LONG,
+      );
+      const shortPosition = shortPositions.find(
+        (p) => p.symbol === symbol && p.side === OrderSide.SHORT,
+      );
+
+      if (!longPosition && !shortPosition) {
+        return null;
+      }
+
+      const pair: PositionPair = {
+        symbol,
+        long: longPosition,
+        short: shortPosition,
+        longExchange,
+        shortExchange,
+      };
+
+      return this.calculatePairRisk(pair);
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to get position risk for ${symbol}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Get all positions currently at risk (above warning threshold).
+   */
+  async getPositionsAtRisk(): Promise<PairedPosition[]> {
+    const checkResult = await this.checkLiquidationRisk();
+    return checkResult.positions.filter(
+      (p) =>
+        p.longRisk.proximityToLiquidation >= this.config.warningThreshold ||
+        p.shortRisk.proximityToLiquidation >= this.config.warningThreshold,
+    );
+  }
+
+  /**
+   * Manually trigger emergency close for a position.
+   */
+  async emergencyClosePosition(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+    reason: string,
+  ): Promise<EmergencyCloseResult> {
+    this.logger.warn(
+      `🚨 Manual emergency close triggered for ${symbol}: ${reason}`,
+    );
+
+    const position = await this.getPositionRisk(
+      symbol,
+      longExchange,
+      shortExchange,
+    );
+
+    if (!position) {
+      return {
+        symbol,
+        longExchange,
+        shortExchange,
+        triggerReason: 'BOTH_AT_RISK',
+        triggerRisk: LiquidationRisk.safe(symbol, longExchange, 'LONG'),
+        longCloseSuccess: false,
+        shortCloseSuccess: false,
+        longCloseError: 'Position not found',
+        shortCloseError: 'Position not found',
+        closedAt: new Date(),
+      };
+    }
+
+    return this.executeEmergencyClose(position, true, true);
+  }
+
+  getConfig(): LiquidationMonitorConfig {
+    return { ...this.config };
+  }
+
+  updateConfig(config: Partial<LiquidationMonitorConfig>): void {
+    this.config = { ...this.config, ...config };
+    this.logger.log(
+      `LiquidationMonitor config updated: threshold=${this.config.emergencyCloseThreshold}, ` +
+        `interval=${this.config.checkIntervalMs}ms, enabled=${this.config.enableEmergencyClose}`,
+    );
+  }
+
+  start(): void {
+    if (this.running) {
+      this.logger.warn('LiquidationMonitor is already running');
+      return;
+    }
+
+    if (this.adapters.size === 0) {
+      this.logger.error(
+        'Cannot start LiquidationMonitor: no adapters initialized',
+      );
+      return;
+    }
+
+    this.running = true;
+    this.logger.log(
+      `🛡️ LiquidationMonitor started: checking every ${this.config.checkIntervalMs / 1000}s, ` +
+        `emergency close threshold: ${this.config.emergencyCloseThreshold * 100}%`,
+    );
+
+    // Run immediately on start
+    this.checkLiquidationRisk().catch((err) =>
+      this.logger.error(`Initial liquidation check failed: ${err.message}`),
+    );
+
+    // Schedule periodic checks
+    this.monitoringInterval = setInterval(() => {
+      this.checkLiquidationRisk().catch((err) =>
+        this.logger.error(`Periodic liquidation check failed: ${err.message}`),
+      );
+    }, this.config.checkIntervalMs);
+  }
+
+  stop(): void {
+    if (!this.running) {
+      return;
+    }
+
+    this.running = false;
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = null;
+    }
+
+    this.logger.log('🛑 LiquidationMonitor stopped');
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  /**
+   * Get the last check result for diagnostics.
+   */
+  getLastCheckResult(): {
+    result: LiquidationCheckResult | null;
+    timestamp: Date | null;
+  } {
+    return {
+      result: this.lastCheckResult,
+      timestamp: this.lastCheckTime,
+    };
+  }
+
+  // ==================== Private Methods ====================
+
+  /**
+   * Fetch all positions from all adapters.
+   */
+  private async fetchAllPositions(): Promise<PerpPosition[]> {
+    const allPositions: PerpPosition[] = [];
+
+    const fetchPromises = Array.from(this.adapters.entries()).map(
+      async ([exchange, adapter]) => {
+        try {
+          const positions = await adapter.getPositions();
+          return positions;
+        } catch (error: any) {
+          this.logger.warn(
+            `Failed to fetch positions from ${exchange}: ${error.message}`,
+          );
+          return [];
+        }
+      },
+    );
+
+    const results = await Promise.all(fetchPromises);
+    results.forEach((positions) => allPositions.push(...positions));
+
+    return allPositions;
+  }
+
+  /**
+   * Pair positions by symbol (long + short on same symbol).
+   */
+  private pairPositions(
+    positions: PerpPosition[],
+  ): Map<string, PositionPair> {
+    const pairs = new Map<string, PositionPair>();
+
+    for (const position of positions) {
+      if (!pairs.has(position.symbol)) {
+        pairs.set(position.symbol, { symbol: position.symbol });
+      }
+
+      const pair = pairs.get(position.symbol)!;
+      if (position.side === OrderSide.LONG) {
+        pair.long = position;
+        pair.longExchange = position.exchangeType;
+      } else if (position.side === OrderSide.SHORT) {
+        pair.short = position;
+        pair.shortExchange = position.exchangeType;
+      }
+    }
+
+    return pairs;
+  }
+
+  /**
+   * Calculate liquidation risk for a position pair.
+   */
+  private async calculatePairRisk(
+    pair: PositionPair,
+  ): Promise<PairedPosition | null> {
+    // Need at least one position
+    if (!pair.long && !pair.short) {
+      return null;
+    }
+
+    const longRisk = this.calculatePositionRisk(pair.long, 'LONG');
+    const shortRisk = this.calculatePositionRisk(pair.short, 'SHORT');
+
+    return {
+      symbol: pair.symbol,
+      longExchange: pair.longExchange || ExchangeType.HYPERLIQUID,
+      shortExchange: pair.shortExchange || ExchangeType.LIGHTER,
+      longRisk,
+      shortRisk,
+      openedAt: pair.long?.timestamp || pair.short?.timestamp || new Date(),
+    };
+  }
+
+  /**
+   * Calculate liquidation risk for a single position.
+   */
+  private calculatePositionRisk(
+    position: PerpPosition | undefined,
+    side: 'LONG' | 'SHORT',
+  ): LiquidationRisk {
+    if (!position) {
+      return LiquidationRisk.safe('UNKNOWN', 'UNKNOWN', side);
+    }
+
+    // If no liquidation price, estimate it based on leverage
+    let liquidationPrice = position.liquidationPrice || 0;
+    if (liquidationPrice <= 0 && position.leverage && position.leverage > 0) {
+      // Estimate liq price: for 5x leverage, liq is ~20% away from entry
+      const liqDistance = 1 / position.leverage;
+      if (side === 'LONG') {
+        liquidationPrice = position.entryPrice * (1 - liqDistance * 0.9); // 90% of theoretical
+      } else {
+        liquidationPrice = position.entryPrice * (1 + liqDistance * 0.9);
+      }
+    }
+
+    // If still no liq price, use a conservative estimate (10% from mark)
+    if (liquidationPrice <= 0) {
+      if (side === 'LONG') {
+        liquidationPrice = position.markPrice * 0.9;
+      } else {
+        liquidationPrice = position.markPrice * 1.1;
+      }
+      this.logger.debug(
+        `Estimated liquidation price for ${position.symbol} ${side}: $${liquidationPrice.toFixed(4)} ` +
+          `(no liq price from exchange)`,
+      );
+    }
+
+    return LiquidationRisk.create({
+      symbol: position.symbol,
+      exchange: position.exchangeType,
+      side,
+      markPrice: position.markPrice,
+      liquidationPrice,
+      entryPrice: position.entryPrice,
+      positionSize: position.size,
+      positionValueUsd: position.getPositionValue(),
+      margin: position.marginUsed || position.getPositionValue() / (position.leverage || 1),
+      leverage: position.leverage || 1,
+    });
+  }
+
+  /**
+   * Execute emergency close for both legs of a position.
+   */
+  private async executeEmergencyClose(
+    position: PairedPosition,
+    longAtRisk: boolean,
+    shortAtRisk: boolean,
+  ): Promise<EmergencyCloseResult> {
+    const result: EmergencyCloseResult = {
+      symbol: position.symbol,
+      longExchange: position.longExchange,
+      shortExchange: position.shortExchange,
+      triggerReason:
+        longAtRisk && shortAtRisk
+          ? 'BOTH_AT_RISK'
+          : longAtRisk
+            ? 'LONG_AT_RISK'
+            : 'SHORT_AT_RISK',
+      triggerRisk: longAtRisk ? position.longRisk : position.shortRisk,
+      longCloseSuccess: false,
+      shortCloseSuccess: false,
+      closedAt: new Date(),
+    };
+
+    this.logger.warn(
+      `🚨 EMERGENCY CLOSE: ${position.symbol} - closing BOTH legs ` +
+        `(triggered by ${result.triggerReason})`,
+    );
+
+    // Close both legs in parallel for speed
+    const [longResult, shortResult] = await Promise.allSettled([
+      this.closePosition(position, 'LONG'),
+      this.closePosition(position, 'SHORT'),
+    ]);
+
+    // Process long result
+    if (longResult.status === 'fulfilled') {
+      result.longCloseSuccess = longResult.value.success;
+      result.longCloseError = longResult.value.error;
+    } else {
+      result.longCloseError = longResult.reason?.message || 'Unknown error';
+    }
+
+    // Process short result
+    if (shortResult.status === 'fulfilled') {
+      result.shortCloseSuccess = shortResult.value.success;
+      result.shortCloseError = shortResult.value.error;
+    } else {
+      result.shortCloseError = shortResult.reason?.message || 'Unknown error';
+    }
+
+    // Log result
+    if (result.longCloseSuccess && result.shortCloseSuccess) {
+      this.logger.log(
+        `✅ Emergency close successful for ${position.symbol}: both legs closed`,
+      );
+    } else {
+      this.logger.error(
+        `❌ Emergency close PARTIAL for ${position.symbol}: ` +
+          `LONG=${result.longCloseSuccess ? 'OK' : result.longCloseError}, ` +
+          `SHORT=${result.shortCloseSuccess ? 'OK' : result.shortCloseError}`,
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Close a single leg of a position.
+   */
+  private async closePosition(
+    position: PairedPosition,
+    side: 'LONG' | 'SHORT',
+  ): Promise<{ success: boolean; error?: string }> {
+    const risk = side === 'LONG' ? position.longRisk : position.shortRisk;
+    const exchange =
+      side === 'LONG' ? position.longExchange : position.shortExchange;
+
+    if (risk.positionSize <= 0) {
+      return { success: true }; // No position to close
+    }
+
+    const adapter = this.adapters.get(exchange);
+    if (!adapter) {
+      return { success: false, error: `No adapter for ${exchange}` };
+    }
+
+    // Retry logic for emergency closes
+    for (let attempt = 1; attempt <= this.config.maxCloseRetries; attempt++) {
+      try {
+        // Create market order to close position (opposite side, reduceOnly)
+        const closeOrder = new PerpOrderRequest(
+          position.symbol,
+          side === 'LONG' ? OrderSide.SHORT : OrderSide.LONG, // Opposite side to close
+          OrderType.MARKET,
+          risk.positionSize,
+          undefined,
+          TimeInForce.IOC,
+          true, // reduceOnly
+        );
+
+        this.logger.log(
+          `📤 Emergency close ${side} ${position.symbol} on ${exchange}: ` +
+            `size=${risk.positionSize.toFixed(4)} (attempt ${attempt}/${this.config.maxCloseRetries})`,
+        );
+
+        const response = await adapter.placeOrder(closeOrder);
+
+        if (response.isSuccess() || response.isFilled()) {
+          return { success: true };
+        } else {
+          this.logger.warn(
+            `Emergency close attempt ${attempt} failed: ${response.error || 'Unknown'}`,
+          );
+        }
+      } catch (error: any) {
+        this.logger.warn(
+          `Emergency close attempt ${attempt} error: ${error.message}`,
+        );
+
+        if (attempt < this.config.maxCloseRetries) {
+          // Wait before retry with exponential backoff
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)),
+          );
+        }
+      }
+    }
+
+    return {
+      success: false,
+      error: `Failed after ${this.config.maxCloseRetries} attempts`,
+    };
+  }
+}
+

@@ -40,6 +40,7 @@ import {
   createMutex,
   AsyncMutex,
 } from '../../infrastructure/services/AsyncMutex';
+import { LiquidationMonitorService } from '../../domain/services/LiquidationMonitorService';
 
 /**
  * PerpKeeperScheduler - Scheduled execution for funding rate arbitrage
@@ -101,12 +102,36 @@ export class PerpKeeperScheduler implements OnModuleInit {
     private readonly positionStateRepository?: PositionStateRepository,
     @Optional() private readonly executionLockService?: ExecutionLockService,
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
+    @Optional()
+    private readonly liquidationMonitor?: LiquidationMonitorService,
   ) {
     // Initialize orchestrator with exchange adapters
     const adapters = this.keeperService.getExchangeAdapters();
     const spotAdapters = this.keeperService.getSpotAdapters();
     this.orchestrator.initialize(adapters, spotAdapters);
     // Removed initialization log - only execution logs shown
+
+    // Initialize liquidation monitor with adapters
+    if (this.liquidationMonitor) {
+      this.liquidationMonitor.initialize(adapters);
+      // Configure based on environment
+      const emergencyThreshold = parseFloat(
+        this.configService.get<string>('LIQUIDATION_EMERGENCY_THRESHOLD') ||
+          '0.7',
+      );
+      const enableEmergencyClose =
+        this.configService.get<string>('LIQUIDATION_EMERGENCY_CLOSE_ENABLED') !==
+        'false';
+      this.liquidationMonitor.updateConfig({
+        emergencyCloseThreshold: emergencyThreshold,
+        enableEmergencyClose,
+        checkIntervalMs: 30000, // 30 seconds
+      });
+      this.logger.log(
+        `🛡️ LiquidationMonitor configured: threshold=${emergencyThreshold * 100}%, ` +
+          `emergency close=${enableEmergencyClose ? 'ENABLED' : 'DISABLED'}`,
+      );
+    }
 
     // Load blacklisted symbols from environment variable
     // Normalize symbols (remove USDT/USDC suffixes) to match how symbols are normalized elsewhere
@@ -1804,6 +1829,86 @@ export class PerpKeeperScheduler implements OnModuleInit {
       }
     } catch (error: any) {
       this.logger.debug(`Error in stale order cleanup: ${error.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // LIQUIDATION MONITORING
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Periodic liquidation risk check - runs every 30 seconds
+   * Monitors all positions for liquidation proximity and triggers emergency close
+   * if any leg reaches 70% proximity to liquidation price.
+   *
+   * CRITICAL: If either leg of a delta-neutral position approaches liquidation,
+   * BOTH legs must be closed immediately to prevent unhedged exposure.
+   */
+  @Interval(30000) // Every 30 seconds (30000 ms)
+  async checkLiquidationRisk(): Promise<void> {
+    if (!this.liquidationMonitor) {
+      return; // Not configured
+    }
+
+    // Skip if main execution is running (to avoid conflicts)
+    if (this.isRunning) {
+      return;
+    }
+
+    try {
+      const result = await this.liquidationMonitor.checkLiquidationRisk();
+
+      // Log summary if there are positions at risk
+      if (result.positionsAtRisk > 0) {
+        this.logger.warn(
+          `🚨 Liquidation check: ${result.positionsAtRisk}/${result.positionsChecked} positions at risk`,
+        );
+      }
+
+      // Record to diagnostics if available
+      if (this.diagnosticsService && result.positionsChecked > 0) {
+        const riskSummary = result.positions.map((p) => ({
+          symbol: p.symbol,
+          longProximity: p.longRisk.proximityToLiquidation,
+          shortProximity: p.shortRisk.proximityToLiquidation,
+          longRiskLevel: p.longRisk.riskLevel,
+          shortRiskLevel: p.shortRisk.riskLevel,
+        }));
+
+        // Record to diagnostics (using existing error recording for now)
+        if (result.positionsAtRisk > 0) {
+          this.diagnosticsService.recordError({
+            type: 'LIQUIDATION_RISK_DETECTED',
+            message: `${result.positionsAtRisk} position(s) at risk: ${riskSummary
+              .filter(
+                (r) =>
+                  r.longRiskLevel !== 'SAFE' || r.shortRiskLevel !== 'SAFE',
+              )
+              .map(
+                (r) =>
+                  `${r.symbol} (L:${r.longRiskLevel}, S:${r.shortRiskLevel})`,
+              )
+              .join(', ')}`,
+            timestamp: new Date(),
+          });
+        }
+      }
+
+      // Log emergency closes if any occurred
+      if (result.emergencyClosesTriggered > 0) {
+        this.logger.error(
+          `🚨 EMERGENCY CLOSES EXECUTED: ${result.emergencyClosesTriggered} position(s) closed`,
+        );
+        for (const close of result.emergencyCloses) {
+          this.logger.error(
+            `   ${close.symbol}: ${close.triggerReason} - ` +
+              `LONG=${close.longCloseSuccess ? '✓' : `✗ ${close.longCloseError}`}, ` +
+              `SHORT=${close.shortCloseSuccess ? '✓' : `✗ ${close.shortCloseError}`}`,
+          );
+        }
+      }
+    } catch (error: any) {
+      this.logger.error(`Liquidation check failed: ${error.message}`);
     }
   }
 
