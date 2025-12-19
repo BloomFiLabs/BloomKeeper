@@ -929,18 +929,16 @@ export class LighterExchangeAdapter
             }
 
             // Use createUnifiedOrder with MARKET order type (per Lighter docs)
-            // Based on working example: Market orders have OrderExpiry=0, but ExpiredAt is still set
-            const now = Date.now();
+            // For opening market orders: orderExpiry = 0 (consistent with limit orders)
             orderParams = {
               marketIndex,
-              clientOrderIndex: 0, // Using 0 to match working example pattern
+              clientOrderIndex: Date.now(),
               baseAmount,
               isAsk,
               orderType: LighterOrderType.MARKET,
               idealPrice: market.priceToUnits(idealPrice),
               maxSlippage: 0.01, // 1% max slippage
-              orderExpiry: 0, // 0 for market orders (IOC)
-              expiredAt: now, // Set to current time for market orders
+              orderExpiry: 0, // 0 for opening orders (consistent with limit orders)
             };
           }
         } else {
@@ -949,48 +947,44 @@ export class LighterExchangeAdapter
             throw new Error('Limit price is required for LIMIT orders');
           }
 
-          // Determine timeInForce: 0 = IOC, 1 = GTC/GTT (Good Till Time)
-          // For limit orders, default to GTC/GTT (1) unless explicitly IOC
-          const timeInForce =
-            request.timeInForce === TimeInForce.IOC ? 0 : 1;
-
-          // ALIGNED EXPIRY: Lighter GTT orders require a MINIMUM of 10 minutes expiry.
-          // Based on working examples:
-          // - Market order: OrderExpiry=0, ExpiredAt=current_timestamp
-          // - Limit GTT order: OrderExpiry=1766174101235 (~18min from creation), ExpiredAt=1766173020569 (current time)
-          // Pattern: ExpiredAt = now (when order is created), OrderExpiry = now + expiry duration
-          // The API expects a Unix timestamp in MILLISECONDS (13 digits).
-          // For IOC orders, expiry should be 0
-          // Both OrderExpiry and ExpiredAt must be set for GTT orders
-          const now = Date.now();
-          let orderExpiry = 0;
-          let expiredAt = 0;
-          
-          if (timeInForce === 1) {
-            // GTT order: Based on working example pattern
-            // ExpiredAt is set to current time (when order is created)
-            // OrderExpiry is set to actual expiry time (15 minutes from now, minimum 10 minutes required)
-            const MIN_GTT_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes (actual expiry, above 10min minimum)
-            expiredAt = now; // Set to current time (matches working example: ExpiredAt = creation time)
-            orderExpiry = now + MIN_GTT_EXPIRY_MS; // 15 minutes from now (actual expiry)
-          }
+          // LIMIT orders always use GTC (Good Till Cancel/Time) - they can sit on the order book
+          // Only MARKET orders use IOC (Immediate Or Cancel) for immediate execution
+          // Note: We ignore request.timeInForce for LIMIT orders and always use GTC
+          // Lighter API mapping: 0 = IOC, 1 = GTC/GTT (Good Till Time)
+          const timeInForce = 1; // Always GTC/GTT (1) for LIMIT orders, regardless of request.timeInForce
+          // ALIGNED EXPIRY: Match order expiry to our retry logic wait time
+          // Opening orders: waitForOrderFill polls for ~62 seconds (10 retries with 2s base, 8s max backoff)
+          // Closing orders: waitForOrderFill polls for ~190 seconds (10 retries with 2s base, 32s max backoff)
+          // Set expiry slightly higher so orders auto-expire if we stop polling (avoids BigInt cancel bug)
+          // This avoids the Lighter SDK BigInt issue with large order indices on cancel
+          const isClosing = request.reduceOnly === true;
+          const OPENING_ORDER_EXPIRY_MS = 90 * 1000; // 90 seconds (gives buffer beyond ~62s retry time)
+          const CLOSING_ORDER_EXPIRY_MS = 4 * 60 * 1000; // 4 minutes (gives buffer beyond ~190s retry time)
+          const LIGHTER_ORDER_EXPIRY_MS = isClosing ? CLOSING_ORDER_EXPIRY_MS : OPENING_ORDER_EXPIRY_MS;
+          const expiredAt = Date.now() + LIGHTER_ORDER_EXPIRY_MS;
 
           this.logger.debug(
-            `LIMIT order for ${request.symbol}: Using ${timeInForce === 1 ? 'GTC/GTT' : 'IOC'} (timeInForce=${timeInForce}) ` +
-              `orderExpiry=${orderExpiry} expiredAt=${expiredAt} ${timeInForce === 1 ? `(15 minutes from now, ${new Date(orderExpiry).toISOString()})` : '(IOC - no expiry)'}`,
+            `LIMIT order for ${request.symbol}: Using GTC/GTT (timeInForce=1) ` +
+              `(request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}, but LIMIT orders always use GTC)`,
           );
+
+          // orderExpiry: For GTC orders (timeInForce = 1), orderExpiry cannot be 0
+          // SDK code shows: wasmOrderExpiry = (timeInForce === IOC) ? 0 : orderExpiry
+          // This means for GTC orders, orderExpiry must be a valid timestamp >= expiredAt
+          // Keep orderExpiry same as expiredAt for consistency
+          const orderExpiry = expiredAt; // Same as expiredAt (90s opening / 4min closing)
 
           orderParams = {
             marketIndex,
-            clientOrderIndex: 0, // Using 0 to match working example pattern
+            clientOrderIndex: Date.now(),
             baseAmount,
             price: market.priceToUnits(request.price),
             isAsk,
             orderType: LighterOrderType.LIMIT,
             timeInForce, // 0 = IOC, 1 = GTC/GTT (Good Till Time)
             reduceOnly: request.reduceOnly ? 1 : 0, // Critical: must be 1 for closing orders
-            orderExpiry,
-            expiredAt, // Both fields required for GTT orders
+            orderExpiry, // For GTC orders: expiredAt + 2 minutes (orderExpiry cannot be 0 for GTC)
+            expiredAt,
           };
         }
 
