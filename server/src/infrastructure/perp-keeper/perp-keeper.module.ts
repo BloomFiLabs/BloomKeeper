@@ -317,7 +317,21 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
 
     // Strategy rule modules (order matters due to dependencies)
     CostCalculator,
-    ExecutionPlanBuilder,
+    {
+      provide: ExecutionPlanBuilder,
+      useFactory: (
+        costCalculator: CostCalculator,
+        aggregator: FundingRateAggregator,
+        twapOptimizer?: TWAPOptimizer,
+      ) => {
+        return new ExecutionPlanBuilder(costCalculator, aggregator, twapOptimizer);
+      },
+      inject: [
+        CostCalculator,
+        FundingRateAggregator,
+        { token: TWAPOptimizer, optional: true },
+      ],
+    },
     PerpSpotBalanceManager,
     PerpSpotExecutionPlanBuilder,
     {
@@ -326,14 +340,23 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         costCalculator: CostCalculator,
         historicalService: IHistoricalFundingRateService,
         config: StrategyConfig,
+        twapOptimizer?: TWAPOptimizer,
       ) => {
         return new PortfolioOptimizer(
           costCalculator,
           historicalService,
           config,
+          undefined,
+          undefined,
+          twapOptimizer,
         );
       },
-      inject: [CostCalculator, 'IHistoricalFundingRateService', StrategyConfig],
+      inject: [
+        CostCalculator,
+        'IHistoricalFundingRateService',
+        StrategyConfig,
+        { token: TWAPOptimizer, optional: true },
+      ],
     },
 
     // Position and Order management (circular dependency handled via forwardRef)

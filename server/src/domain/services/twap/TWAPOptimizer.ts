@@ -177,7 +177,7 @@ export class TWAPOptimizer {
     
     // Calculate actual slice count
     let sliceCount = Math.max(
-      2, // At least 2 slices
+      1, // At least 1 slice (instant execution)
       Math.min(minSlicesForDepth, maxSlicesForTime),
     );
     

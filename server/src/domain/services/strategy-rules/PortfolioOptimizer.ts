@@ -12,6 +12,7 @@ import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { ArbitrageOpportunity } from '../FundingRateAggregator';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { OrderType } from '../../value-objects/PerpOrder';
+import { TWAPOptimizer } from '../twap/TWAPOptimizer';
 
 /**
  * Portfolio optimizer for funding arbitrage strategy
@@ -37,6 +38,8 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     @Optional()
     @Inject('IFundingRatePredictionService')
     private readonly predictionService?: IFundingRatePredictionService,
+    @Optional()
+    private readonly twapOptimizer?: TWAPOptimizer,
   ) {}
 
   /**
@@ -176,11 +179,65 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
       currentShortRate,
     );
 
+    // STATISTICAL CAPITAL USAGE: Replaces 90% balanceUsagePercent heuristic
+    // Higher volatility = lower capital usage to maintain margin safety
+    let effectiveBalanceUsage = this.config.balanceUsagePercent.toDecimal();
+    const spreadVolatility = this.historicalService.getSpreadVolatilityMetrics(
+      opportunity.symbol,
+      opportunity.longExchange,
+      opportunity.symbol,
+      opportunity.shortExchange!,
+      7, // 7-day lookback
+    );
+
+    if (spreadVolatility) {
+      // Scale from 95% usage (stable) down to 60% (highly volatile)
+      const usageScore = Math.max(0, Math.min(1, spreadVolatility.stabilityScore));
+      effectiveBalanceUsage = 0.60 + (0.35 * usageScore);
+      this.logger.debug(
+        `🛡️ Statistical Capital Usage for ${opportunity.symbol}: ` +
+        `${(effectiveBalanceUsage * 100).toFixed(1)}% (Stability: ${(usageScore * 100).toFixed(0)}%)`
+      );
+    }
+
     // Use historical spread for initial gross APY calculation
     const grossAPY = Math.abs(historicalSpread) * periodsPerYear;
 
-    if (grossAPY <= targetNetAPY) {
-      return null; // Can't achieve target if gross APY is too low
+    // STATISTICAL SPREAD THRESHOLD: Replace fixed minSpread heuristic
+    // Spread must be greater than annualized cost of execution (fees + slippage) + timing risk
+    let minViableGrossAPY = targetNetAPY;
+    if (this.twapOptimizer) {
+      // Get baseline costs for a minimum position ($1k)
+      const baseParams = this.twapOptimizer.calculateOptimalParams(
+        opportunity.symbol,
+        1000,
+        opportunity.longExchange,
+        opportunity.shortExchange!,
+      );
+      
+      const baseFeesRate = totalFeeRate; // already calculated
+      const baseSlippageRate = (baseParams.expectedSlippageUsd / 1000) * 2; // entry + exit
+      const timingRiskBps = 2; // 2bps buffer for spread movement during TWAP
+      
+      // Amortize over expected hold period (e.g. 7 days)
+      const holdDays = 7;
+      const annualizedCosts = (baseFeesRate + baseSlippageRate + (timingRiskBps / 10000)) * (365 / holdDays);
+      minViableGrossAPY = targetNetAPY + annualizedCosts;
+      
+      this.logger.debug(
+        `📈 Statistical Spread Threshold for ${opportunity.symbol}: ` +
+        `Target Net=${(targetNetAPY * 100).toFixed(1)}%, ` +
+        `Annualized Costs=${(annualizedCosts * 100).toFixed(1)}%, ` +
+        `Min Gross APY Required=${(minViableGrossAPY * 100).toFixed(1)}%`
+      );
+    }
+
+    if (grossAPY <= minViableGrossAPY) {
+      this.logger.debug(
+        `⏭️ Skipping ${opportunity.symbol}: Gross APY (${(grossAPY * 100).toFixed(1)}%) ` +
+        `below statistical threshold (${(minViableGrossAPY * 100).toFixed(1)}%)`
+      );
+      return null;
     }
 
     // Get OI data
@@ -204,7 +261,27 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
 
     // Binary search for max position size
     let low = 1000; // $1k minimum
-    let high = Math.min(minOI * 0.1, 10000000); // Max 10% of OI or $10M
+    
+    // STATISTICAL SEARCH BOUNDARY: Replace 10% OI heuristic
+    let high = 10000000; // $10M ceiling
+    if (this.twapOptimizer) {
+      // Find the absolute maximum position that still maintains net APY floor
+      const optimal = this.twapOptimizer.findOptimalPositionSize(
+        opportunity.symbol,
+        opportunity.longExchange,
+        opportunity.shortExchange!,
+        grossAPY * 100, // as percentage
+        10000000,
+        targetNetAPY * 100
+      );
+      if (optimal) {
+        high = Math.min(optimal.optimalPositionUsd, 10000000);
+        this.logger.debug(`🔍 Statistical search boundary for ${opportunity.symbol}: $${high.toLocaleString()}`);
+      }
+    } else {
+      high = Math.min(minOI * 0.1, 10000000); // Fallback to 10% OI heuristic
+    }
+
     let maxPortfolio: number | null = null;
     let finalEffectiveGrossAPY: number = 0;
     let finalNetAPY: number = 0;
@@ -213,24 +290,37 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     for (let iter = 0; iter < 50; iter++) {
       const testPosition = (low + high) / 2;
 
-      // Calculate slippage for this position size
-      const longSlippage = this.costCalculator.calculateSlippageCost(
-        testPosition,
-        longBidAsk.bestBid,
-        longBidAsk.bestAsk,
-        longOI,
-        OrderType.LIMIT,
-      );
-      const shortSlippage = this.costCalculator.calculateSlippageCost(
-        testPosition,
-        shortBidAsk.bestBid,
-        shortBidAsk.bestAsk,
-        shortOI,
-        OrderType.LIMIT,
-      );
-      const entrySlippage = longSlippage + shortSlippage;
-      const exitSlippage = entrySlippage;
-      const totalSlippageCost = entrySlippage + exitSlippage;
+      let totalSlippageCost: number;
+
+      // If TWAP optimizer is available, use it for statistical slippage prediction
+      if (this.twapOptimizer) {
+        const twapParams = this.twapOptimizer.calculateOptimalParams(
+          opportunity.symbol,
+          testPosition,
+          opportunity.longExchange,
+          opportunity.shortExchange!,
+        );
+        totalSlippageCost = twapParams.expectedSlippageUsd;
+      } else {
+        // Fallback to heuristic slippage calculation
+        const longSlippage = this.costCalculator.calculateSlippageCost(
+          testPosition,
+          longBidAsk.bestBid,
+          longBidAsk.bestAsk,
+          longOI,
+          OrderType.LIMIT,
+        );
+        const shortSlippage = this.costCalculator.calculateSlippageCost(
+          testPosition,
+          shortBidAsk.bestBid,
+          shortBidAsk.bestAsk,
+          shortOI,
+          OrderType.LIMIT,
+        );
+        const entrySlippage = longSlippage + shortSlippage;
+        const exitSlippage = entrySlippage;
+        totalSlippageCost = entrySlippage + exitSlippage;
+      }
 
       // Calculate fees (entry + exit for both legs)
       const entryFees = testPosition * (longFeeRate + shortFeeRate);
@@ -269,9 +359,11 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
       // With leverage, you earn funding on the full position but only deploy collateral = position / leverage
       // Example: $100k position with 2x leverage = $50k collateral, 35% position APY = 70% collateral APY
       const collateralRequired = testPosition / optimalLeverage;
+      
+      // Use statistical balance usage for collateral efficiency calculation
       const netAPY =
         collateralRequired > 0
-          ? (netReturnPerHour * periodsPerYear) / collateralRequired
+          ? (netReturnPerHour * periodsPerYear) / (collateralRequired / (effectiveBalanceUsage ?? 0.9))
           : 0;
 
       if (Math.abs(netAPY - targetNetAPY) < 0.001) {
@@ -312,24 +404,38 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
       if (volatilityMetrics) {
         const finalTestPosition = maxPortfolio;
 
-        // Recalculate costs for final position size
-        const finalLongSlippage = this.costCalculator.calculateSlippageCost(
-          finalTestPosition,
-          longBidAsk.bestBid,
-          longBidAsk.bestAsk,
-          longOI,
-          OrderType.LIMIT,
-        );
-        const finalShortSlippage = this.costCalculator.calculateSlippageCost(
-          finalTestPosition,
-          shortBidAsk.bestBid,
-          shortBidAsk.bestAsk,
-          shortOI,
-          OrderType.LIMIT,
-        );
-        const finalEntrySlippage = finalLongSlippage + finalShortSlippage;
-        const finalExitSlippage = finalEntrySlippage;
-        const finalTotalSlippageCost = finalEntrySlippage + finalExitSlippage;
+        let finalTotalSlippageCost: number;
+
+        // Use TWAP optimizer for final cost calculation if available
+        if (this.twapOptimizer) {
+          const twapParams = this.twapOptimizer.calculateOptimalParams(
+            opportunity.symbol,
+            finalTestPosition,
+            opportunity.longExchange,
+            opportunity.shortExchange,
+          );
+          finalTotalSlippageCost = twapParams.expectedSlippageUsd;
+        } else {
+          // Fallback to heuristic
+          const finalLongSlippage = this.costCalculator.calculateSlippageCost(
+            finalTestPosition,
+            longBidAsk.bestBid,
+            longBidAsk.bestAsk,
+            longOI,
+            OrderType.LIMIT,
+          );
+          const finalShortSlippage = this.costCalculator.calculateSlippageCost(
+            finalTestPosition,
+            shortBidAsk.bestBid,
+            shortBidAsk.bestAsk,
+            shortOI,
+            OrderType.LIMIT,
+          );
+          const finalEntrySlippage = finalLongSlippage + finalShortSlippage;
+          const finalExitSlippage = finalEntrySlippage;
+          finalTotalSlippageCost = finalEntrySlippage + finalExitSlippage;
+        }
+
         const finalEntryFees = finalTestPosition * (longFeeRate + shortFeeRate);
         const finalExitFees = finalEntryFees;
         const finalTotalFees = finalEntryFees + finalExitFees;

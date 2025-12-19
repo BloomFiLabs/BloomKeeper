@@ -1536,12 +1536,12 @@ export class OrderExecutor implements IOrderExecutor {
         );
       }
 
-      // Determine if TWAP execution is needed for large positions
+      // Determine if TWAP execution is needed
       let useTWAP = false;
       let twapStrategy: any = null;
 
-      if (this.twapEngine && actualPositionUsd >= 20000) {
-        this.logger.log(`🐘 Large position detected ($${actualPositionUsd.toFixed(0)}), evaluating TWAP execution...`);
+      if (this.twapEngine) {
+        // ALWAYS evaluate TWAP strategy statistically
         const twapResult = await this.twapEngine.calculateOptimalStrategy(
           opportunity.symbol,
           actualPositionUsd,
@@ -1554,7 +1554,7 @@ export class OrderExecutor implements IOrderExecutor {
         if (twapResult.isSuccess && twapResult.value.sliceCount > 1) {
           useTWAP = true;
           twapStrategy = twapResult.value;
-          this.logger.log(`✅ TWAP strategy confirmed: ${twapStrategy.sliceCount} slices over ${twapStrategy.totalDurationMinutes} minutes`);
+          this.logger.log(`✅ Statistical TWAP triggered: ${twapStrategy.sliceCount} slices (reason: ${twapStrategy.reasoning})`);
         }
       }
 
