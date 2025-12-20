@@ -67,10 +67,7 @@ import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
 import { SimpleEventBus } from '../events/SimpleEventBus';
 import { TWAPEngine } from '../../domain/services/TWAPEngine';
 import {
-  TWAPOrchestrator,
   TWAPOptimizer,
-  TWAPSliceExecutor,
-  TWAPStateManager,
   OrderBookCollector,
   ExecutionAnalyticsTracker,
   LiquidityProfileCalibrator,
@@ -459,9 +456,6 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     ReplenishmentRateAnalyzer,
     SlippageModelCalibrator,
     TWAPOptimizer,
-    TWAPStateManager,
-    TWAPSliceExecutor,
-    TWAPOrchestrator,
     TWAPEngine,
 
     // Domain services
@@ -761,7 +755,6 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     PredictionBacktester,
     // TWAP services
     TWAPEngine,
-    TWAPOrchestrator,
     TWAPOptimizer,
   ],
 })

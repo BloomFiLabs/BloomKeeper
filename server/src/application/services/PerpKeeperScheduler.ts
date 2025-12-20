@@ -42,6 +42,8 @@ import {
 } from '../../infrastructure/services/AsyncMutex';
 import { LiquidationMonitorService } from '../../domain/services/LiquidationMonitorService';
 
+import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
+
 /**
  * PerpKeeperScheduler - Scheduled execution for funding rate arbitrage
  *
@@ -90,6 +92,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly performanceLogger: PerpKeeperPerformanceLogger,
     private readonly keeperService: PerpKeeperService,
+    private readonly strategyConfig: StrategyConfig,
     @Optional()
     @Inject('IOptimalLeverageService')
     private readonly optimalLeverageService?: IOptimalLeverageService,
@@ -2558,7 +2561,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
         const positionValue = position.size * (position.markPrice || 0);
         // Estimate fees for market order (taker fee)
         const exchangeType = position.exchangeType;
-        const takerFeeRate = this.config.getTakerFeeRate(exchangeType) || 0.0005;
+        const takerFeeRate = this.strategyConfig.getTakerFeeRate(exchangeType) || 0.0005;
         const estimatedFees = positionValue * takerFeeRate;
         
         // Estimate market order slippage (0.1% conservative for market close)

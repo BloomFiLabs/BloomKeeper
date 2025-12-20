@@ -203,6 +203,16 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     // Use historical spread for initial gross APY calculation
     const grossAPY = Math.abs(historicalSpread) * periodsPerYear;
 
+    // Get fee rates from config
+    const longFeeRate =
+      this.config.exchangeFeeRates.get(opportunity.longExchange) || 0.0005;
+    if (!opportunity.shortExchange) {
+      throw new Error('shortExchange is required for perp-perp opportunities');
+    }
+    const shortFeeRate =
+      this.config.exchangeFeeRates.get(opportunity.shortExchange) || 0.0005;
+    const totalFeeRate = (longFeeRate + shortFeeRate) * 2; // Entry + exit fees for both legs
+
     // STATISTICAL SPREAD THRESHOLD: Replace fixed minSpread heuristic
     // Spread must be greater than annualized cost of execution (fees + slippage) + timing risk
     let minViableGrossAPY = targetNetAPY;
@@ -248,16 +258,6 @@ export class PortfolioOptimizer implements IPortfolioOptimizer {
     if (minOI <= 0) {
       return null; // Need OI data to calculate slippage
     }
-
-    // Get fee rates from config
-    const longFeeRate =
-      this.config.exchangeFeeRates.get(opportunity.longExchange) || 0.0005;
-    if (!opportunity.shortExchange) {
-      throw new Error('shortExchange is required for perp-perp opportunities');
-    }
-    const shortFeeRate =
-      this.config.exchangeFeeRates.get(opportunity.shortExchange) || 0.0005;
-    const totalFeeRate = (longFeeRate + shortFeeRate) * 2; // Entry + exit fees for both legs
 
     // Binary search for max position size
     let low = 1000; // $1k minimum

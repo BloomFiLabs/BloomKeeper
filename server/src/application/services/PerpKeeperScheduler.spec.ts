@@ -256,6 +256,7 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
     it('should filter blacklisted opportunities before execution', async () => {
       const nvdaOpportunity: ArbitrageOpportunity = {
         symbol: 'NVDA',
+        strategyType: 'perp-perp',
         longExchange: ExchangeType.LIGHTER,
         shortExchange: ExchangeType.ASTER,
         longRate: Percentage.fromDecimal(0.001),
@@ -267,6 +268,7 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
 
       const ethOpportunity: ArbitrageOpportunity = {
         symbol: 'ETH',
+        strategyType: 'perp-perp',
         longExchange: ExchangeType.LIGHTER,
         shortExchange: ExchangeType.ASTER,
         longRate: Percentage.fromDecimal(0.001),
@@ -325,6 +327,7 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
     it('should filter opportunities even if they slip through symbol filtering', async () => {
       const nvdaOpportunity: ArbitrageOpportunity = {
         symbol: 'NVDA',
+        strategyType: 'perp-perp',
         longExchange: ExchangeType.LIGHTER,
         shortExchange: ExchangeType.ASTER,
         longRate: Percentage.fromDecimal(0.001),
@@ -336,6 +339,7 @@ describe('PerpKeeperScheduler - Blacklist Filtering', () => {
 
       const ethOpportunity: ArbitrageOpportunity = {
         symbol: 'ETH',
+        strategyType: 'perp-perp',
         longExchange: ExchangeType.LIGHTER,
         shortExchange: ExchangeType.ASTER,
         longRate: Percentage.fromDecimal(0.001),
