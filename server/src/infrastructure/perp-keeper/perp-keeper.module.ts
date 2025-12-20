@@ -43,6 +43,7 @@ import { MarketQualityFilter } from '../../domain/services/MarketQualityFilter';
 import { CircuitBreakerService } from '../services/CircuitBreakerService';
 import { ExecutionLockService } from '../services/ExecutionLockService';
 import { LiquidationMonitorService } from '../../domain/services/LiquidationMonitorService';
+import { MarketStateService } from '../services/MarketStateService';
 import { PositionStateRepository } from '../repositories/PositionStateRepository';
 import { RateLimiterService } from '../services/RateLimiterService';
 import { ProfitTracker } from '../services/ProfitTracker';
@@ -680,6 +681,9 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     // Liquidation monitoring service - monitors position risk and triggers emergency closes
     LiquidationMonitorService,
 
+    // Market state service - centralized source of truth for positions and prices
+    MarketStateService,
+
     // Position state persistence for recovery
     PositionStateRepository,
 
@@ -801,6 +805,8 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     NAVReporter,
     // Maker efficiency service
     MakerEfficiencyService,
+    // Market state service
+    MarketStateService,
     // Prediction services
     FundingRatePredictionService,
     'IFundingRatePredictionService',
@@ -826,6 +832,7 @@ export class PerpKeeperModule implements OnModuleInit {
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
     @Optional() private readonly orderBookCollector?: OrderBookCollector,
     @Optional() private readonly perpKeeperService?: PerpKeeperService,
+    @Optional() private readonly marketStateService?: MarketStateService,
   ) {}
 
   /**
@@ -873,6 +880,13 @@ export class PerpKeeperModule implements OnModuleInit {
       this.logger.log(
         `Initialized OrderBookCollector with ${adapters.size} adapters`,
       );
+    }
+
+    // Initialize MarketStateService if both are available
+    if (this.marketStateService && this.perpKeeperService) {
+      const adapters = this.perpKeeperService.getExchangeAdapters();
+      this.marketStateService.initialize(adapters);
+      this.logger.log('MarketStateService initialized with exchange adapters');
     }
   }
 }

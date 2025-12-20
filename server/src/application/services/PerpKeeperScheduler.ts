@@ -41,6 +41,7 @@ import {
   AsyncMutex,
 } from '../../infrastructure/services/AsyncMutex';
 import { LiquidationMonitorService } from '../../domain/services/LiquidationMonitorService';
+import { MarketStateService } from '../../infrastructure/services/MarketStateService';
 
 import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
 
@@ -107,6 +108,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
     @Optional()
     private readonly liquidationMonitor?: LiquidationMonitorService,
+    @Optional() private readonly marketStateService?: MarketStateService,
   ) {
     // Initialize orchestrator with exchange adapters
     const adapters = this.keeperService.getExchangeAdapters();
@@ -618,6 +620,12 @@ export class PerpKeeperScheduler implements OnModuleInit {
 
     try {
       this.logger.log('🚀 Starting execution cycle...');
+
+      // Refresh market state cache (positions and prices) at the start of every cycle
+      // This allows all subsequent checks to use the same snapshot of positions
+      if (this.marketStateService) {
+        await this.marketStateService.refreshAll();
+      }
 
       // Auto-discover all assets if not configured
       const symbols = await this.discoverAssetsIfNeeded();
@@ -1874,6 +1882,11 @@ export class PerpKeeperScheduler implements OnModuleInit {
     }
 
     try {
+      // Refresh market state before checking liquidation risk
+      if (this.marketStateService) {
+        await this.marketStateService.refreshAll();
+      }
+
       const result = await this.liquidationMonitor.checkLiquidationRisk();
 
       // Log summary if there are positions at risk

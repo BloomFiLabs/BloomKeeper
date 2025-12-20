@@ -26,6 +26,8 @@ import { IPerpExchangeAdapter } from '../ports/IPerpExchangeAdapter';
 import { PerpPosition } from '../entities/PerpPosition';
 import { PerpOrderRequest, OrderSide, OrderType, TimeInForce } from '../value-objects/PerpOrder';
 import { ExecutionLockService } from '../../infrastructure/services/ExecutionLockService';
+import { RateLimiterService, RateLimitPriority } from '../../infrastructure/services/RateLimiterService';
+import { MarketStateService } from '../../infrastructure/services/MarketStateService';
 
 /**
  * Internal type for tracking paired positions.
@@ -50,7 +52,11 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
   private lastCheckResult: LiquidationCheckResult | null = null;
   private lastCheckTime: Date | null = null;
 
-  constructor(private readonly executionLockService?: ExecutionLockService) {
+  constructor(
+    private readonly executionLockService?: ExecutionLockService,
+    private readonly rateLimiter?: RateLimiterService,
+    private readonly marketStateService?: MarketStateService,
+  ) {
     this.config = { ...DEFAULT_LIQUIDATION_MONITOR_CONFIG };
   }
 
@@ -82,7 +88,14 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
 
     try {
       // Step 1: Fetch all positions from all exchanges
-      const allPositions = await this.fetchAllPositions();
+      // Use MarketStateService if available to reduce API calls and ensure consistent snapshot
+      let allPositions: PerpPosition[] = [];
+      if (this.marketStateService) {
+        allPositions = this.marketStateService.getAllPositions();
+      } else {
+        allPositions = await this.fetchAllPositions();
+      }
+      
       result.positionsChecked = allPositions.length;
 
       if (allPositions.length === 0) {
@@ -629,12 +642,17 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
             true, // reduceOnly
           );
 
-          this.logger.log(
-            `📤 Emergency close ${side} ${position.symbol} on ${exchange}: ` +
-              `size=${risk.positionSize.toFixed(4)} @ $${markPrice.toFixed(4)} (attempt ${attempt}/${this.config.maxCloseRetries})`,
-          );
+        this.logger.log(
+          `📤 Emergency close ${side} ${position.symbol} on ${exchange}: ` +
+            `size=${risk.positionSize.toFixed(4)} @ $${markPrice.toFixed(4)} (attempt ${attempt}/${this.config.maxCloseRetries})`,
+        );
 
-          const response = await adapter.placeOrder(closeOrder);
+        // Acquire rate limit with EMERGENCY priority
+        if (this.rateLimiter) {
+          await this.rateLimiter.acquire(exchange, 1, RateLimitPriority.EMERGENCY);
+        }
+
+        const response = await adapter.placeOrder(closeOrder);
 
           if (response.isSuccess() || response.isFilled()) {
             if (this.executionLockService) {

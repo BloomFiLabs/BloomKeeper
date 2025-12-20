@@ -3,6 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 
 /**
+ * Rate limit priority levels
+ */
+export enum RateLimitPriority {
+  NORMAL = 0,
+  HIGH = 1,
+  EMERGENCY = 2,
+}
+
+/**
  * Rate limit configuration per exchange
  */
 export interface RateLimitConfig {
@@ -19,13 +28,20 @@ interface RateEntry {
   weight: number;
 }
 
+interface WaitQueueEntry {
+  resolve: () => void;
+  weight: number;
+  priority: RateLimitPriority;
+  timestamp: number;
+}
+
 interface RateBucket {
   // Sliding window for per-second limiting
   secondWindow: RateEntry[];
   // Sliding window for per-minute limiting
   minuteWindow: RateEntry[];
   // Queue for waiting requests
-  waitQueue: Array<{ resolve: () => void; weight: number }>;
+  waitQueue: WaitQueueEntry[];
 }
 
 /**
@@ -137,9 +153,14 @@ export class RateLimiterService {
    *
    * @param exchange - The exchange to acquire a slot for
    * @param weight - The weight of this request (default: 1)
+   * @param priority - The priority of this request (default: NORMAL)
    * @returns Promise that resolves when a slot is available
    */
-  async acquire(exchange: ExchangeType, weight: number = 1): Promise<void> {
+  async acquire(
+    exchange: ExchangeType,
+    weight: number = 1,
+    priority: RateLimitPriority = RateLimitPriority.NORMAL,
+  ): Promise<void> {
     const bucket = this.buckets.get(exchange);
     const config = this.limits.get(exchange);
 
@@ -157,29 +178,60 @@ export class RateLimiterService {
     const currentSecondWeight = bucket.secondWindow.reduce((sum, e) => sum + e.weight, 0);
     const currentMinuteWeight = bucket.minuteWindow.reduce((sum, e) => sum + e.weight, 0);
 
+    // EMERGENCY priority bypasses the per-second limit and wait queue
+    // but still checks minute limit to prevent total API ban
+    if (priority === RateLimitPriority.EMERGENCY) {
+      const withinMinuteLimit = (currentMinuteWeight + weight) <= (config.maxRequestsPerMinute * 1.1); // 10% overflow allowance for emergencies
+      
+      if (withinMinuteLimit) {
+        this.logger.warn(`🚨 EMERGENCY acquisition for ${exchange}: bypassing queue and second-limit`);
+        bucket.secondWindow.push({ timestamp: now, weight });
+        bucket.minuteWindow.push({ timestamp: now, weight });
+        return;
+      }
+    }
+
     // Check if we're at the limit
     const withinSecondLimit = (currentSecondWeight + weight) <= config.maxRequestsPerSecond;
     const withinMinuteLimit = (currentMinuteWeight + weight) <= config.maxRequestsPerMinute;
 
-    if (withinSecondLimit && withinMinuteLimit) {
+    // If we have capacity AND no one is waiting, proceed immediately
+    if (withinSecondLimit && withinMinuteLimit && bucket.waitQueue.length === 0) {
       // We have capacity - record and proceed
       bucket.secondWindow.push({ timestamp: now, weight });
       bucket.minuteWindow.push({ timestamp: now, weight });
       return;
     }
 
-    // We're at the limit - need to wait
-    const waitTime = this.calculateWaitTime(bucket, config, now, weight);
+    // We're at the limit or others are waiting - need to wait
+    const waitTime = this.calculateWaitTime(bucket, config, now, weight, priority);
 
-    this.logger.debug(
-      `Rate limit reached for ${exchange}, waiting ${waitTime}ms ` +
-        `(${currentSecondWeight + weight}/${config.maxRequestsPerSecond}/s, ` +
-        `${currentMinuteWeight + weight}/${config.maxRequestsPerMinute}/min)`,
-    );
+    if (priority >= RateLimitPriority.HIGH) {
+      this.logger.debug(
+        `Priority acquisition (${RateLimitPriority[priority]}) for ${exchange}, waiting ${waitTime}ms ` +
+          `(${currentSecondWeight + weight}/${config.maxRequestsPerSecond}/s, ` +
+          `${currentMinuteWeight + weight}/${config.maxRequestsPerMinute}/min, queue: ${bucket.waitQueue.length})`,
+      );
+    }
 
     // Wait for the calculated time
     await new Promise<void>((resolve) => {
-      bucket.waitQueue.push({ resolve, weight });
+      const entry: WaitQueueEntry = { resolve, weight, priority, timestamp: Date.now() };
+      
+      // HIGH priority goes to front of queue (but behind EMERGENCY)
+      if (priority === RateLimitPriority.EMERGENCY) {
+        bucket.waitQueue.unshift(entry);
+      } else if (priority === RateLimitPriority.HIGH) {
+        const lastHighIdx = bucket.waitQueue.findIndex(q => q.priority < RateLimitPriority.HIGH);
+        if (lastHighIdx === -1) {
+          bucket.waitQueue.push(entry);
+        } else {
+          bucket.waitQueue.splice(lastHighIdx, 0, entry);
+        }
+      } else {
+        bucket.waitQueue.push(entry);
+      }
+
       setTimeout(() => {
         // Remove from queue and resolve
         const index = bucket.waitQueue.findIndex(q => q.resolve === resolve);
@@ -335,6 +387,7 @@ export class RateLimiterService {
     config: RateLimitConfig,
     now: number,
     weight: number,
+    priority: RateLimitPriority = RateLimitPriority.NORMAL,
   ): number {
     let waitTime = 0;
 
@@ -367,6 +420,13 @@ export class RateLimiterService {
           break;
         }
       }
+    }
+
+    // Adjust based on priority
+    if (priority === RateLimitPriority.EMERGENCY) {
+      return Math.max(waitTime / 2, 50); // Faster processing for emergencies
+    } else if (priority === RateLimitPriority.HIGH) {
+      return Math.max(waitTime * 0.8, 100);
     }
 
     // Add a small buffer to avoid edge cases

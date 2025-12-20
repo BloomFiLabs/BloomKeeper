@@ -361,10 +361,10 @@ export class LighterFundingDataProvider
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         const orderBookUrl = `${this.baseUrl}/api/v1/orderBookDetails`;
-        const response = await axios.get(orderBookUrl, {
+        const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(orderBookUrl, {
           timeout: 10000,
           params: { market_id: marketIndex },
-        });
+        }));
 
         // Validate response structure
         if (response.data?.code !== 200) {

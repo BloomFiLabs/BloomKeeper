@@ -21,6 +21,7 @@ import {
   FundingArbitrageStrategy,
   ArbitrageExecutionResult,
 } from './FundingArbitrageStrategy';
+import { MarketStateService } from '../../infrastructure/services/MarketStateService';
 
 /**
  * Strategy execution result
@@ -62,6 +63,7 @@ export class PerpKeeperOrchestrator {
   constructor(
     private readonly aggregator: FundingRateAggregator,
     private readonly arbitrageStrategy: FundingArbitrageStrategy,
+    private readonly marketStateService?: MarketStateService,
   ) {}
 
   /**
@@ -209,20 +211,36 @@ export class PerpKeeperOrchestrator {
     const allPositions: PerpPosition[] = [];
     const positionsByExchange = new Map<ExchangeType, PerpPosition[]>();
 
-    // Fetch positions from all exchanges
-    for (const [exchangeType, adapter] of this.exchangeAdapters) {
-      try {
-        const positions = await adapter.getPositions();
+    // Step 1: Get positions from all exchanges
+    // Use MarketStateService if available to reduce API calls
+    if (this.marketStateService) {
+      const cachedPositions = this.marketStateService.getAllPositions();
+      for (const pos of cachedPositions) {
         // Filter out positions with very small sizes (likely rounding errors or stale data)
-        const validPositions = positions.filter(
-          (p) => Math.abs(p.size) > 0.0001,
-        );
-        allPositions.push(...validPositions);
-        positionsByExchange.set(exchangeType, validPositions);
-      } catch (error) {
-        this.logger.error(
-          `Failed to get positions from ${exchangeType}: ${error.message}`,
-        );
+        if (Math.abs(pos.size) > 0.0001) {
+          allPositions.push(pos);
+          if (!positionsByExchange.has(pos.exchangeType)) {
+            positionsByExchange.set(pos.exchangeType, []);
+          }
+          positionsByExchange.get(pos.exchangeType)!.push(pos);
+        }
+      }
+    } else {
+      // Fallback to fetching directly if MarketStateService not available
+      for (const [exchangeType, adapter] of this.exchangeAdapters) {
+        try {
+          const positions = await adapter.getPositions();
+          // Filter out positions with very small sizes
+          const validPositions = positions.filter(
+            (p) => Math.abs(p.size) > 0.0001,
+          );
+          allPositions.push(...validPositions);
+          positionsByExchange.set(exchangeType, validPositions);
+        } catch (error) {
+          this.logger.error(
+            `Failed to get positions from ${exchangeType}: ${error.message}`,
+          );
+        }
       }
     }
 

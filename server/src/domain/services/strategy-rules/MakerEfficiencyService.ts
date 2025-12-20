@@ -6,7 +6,7 @@ import { HyperLiquidWebSocketProvider } from '../../../infrastructure/adapters/h
 import { LighterWebSocketProvider } from '../../../infrastructure/adapters/lighter/LighterWebSocketProvider';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { OrderSide, OrderType, PerpOrderRequest, TimeInForce } from '../../value-objects/PerpOrder';
-import { RateLimiterService } from '../../../infrastructure/services/RateLimiterService';
+import { RateLimiterService, RateLimitPriority } from '../../../infrastructure/services/RateLimiterService';
 
 /**
  * MakerEfficiencyService - Ensures our orders are the most price-efficient on the book
@@ -179,6 +179,9 @@ export class MakerEfficiencyService implements OnModuleInit {
       );
 
       try {
+        // Acquire a rate limit slot with HIGH priority for maker repositioning
+        await this.rateLimiter.acquire(exchange, 1, RateLimitPriority.HIGH);
+
         // Use modifyOrder if supported by the adapter (more efficient for rate limits)
         let response;
         const side = activeOrder.side === 'LONG' ? OrderSide.LONG : OrderSide.SHORT;
