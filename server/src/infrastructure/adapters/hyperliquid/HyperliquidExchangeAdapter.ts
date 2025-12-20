@@ -1525,7 +1525,8 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       // Check USDC balance with retry logic (funds may be in transit from withdrawal)
       // IMPORTANT: We deposit the ENTIRE available balance, not the requested amount,
       // because withdrawal fees reduce the amount that actually arrives
-      const decimals = await usdcContract.decimals();
+      const decimalsBigInt = await usdcContract.decimals();
+      const decimals = Number(decimalsBigInt);
 
       const maxWaitTime = 300000; // 5 minutes maximum wait
       const initialDelay = 2000; // 2 seconds initial delay
