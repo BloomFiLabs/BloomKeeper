@@ -87,8 +87,8 @@ export interface LiquidationMonitorConfig {
  * Default configuration values.
  */
 export const DEFAULT_LIQUIDATION_MONITOR_CONFIG: LiquidationMonitorConfig = {
-  emergencyCloseThreshold: 0.7,
-  warningThreshold: 0.5,
+  emergencyCloseThreshold: 0.85,
+  warningThreshold: 0.7,
   checkIntervalMs: 30000,
   enableEmergencyClose: true,
   maxCloseRetries: 3,

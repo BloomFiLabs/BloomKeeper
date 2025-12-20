@@ -1,4 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import { HyperLiquidDataProvider } from '../adapters/hyperliquid/HyperLiquidDataProvider';
 import { AsterFundingDataProvider } from '../adapters/aster/AsterFundingDataProvider';
@@ -46,7 +49,14 @@ export class HistoricalFundingRateService
   // List of funding data providers for parallel fetching
   private readonly fundingProviders: IFundingDataProvider[];
 
+  // Disk persistence
+  private readonly dataFilePath: string;
+  private saveInProgress = false;
+  private pendingSave = false;
+  private readonly SAVE_DEBOUNCE_MS = 5000; // Save to disk every 5 seconds after changes
+
   constructor(
+    private readonly configService: ConfigService,
     private readonly hyperliquidProvider: HyperLiquidDataProvider,
     private readonly asterProvider: AsterFundingDataProvider,
     private readonly lighterProvider: LighterFundingDataProvider,
@@ -58,10 +68,24 @@ export class HistoricalFundingRateService
       this.asterProvider,
       this.lighterProvider,
     ];
+
+    // Setup disk persistence path
+    const dataDir = this.configService.get<string>(
+      'HISTORICAL_DATA_DIR',
+      'data',
+    );
+    this.dataFilePath = path.join(
+      process.cwd(),
+      dataDir,
+      'historical-funding-rates.json',
+    );
   }
 
   async onModuleInit() {
-    // Backfill historical data from native APIs on startup
+    // Load cached data from disk first
+    await this.loadFromDisk();
+
+    // Backfill only missing historical data from native APIs on startup
     // This runs in background - don't await to avoid blocking startup
     this.backfillHistoricalData().catch((err) => {
       this.logger.error(
@@ -168,6 +192,9 @@ export class HistoricalFundingRateService
       // Clean up old data
       this.cleanupOldData();
 
+      // Save to disk after collection (will be debounced by scheduleSaveToDisk)
+      this.scheduleSaveToDisk();
+
       this.logger.debug(
         `Collected historical funding rates for ${symbols.length} symbols`,
       );
@@ -190,6 +217,18 @@ export class HistoricalFundingRateService
     const key = `${symbol}_${exchange}`;
     const dataPoints = this.historicalData.get(key) || [];
 
+    // Check if this data point already exists (avoid duplicates)
+    const exists = dataPoints.some(
+      (dp) =>
+        dp.symbol === symbol &&
+        dp.exchange === exchange &&
+        Math.abs(dp.timestamp.getTime() - timestamp.getTime()) < 60000, // Within 1 minute
+    );
+
+    if (exists) {
+      return; // Skip duplicate
+    }
+
     dataPoints.push({
       symbol,
       exchange,
@@ -197,7 +236,13 @@ export class HistoricalFundingRateService
       timestamp,
     });
 
+    // Sort by timestamp (oldest first)
+    dataPoints.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
     this.historicalData.set(key, dataPoints);
+
+    // Schedule save to disk (debounced)
+    this.scheduleSaveToDisk();
   }
 
   /**
@@ -247,7 +292,143 @@ export class HistoricalFundingRateService
       this.logger.debug(
         `Cleaned up ${cleanedCount} old historical data points`,
       );
+      this.scheduleSaveToDisk();
     }
+  }
+
+  /**
+   * Load historical data from disk
+   */
+  private async loadFromDisk(): Promise<void> {
+    try {
+      if (!fs.existsSync(this.dataFilePath)) {
+        this.logger.debug('No cached historical data found on disk');
+        return;
+      }
+
+      const data = fs.readFileSync(this.dataFilePath, 'utf-8');
+      const parsed = JSON.parse(data);
+
+      // Validate structure
+      if (!parsed || typeof parsed !== 'object') {
+        this.logger.warn('Invalid cached historical data format, starting fresh');
+        return;
+      }
+
+      let loadedCount = 0;
+      for (const [key, dataPoints] of Object.entries(parsed)) {
+        if (Array.isArray(dataPoints)) {
+          // Convert timestamp strings back to Date objects
+          const converted = (dataPoints as any[]).map((dp) => ({
+            ...dp,
+            timestamp: new Date(dp.timestamp),
+          }));
+
+          // Filter out data older than retention period
+          const cutoffTime = Date.now() - this.RETENTION_MS;
+          const filtered = converted.filter(
+            (dp) => dp.timestamp.getTime() > cutoffTime,
+          );
+
+          if (filtered.length > 0) {
+            this.historicalData.set(key, filtered);
+            loadedCount += filtered.length;
+          }
+        }
+      }
+
+      this.logger.log(
+        `📂 Loaded ${loadedCount} historical data points from disk cache`,
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to load historical data from disk: ${error.message}. Starting fresh.`,
+      );
+    }
+  }
+
+  /**
+   * Save historical data to disk (debounced)
+   */
+  private saveToDiskTimeout: NodeJS.Timeout | null = null;
+
+  private scheduleSaveToDisk(): void {
+    // Clear existing timeout
+    if (this.saveToDiskTimeout) {
+      clearTimeout(this.saveToDiskTimeout);
+    }
+
+    // Schedule save after debounce period
+    this.saveToDiskTimeout = setTimeout(() => {
+      this.persistToDisk();
+    }, this.SAVE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Persist historical data to disk
+   */
+  private async persistToDisk(): Promise<void> {
+    if (this.saveInProgress) {
+      this.pendingSave = true;
+      return;
+    }
+
+    this.saveInProgress = true;
+
+    try {
+      // Ensure directory exists
+      const dir = path.dirname(this.dataFilePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      // Convert Map to serializable object
+      const serialized: Record<string, any[]> = {};
+      for (const [key, dataPoints] of this.historicalData.entries()) {
+        serialized[key] = dataPoints.map((dp) => ({
+          ...dp,
+          timestamp: dp.timestamp.toISOString(),
+        }));
+      }
+
+      // Write to temp file first, then rename (atomic operation)
+      const tempPath = `${this.dataFilePath}.tmp`;
+      fs.writeFileSync(tempPath, JSON.stringify(serialized, null, 2), 'utf-8');
+      fs.renameSync(tempPath, this.dataFilePath);
+
+      this.logger.debug(
+        `💾 Saved ${this.historicalData.size} historical data series to disk`,
+      );
+    } catch (error: any) {
+      this.logger.error(`Failed to persist historical data: ${error.message}`);
+    } finally {
+      this.saveInProgress = false;
+
+      // Handle any pending saves
+      if (this.pendingSave) {
+        this.pendingSave = false;
+        await this.persistToDisk();
+      }
+    }
+  }
+
+  /**
+   * Get the oldest timestamp for a symbol/exchange pair
+   * Used to determine what data needs to be fetched
+   */
+  private getOldestTimestamp(
+    symbol: string,
+    exchange: ExchangeType,
+  ): Date | null {
+    const key = `${symbol}_${exchange}`;
+    const dataPoints = this.historicalData.get(key) || [];
+
+    if (dataPoints.length === 0) {
+      return null;
+    }
+
+    // Data is sorted oldest first
+    return dataPoints[0].timestamp;
   }
 
   /**
@@ -666,12 +847,12 @@ export class HistoricalFundingRateService
 
   /**
    * Backfill historical data from native APIs on startup
-   * Fetches up to 30 days of historical data for all discovered symbols
+   * Only fetches missing data (data older than what's already cached)
    */
   async backfillHistoricalData(): Promise<void> {
     try {
       this.logger.log(
-        '🔄 Backfilling historical funding rate data from native APIs...',
+        '🔄 Backfilling missing historical funding rate data from native APIs...',
       );
 
       const symbols = await this.aggregator.discoverCommonAssets();
@@ -681,6 +862,7 @@ export class HistoricalFundingRateService
       }
 
       let totalFetched = 0;
+      let totalSkipped = 0;
       let hyperliquidCount = 0;
       let asterCount = 0;
       let lighterCount = 0;
@@ -690,87 +872,168 @@ export class HistoricalFundingRateService
       let hyperliquidFailed = 0;
       let asterFailed = 0;
       let lighterFailed = 0;
+      let hyperliquidSkipped = 0;
+      let asterSkipped = 0;
+      let lighterSkipped = 0;
 
       for (const symbol of symbols) {
         try {
           const mapping = this.aggregator.getSymbolMapping(symbol);
 
-          // Fetch Hyperliquid historical data
+          // Fetch Hyperliquid historical data (only missing data)
           if (mapping?.hyperliquidSymbol) {
             hyperliquidSymbols++;
-            const hyperliquidData = await this.fetchHyperliquidHistory(
-              mapping.hyperliquidSymbol,
-              30,
+            const oldestCached = this.getOldestTimestamp(
+              symbol,
+              ExchangeType.HYPERLIQUID,
             );
-            if (hyperliquidData.length > 0) {
-              for (const entry of hyperliquidData) {
-                // Use normalized symbol (not exchange-specific symbol)
-                this.addHistoricalDataPoint(
-                  symbol,
-                  ExchangeType.HYPERLIQUID,
-                  entry.rate,
-                  entry.timestamp,
+            
+            // Only fetch if we don't have data or need to go back further
+            if (oldestCached === null || oldestCached.getTime() > Date.now() - this.RETENTION_MS) {
+              const hyperliquidData = await this.fetchHyperliquidHistory(
+                mapping.hyperliquidSymbol,
+                30,
+              );
+              if (hyperliquidData.length > 0) {
+                // Filter out data we already have
+                const existingTimestamps = new Set(
+                  (this.historicalData.get(`${symbol}_${ExchangeType.HYPERLIQUID}`) || []).map(
+                    (dp) => dp.timestamp.getTime(),
+                  ),
                 );
-                totalFetched++;
-                hyperliquidCount++;
+                
+                let newEntries = 0;
+                for (const entry of hyperliquidData) {
+                  // Only add if we don't already have this timestamp
+                  if (!existingTimestamps.has(entry.timestamp.getTime())) {
+                    this.addHistoricalDataPoint(
+                      symbol,
+                      ExchangeType.HYPERLIQUID,
+                      entry.rate,
+                      entry.timestamp,
+                    );
+                    totalFetched++;
+                    hyperliquidCount++;
+                    newEntries++;
+                  }
+                }
+                
+                if (newEntries === 0) {
+                  hyperliquidSkipped++;
+                }
+              } else {
+                hyperliquidFailed++;
               }
             } else {
-              hyperliquidFailed++;
+              hyperliquidSkipped++;
+              totalSkipped++;
             }
           }
 
           // Small delay to avoid rate limits
           await new Promise((resolve) => setTimeout(resolve, 200));
 
-          // Fetch Aster historical data
+          // Fetch Aster historical data (only missing data)
           if (mapping?.asterSymbol) {
             asterSymbols++;
-            const asterData = await this.fetchAsterHistory(
-              mapping.asterSymbol,
-              30,
+            const oldestCached = this.getOldestTimestamp(
+              symbol,
+              ExchangeType.ASTER,
             );
-            if (asterData.length > 0) {
-              for (const entry of asterData) {
-                // Use normalized symbol (not exchange-specific symbol)
-                this.addHistoricalDataPoint(
-                  symbol,
-                  ExchangeType.ASTER,
-                  entry.rate,
-                  entry.timestamp,
+            
+            // Only fetch if we don't have data or need to go back further
+            if (oldestCached === null || oldestCached.getTime() > Date.now() - this.RETENTION_MS) {
+              const asterData = await this.fetchAsterHistory(
+                mapping.asterSymbol,
+                30,
+              );
+              if (asterData.length > 0) {
+                // Filter out data we already have
+                const existingTimestamps = new Set(
+                  (this.historicalData.get(`${symbol}_${ExchangeType.ASTER}`) || []).map(
+                    (dp) => dp.timestamp.getTime(),
+                  ),
                 );
-                totalFetched++;
-                asterCount++;
+                
+                let newEntries = 0;
+                for (const entry of asterData) {
+                  // Only add if we don't already have this timestamp
+                  if (!existingTimestamps.has(entry.timestamp.getTime())) {
+                    this.addHistoricalDataPoint(
+                      symbol,
+                      ExchangeType.ASTER,
+                      entry.rate,
+                      entry.timestamp,
+                    );
+                    totalFetched++;
+                    asterCount++;
+                    newEntries++;
+                  }
+                }
+                
+                if (newEntries === 0) {
+                  asterSkipped++;
+                }
+              } else {
+                asterFailed++;
               }
             } else {
-              asterFailed++;
+              asterSkipped++;
+              totalSkipped++;
             }
           }
 
           // Small delay to avoid rate limits
           await new Promise((resolve) => setTimeout(resolve, 200));
 
-          // Fetch Lighter historical data from explorer API
+          // Fetch Lighter historical data from explorer API (only missing data)
           if (mapping?.lighterMarketIndex !== undefined) {
             lighterSymbols++;
-            const lighterData = await this.fetchLighterHistory(
+            const oldestCached = this.getOldestTimestamp(
               symbol,
-              mapping.lighterMarketIndex,
-              30,
+              ExchangeType.LIGHTER,
             );
-            if (lighterData.length > 0) {
-              for (const entry of lighterData) {
-                // Use normalized symbol
-                this.addHistoricalDataPoint(
-                  symbol,
-                  ExchangeType.LIGHTER,
-                  entry.rate,
-                  entry.timestamp,
+            
+            // Only fetch if we don't have data or need to go back further
+            if (oldestCached === null || oldestCached.getTime() > Date.now() - this.RETENTION_MS) {
+              const lighterData = await this.fetchLighterHistory(
+                symbol,
+                mapping.lighterMarketIndex,
+                30,
+              );
+              if (lighterData.length > 0) {
+                // Filter out data we already have
+                const existingTimestamps = new Set(
+                  (this.historicalData.get(`${symbol}_${ExchangeType.LIGHTER}`) || []).map(
+                    (dp) => dp.timestamp.getTime(),
+                  ),
                 );
-                totalFetched++;
-                lighterCount++;
+                
+                let newEntries = 0;
+                for (const entry of lighterData) {
+                  // Only add if we don't already have this timestamp
+                  if (!existingTimestamps.has(entry.timestamp.getTime())) {
+                    this.addHistoricalDataPoint(
+                      symbol,
+                      ExchangeType.LIGHTER,
+                      entry.rate,
+                      entry.timestamp,
+                    );
+                    totalFetched++;
+                    lighterCount++;
+                    newEntries++;
+                  }
+                }
+                
+                if (newEntries === 0) {
+                  lighterSkipped++;
+                }
+              } else {
+                lighterFailed++;
               }
             } else {
-              lighterFailed++;
+              lighterSkipped++;
+              totalSkipped++;
             }
           }
         } catch (err: any) {
@@ -780,19 +1043,22 @@ export class HistoricalFundingRateService
         }
       }
 
-      this.logger.log(`✅ Backfill Summary: ${totalFetched} total entries`);
+      this.logger.log(`✅ Backfill Summary: ${totalFetched} new entries fetched${totalSkipped > 0 ? `, ${totalSkipped} skipped (already cached)` : ''}`);
       this.logger.log(
-        `   Hyperliquid: ${hyperliquidCount} entries from ${hyperliquidSymbols} symbols${hyperliquidFailed > 0 ? ` (${hyperliquidFailed} failed)` : ''}`,
+        `   Hyperliquid: ${hyperliquidCount} new entries from ${hyperliquidSymbols} symbols${hyperliquidSkipped > 0 ? ` (${hyperliquidSkipped} already cached)` : ''}${hyperliquidFailed > 0 ? ` (${hyperliquidFailed} failed)` : ''}`,
       );
       this.logger.log(
-        `   Aster: ${asterCount} entries from ${asterSymbols} symbols${asterFailed > 0 ? ` (${asterFailed} failed)` : ''}`,
+        `   Aster: ${asterCount} new entries from ${asterSymbols} symbols${asterSkipped > 0 ? ` (${asterSkipped} already cached)` : ''}${asterFailed > 0 ? ` (${asterFailed} failed)` : ''}`,
       );
       this.logger.log(
-        `   Lighter: ${lighterCount} entries from ${lighterSymbols} symbols${lighterFailed > 0 ? ` (${lighterFailed} failed)` : ''}`,
+        `   Lighter: ${lighterCount} new entries from ${lighterSymbols} symbols${lighterSkipped > 0 ? ` (${lighterSkipped} already cached)` : ''}${lighterFailed > 0 ? ` (${lighterFailed} failed)` : ''}`,
       );
 
       // Clean up old data after backfill
       this.cleanupOldData();
+      
+      // Save to disk after backfill
+      await this.persistToDisk();
     } catch (error: any) {
       this.logger.error(`Failed to backfill historical data: ${error.message}`);
     }

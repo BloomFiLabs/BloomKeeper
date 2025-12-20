@@ -25,6 +25,7 @@ import {
 import { IPerpExchangeAdapter } from '../ports/IPerpExchangeAdapter';
 import { PerpPosition } from '../entities/PerpPosition';
 import { PerpOrderRequest, OrderSide, OrderType, TimeInForce } from '../value-objects/PerpOrder';
+import { ExecutionLockService } from '../../infrastructure/services/ExecutionLockService';
 
 /**
  * Internal type for tracking paired positions.
@@ -49,7 +50,7 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
   private lastCheckResult: LiquidationCheckResult | null = null;
   private lastCheckTime: Date | null = null;
 
-  constructor() {
+  constructor(private readonly executionLockService?: ExecutionLockService) {
     this.config = { ...DEFAULT_LIQUIDATION_MONITOR_CONFIG };
   }
 
@@ -555,49 +556,146 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
       return { success: false, error: `No adapter for ${exchange}` };
     }
 
-    // Retry logic for emergency closes
-    for (let attempt = 1; attempt <= this.config.maxCloseRetries; attempt++) {
-      try {
-        // Get current mark price to act as maker
-        let markPrice: number | undefined;
-        try {
-          markPrice = await adapter.getMarkPrice(position.symbol);
-        } catch (priceError: any) {
-          this.logger.warn(
-            `Could not get mark price for ${position.symbol} emergency close, using risk price: ${priceError.message}`,
-          );
-          markPrice = risk.markPrice;
-        }
+    const threadId = this.executionLockService?.generateThreadId() || `liq-${Date.now()}`;
 
-        // Create limit order to close position at mark price (opposite side, reduceOnly)
-        const closeOrder = new PerpOrderRequest(
-          position.symbol,
-          side === 'LONG' ? OrderSide.SHORT : OrderSide.LONG, // Opposite side to close
-          OrderType.LIMIT,
-          risk.positionSize,
-          markPrice,
-          TimeInForce.GTC,
-          true, // reduceOnly
-        );
+    // SYMBOL-LEVEL LOCK: Prevent concurrent execution on the same symbol
+    // This also prevents the strategy from opening new positions while we are closing
+    if (this.executionLockService) {
+      const lockAcquired = this.executionLockService.tryAcquireSymbolLock(
+        position.symbol,
+        threadId,
+        `emergency-close-${side}`
+      );
+      
+      if (!lockAcquired) {
+        this.logger.warn(`⏳ Symbol ${position.symbol} is already being executed - skipping emergency close for ${side}`);
+        return { success: true };
+      }
+    }
 
-        this.logger.log(
-          `📤 Emergency close ${side} ${position.symbol} on ${exchange}: ` +
-            `size=${risk.positionSize.toFixed(4)} @ $${markPrice.toFixed(4)} (attempt ${attempt}/${this.config.maxCloseRetries})`,
-        );
-
-        const response = await adapter.placeOrder(closeOrder);
-
-        if (response.isSuccess() || response.isFilled()) {
+    try {
+      // Check if an order is already pending for this symbol/side/exchange
+      if (this.executionLockService) {
+        const isLocked = this.executionLockService.hasActiveOrder(exchange, position.symbol, side);
+        if (isLocked) {
+          this.logger.debug(`⚠️ Skipping emergency close for ${position.symbol} ${side} on ${exchange}: order already active`);
+          if (this.executionLockService) this.executionLockService.releaseSymbolLock(position.symbol, threadId);
           return { success: true };
-        } else {
-          this.logger.warn(
-            `Emergency close attempt ${attempt} failed: ${response.error || 'Unknown'}`,
-          );
         }
-      } catch (error: any) {
-        this.logger.warn(
-          `Emergency close attempt ${attempt} error: ${error.message}`,
-        );
+      }
+
+      // Retry logic for emergency closes
+      for (let attempt = 1; attempt <= this.config.maxCloseRetries; attempt++) {
+        try {
+          // Get current mark price to act as maker
+          let markPrice: number | undefined;
+          try {
+            markPrice = await adapter.getMarkPrice(position.symbol);
+          } catch (priceError: any) {
+            this.logger.warn(
+              `Could not get mark price for ${position.symbol} emergency close, using risk price: ${priceError.message}`,
+            );
+            markPrice = risk.markPrice;
+          }
+
+          const closeSide = side === 'LONG' ? OrderSide.SHORT : OrderSide.LONG;
+
+          // Register order in execution lock service BEFORE placing
+          if (this.executionLockService) {
+            const registered = this.executionLockService.registerOrderPlacing(
+              `liq-${position.symbol}-${side}-${attempt}`,
+              position.symbol,
+              exchange,
+              side === 'LONG' ? 'SHORT' : 'LONG', // Side we are placing
+              threadId,
+              risk.positionSize,
+              markPrice
+            );
+
+            if (!registered) {
+              this.logger.warn(`⚠️ Could not register emergency order for ${position.symbol} ${side}: already active`);
+              return { success: true };
+            }
+          }
+
+          // Create limit order to close position at mark price (opposite side, reduceOnly)
+          const closeOrder = new PerpOrderRequest(
+            position.symbol,
+            closeSide,
+            OrderType.LIMIT,
+            risk.positionSize,
+            markPrice,
+            TimeInForce.GTC,
+            true, // reduceOnly
+          );
+
+          this.logger.log(
+            `📤 Emergency close ${side} ${position.symbol} on ${exchange}: ` +
+              `size=${risk.positionSize.toFixed(4)} @ $${markPrice.toFixed(4)} (attempt ${attempt}/${this.config.maxCloseRetries})`,
+          );
+
+          const response = await adapter.placeOrder(closeOrder);
+
+          if (response.isSuccess() || response.isFilled()) {
+            if (this.executionLockService) {
+              this.executionLockService.updateOrderStatus(
+                exchange,
+                position.symbol,
+                closeSide === OrderSide.LONG ? 'LONG' : 'SHORT',
+                response.isFilled() ? 'FILLED' : 'WAITING_FILL',
+                response.orderId,
+                markPrice,
+                true
+              );
+            }
+            return { success: true };
+          } else {
+            if (this.executionLockService) {
+              this.executionLockService.updateOrderStatus(
+                exchange,
+                position.symbol,
+                closeSide === OrderSide.LONG ? 'LONG' : 'SHORT',
+                'FAILED'
+              );
+            }
+            this.logger.warn(
+              `Emergency close attempt ${attempt} failed: ${response.error || 'Unknown'}`,
+            );
+          }
+        } catch (error: any) {
+          const closeSide = side === 'LONG' ? OrderSide.SHORT : OrderSide.LONG;
+          if (this.executionLockService) {
+            this.executionLockService.updateOrderStatus(
+              exchange,
+              position.symbol,
+              closeSide === OrderSide.LONG ? 'LONG' : 'SHORT',
+              'FAILED'
+            );
+          }
+          this.logger.warn(
+            `Emergency close attempt ${attempt} error: ${error.message}`,
+          );
+
+          if (attempt < this.config.maxCloseRetries) {
+            // Wait before retry with exponential backoff
+            await new Promise((resolve) =>
+              setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)),
+            );
+          }
+        }
+      }
+
+      return {
+        success: false,
+        error: `Failed after ${this.config.maxCloseRetries} attempts`,
+      };
+    } finally {
+      // Always release symbol lock when done
+      if (this.executionLockService) {
+        this.executionLockService.releaseSymbolLock(position.symbol, threadId);
+      }
+    }
+  }
 
         if (attempt < this.config.maxCloseRetries) {
           // Wait before retry with exponential backoff

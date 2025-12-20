@@ -9,6 +9,7 @@ import {
   FundingDataRequest,
 } from '../../../domain/ports/IFundingDataProvider';
 import { ExchangeType } from '../../../domain/value-objects/ExchangeConfig';
+import { RateLimiterService } from '../../../infrastructure/services/RateLimiterService';
 
 interface LighterFundingRate {
   market_id: number;
@@ -40,14 +41,26 @@ export class LighterFundingDataProvider
   private lastCacheUpdate: number = 0;
   private readonly CACHE_TTL = 10000; // 10 second cache (funding rates update hourly, but we want fresh data for performance metrics)
 
+  // Rate limiter weights (matching LighterExchangeAdapter)
+  private readonly WEIGHT_INFO = 1; // Light read operations
+
   constructor(
     private readonly configService: ConfigService,
+    private readonly rateLimiter: RateLimiterService,
     @Optional() private readonly wsProvider?: LighterWebSocketProvider,
   ) {
     this.baseUrl =
       this.configService.get<string>('LIGHTER_API_BASE_URL') ||
       'https://mainnet.zklighter.elliot.ai';
     this.apiClient = new ApiClient({ host: this.baseUrl });
+  }
+
+  /**
+   * Helper method to wrap API calls with rate limiting
+   */
+  private async callApi<T>(weight: number, fn: () => Promise<T>): Promise<T> {
+    await this.rateLimiter.acquire(ExchangeType.LIGHTER, weight);
+    return await fn();
   }
 
   /**
@@ -73,12 +86,12 @@ export class LighterFundingDataProvider
         }
 
         const fundingUrl = `${this.baseUrl}/api/v1/funding-rates`;
-        const response = await axios.get<LighterFundingRatesResponse>(
+        const response = await this.callApi(this.WEIGHT_INFO, () => axios.get<LighterFundingRatesResponse>(
           fundingUrl,
           {
             timeout: 10000,
           },
-        );
+        ));
 
         if (
           response.data?.code === 200 &&
@@ -105,15 +118,22 @@ export class LighterFundingDataProvider
         }
       } catch (error: any) {
         const statusCode = error?.response?.status;
-        if (statusCode === 429 && attempt < maxRetries - 1) {
+        const isRateLimit = statusCode === 429;
+        
+        if (isRateLimit && attempt < maxRetries - 1) {
+          // Only log at debug level during retries
           this.logger.debug(
             `Rate limited (429) refreshing Lighter funding rates (attempt ${attempt + 1}/${maxRetries})...`,
           );
           continue;
         }
-        this.logger.error(
-          `Failed to refresh Lighter funding rates: ${error.message}`,
-        );
+        
+        // Only log error on final failure
+        if (attempt === maxRetries - 1) {
+          this.logger.error(
+            `Failed to refresh Lighter funding rates after ${maxRetries} attempts: ${error.message}`,
+          );
+        }
         break;
       }
     }
@@ -195,10 +215,10 @@ export class LighterFundingDataProvider
 
     try {
       const orderBookUrl = `${this.baseUrl}/api/v1/orderBookDetails`;
-      const response = await axios.get(orderBookUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(orderBookUrl, {
         timeout: 10000,
         params: { market_id: marketIndex },
-      });
+      }));
 
       this.logger.log(
         `  📥 Response: code=${response.data?.code}, has order_book_details=${!!response.data?.order_book_details?.length}`,
@@ -303,26 +323,27 @@ export class LighterFundingDataProvider
         `  ✅ SUCCESS: Returned $${oiUsd.toLocaleString()} (OI: ${openInterest}, Price: ${markPrice})`,
       );
       return oiUsd;
-    } catch (error: any) {
-      // If it's already our error, re-throw it
-      if (error.message && error.message.includes('Lighter OI API error')) {
-        throw error;
+      } catch (error: any) {
+        // If it's already our error, re-throw it
+        if (error.message && error.message.includes('Lighter OI API error')) {
+          throw error;
+        }
+
+        // Otherwise, wrap it with context
+        const errorMsg = error.response
+          ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
+          : error.message || 'Unknown error';
+
+        // Only log error on final failure (this method doesn't have retry logic, so log immediately)
+        this.logger.error(
+          `  ❌ ERROR: Failed to get Lighter OI for market ${marketIndex}: ${errorMsg}`,
+        );
+        this.logger.error(`  📄 Full error: ${error.stack || error}`);
+
+        throw new Error(
+          `Lighter OI API error for market ${marketIndex}: ${errorMsg}`,
+        );
       }
-
-      // Otherwise, wrap it with context
-      const errorMsg = error.response
-        ? `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`
-        : error.message || 'Unknown error';
-
-      this.logger.error(
-        `  ❌ ERROR: Failed to get Lighter OI for market ${marketIndex}: ${errorMsg}`,
-      );
-      this.logger.error(`  📄 Full error: ${error.stack || error}`);
-
-      throw new Error(
-        `Lighter OI API error for market ${marketIndex}: ${errorMsg}`,
-      );
-    }
   }
 
   /**
@@ -348,7 +369,10 @@ export class LighterFundingDataProvider
         // Validate response structure
         if (response.data?.code !== 200) {
           const errorMsg = `Invalid response code: ${response.data?.code}. Response: ${JSON.stringify(response.data)}`;
-          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -359,7 +383,10 @@ export class LighterFundingDataProvider
           response.data.order_book_details.length === 0
         ) {
           const errorMsg = `No order_book_details in response. Response: ${JSON.stringify(response.data)}`;
-          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -370,7 +397,10 @@ export class LighterFundingDataProvider
         // Validate market_id matches
         if (orderBookDetail.market_id !== marketIndex) {
           const errorMsg = `Market ID mismatch: expected ${marketIndex}, got ${orderBookDetail.market_id}`;
-          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -383,7 +413,10 @@ export class LighterFundingDataProvider
         // Validate raw values exist
         if (openInterestRaw === undefined || openInterestRaw === null) {
           const errorMsg = `open_interest field missing or null. Response: ${JSON.stringify(orderBookDetail)}`;
-          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -391,7 +424,10 @@ export class LighterFundingDataProvider
 
         if (markPriceRaw === undefined || markPriceRaw === null) {
           const errorMsg = `last_trade_price field missing or null. Response: ${JSON.stringify(orderBookDetail)}`;
-          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -410,7 +446,10 @@ export class LighterFundingDataProvider
         // Validate parsed values
         if (isNaN(openInterest)) {
           const errorMsg = `Failed to parse open_interest: "${openInterestRaw}" is not a valid number`;
-          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -418,7 +457,10 @@ export class LighterFundingDataProvider
 
         if (isNaN(markPrice) || markPrice <= 0) {
           const errorMsg = `Invalid mark price: "${markPriceRaw}" parsed to ${markPrice} (must be > 0)`;
-          this.logger.debug(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.debug(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -429,7 +471,10 @@ export class LighterFundingDataProvider
 
         if (isNaN(oiUsd) || oiUsd < 0) {
           const errorMsg = `Invalid calculated OI USD: ${oiUsd} (OI=${openInterest}, Price=${markPrice})`;
-          this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(`  ❌ ERROR: ${errorMsg}`);
+          }
           throw new Error(
             `Lighter API error for market ${marketIndex}: ${errorMsg}`,
           );
@@ -462,13 +507,20 @@ export class LighterFundingDataProvider
 
         // If it's already our error, re-throw it
         if (error.message && error.message.includes('Lighter API error')) {
+          // Only log on final attempt
+          if (attempt === maxRetries - 1) {
+            this.logger.error(
+              `  ❌ ERROR: Failed to get Lighter OI and mark price for market ${marketIndex}: ${error.message}`,
+            );
+            this.logger.error(`  📄 Full error: ${error.stack || error}`);
+          }
           throw error;
         }
 
-        // Only log ERROR level for non-rate-limit errors on final attempt
-        if (!isRateLimit || attempt === maxRetries - 1) {
+        // Only log ERROR level on final attempt
+        if (attempt === maxRetries - 1) {
           this.logger.error(
-            `  ❌ ERROR: Failed to get Lighter OI and mark price for market ${marketIndex}: ${errorMsg}`,
+            `  ❌ ERROR: Failed to get Lighter OI and mark price for market ${marketIndex} after ${maxRetries} attempts: ${errorMsg}`,
           );
           this.logger.error(`  📄 Full error: ${error.stack || error}`);
         }
@@ -500,10 +552,10 @@ export class LighterFundingDataProvider
     // Method 0: Try orderBookDetails API first (same as getOpenInterest, most reliable)
     try {
       const orderBookUrl = `${this.baseUrl}/api/v1/orderBookDetails`;
-      const response = await axios.get(orderBookUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(orderBookUrl, {
         timeout: 10000,
         params: { market_id: marketIndex },
-      });
+      }));
 
       if (
         response.data?.code === 200 &&
@@ -582,10 +634,10 @@ export class LighterFundingDataProvider
     // Method 2: Try funding rates API (may include mark price)
     try {
       const fundingUrl = `${this.baseUrl}/api/v1/funding-rates`;
-      const response = await axios.get(fundingUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(fundingUrl, {
         timeout: 10000,
         params: { market_index: marketIndex },
-      });
+      }));
 
       if (
         response.data &&
@@ -714,9 +766,9 @@ export class LighterFundingDataProvider
       // Based on: https://apidocs.lighter.xyz/reference/get_markets
       const explorerUrl = 'https://explorer.elliot.ai/api/markets';
 
-      const response = await axios.get(explorerUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(explorerUrl, {
         timeout: 10000,
-      });
+      }));
 
       if (!response.data || !Array.isArray(response.data)) {
         this.logger.warn('Lighter Explorer API returned invalid data format');
@@ -828,10 +880,10 @@ export class LighterFundingDataProvider
 
       // Fall back to REST API - orderBookDetails endpoint has volume
       const orderBookUrl = `${this.baseUrl}/api/v1/orderBookDetails`;
-      const response = await axios.get(orderBookUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(orderBookUrl, {
         timeout: 10000,
         params: { market_id: marketIndex },
-      });
+      }));
 
       if (
         response.data?.code !== 200 ||
@@ -859,6 +911,8 @@ export class LighterFundingDataProvider
 
       return volume;
     } catch (error: any) {
+      // Only log at debug level - this is a non-critical read operation
+      // Errors are already logged by getOpenInterestAndMarkPrice if called together
       this.logger.debug(
         `Failed to get 24h volume for Lighter market ${marketIndex}: ${error.message}`,
       );

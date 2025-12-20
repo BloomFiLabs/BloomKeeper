@@ -978,13 +978,14 @@ export class LighterExchangeAdapter
             isAsk,
             orderType: LighterOrderType.LIMIT,
             orderExpiry,
+            reduceOnly: request.reduceOnly || false,
           };
         }
 
         // Log order details
         if (request.type === OrderType.LIMIT) {
           this.logger.log(
-            `📋 LIMIT order for ${request.symbol}: 1 hour expiry (${new Date(orderParams.orderExpiry).toISOString()})`,
+            `📋 LIMIT order for ${request.symbol}: 1 hour expiry (${new Date(orderParams.orderExpiry).toISOString()}), reduceOnly: ${orderParams.reduceOnly}`,
           );
         }
 
@@ -1000,10 +1001,12 @@ export class LighterExchangeAdapter
             isAsk: orderParams.isAsk,
             orderType: orderParams.orderType,
             orderExpiry: orderParams.orderExpiry,
+            reduceOnly: orderParams.reduceOnly,
           })}`,
         );
 
-        const result = await (this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX), this.signerClient!.createUnifiedOrder(orderParams));
+        await this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX);
+        const result = await this.signerClient!.createUnifiedOrder(orderParams);
 
         if (!result.success) {
           const errorMsg = result.mainOrder.error || 'Order creation failed';

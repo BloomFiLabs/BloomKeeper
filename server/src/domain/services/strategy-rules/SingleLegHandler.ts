@@ -17,6 +17,7 @@ import {
 import { Result } from '../../common/Result';
 import { DomainException } from '../../exceptions/DomainException';
 import { ExecutionPlanBuilder } from './ExecutionPlanBuilder';
+import { ExecutionLockService } from '../../../infrastructure/services/ExecutionLockService';
 
 /**
  * Single-leg retry tracking info
@@ -47,6 +48,7 @@ export class SingleLegHandler {
   constructor(
     private readonly strategyConfig: StrategyConfig,
     private readonly executionPlanBuilder: ExecutionPlanBuilder,
+    private readonly executionLockService?: ExecutionLockService,
   ) {}
 
   /**
@@ -272,19 +274,81 @@ export class SingleLegHandler {
           ? perpPerpPlan.longOrder
           : perpPerpPlan.shortOrder;
 
-      // Place the order
-      const orderResult = await adapter.placeOrder(orderRequest);
+      const threadId = this.executionLockService?.generateThreadId() || `single-leg-${Date.now()}`;
 
-      if (orderResult && orderResult.orderId) {
-        this.logger.log(
-          `✅ Successfully placed ${missingSide} order for ${opportunity.symbol} on ${missingExchange}: ${orderResult.orderId}`,
+      // SYMBOL-LEVEL LOCK: Prevent concurrent execution on the same symbol
+      if (this.executionLockService) {
+        const lockAcquired = this.executionLockService.tryAcquireSymbolLock(
+          opportunity.symbol,
+          threadId,
+          'tryOpenMissingSide'
         );
-        return true;
-      } else {
-        this.logger.warn(
-          `Failed to place ${missingSide} order for ${opportunity.symbol} on ${missingExchange}`,
-        );
-        return false;
+        
+        if (!lockAcquired) {
+          this.logger.warn(`⏳ Symbol ${opportunity.symbol} is already being executed - skipping single-leg retry`);
+          return false;
+        }
+      }
+
+      try {
+        // Check for active order
+        if (this.executionLockService) {
+          const isLocked = this.executionLockService.hasActiveOrder(missingExchange, opportunity.symbol, missingSide);
+          if (isLocked) {
+            this.logger.debug(`⚠️ Skipping single-leg retry for ${opportunity.symbol} ${missingSide} on ${missingExchange}: order already active`);
+            return false;
+          }
+        }
+
+        // Register order
+        if (this.executionLockService) {
+          this.executionLockService.registerOrderPlacing(
+            `retry-${opportunity.symbol}-${missingSide}-${Date.now()}`,
+            opportunity.symbol,
+            missingExchange,
+            missingSide,
+            threadId,
+            orderRequest.size,
+            orderRequest.price
+          );
+        }
+
+        // Place the order
+        const orderResult = await adapter.placeOrder(orderRequest);
+
+        if (orderResult && orderResult.orderId) {
+          if (this.executionLockService) {
+            this.executionLockService.updateOrderStatus(
+              missingExchange,
+              opportunity.symbol,
+              missingSide,
+              orderResult.isFilled() ? 'FILLED' : 'WAITING_FILL',
+              orderResult.orderId,
+              orderRequest.price
+            );
+          }
+          this.logger.log(
+            `✅ Successfully placed ${missingSide} order for ${opportunity.symbol} on ${missingExchange}: ${orderResult.orderId}`,
+          );
+          return true;
+        } else {
+          if (this.executionLockService) {
+            this.executionLockService.updateOrderStatus(
+              missingExchange,
+              opportunity.symbol,
+              missingSide,
+              'FAILED'
+            );
+          }
+          this.logger.warn(
+            `Failed to place ${missingSide} order for ${opportunity.symbol} on ${missingExchange}`,
+          );
+          return false;
+        }
+      } finally {
+        if (this.executionLockService) {
+          this.executionLockService.releaseSymbolLock(opportunity.symbol, threadId);
+        }
       }
     } catch (error: any) {
       this.logger.warn(
@@ -428,20 +492,74 @@ export class SingleLegHandler {
         true, // reduceOnly
       );
 
-      const closeResult = await adapter.placeOrder(closeOrder);
-      if (closeResult && closeResult.orderId) {
-        this.logger.log(
-          `✅ Closed single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}`,
+      const threadId = this.executionLockService?.generateThreadId() || `single-leg-close-${Date.now()}`;
+
+      // SYMBOL-LEVEL LOCK
+      if (this.executionLockService) {
+        const lockAcquired = this.executionLockService.tryAcquireSymbolLock(
+          position.symbol,
+          threadId,
+          'closeSingleLegPosition'
         );
-        return true;
-      } else {
-        this.logger.warn(
-          `⚠️ Failed to close single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}`,
-        );
-        result.errors.push(
-          `Failed to close single-leg position ${position.symbol} on ${position.exchangeType}`,
-        );
-        return false;
+        
+        if (!lockAcquired) {
+          this.logger.warn(`⏳ Symbol ${position.symbol} is already being executed - skipping single-leg close`);
+          return false;
+        }
+      }
+
+      try {
+        // Register order
+        if (this.executionLockService) {
+          this.executionLockService.registerOrderPlacing(
+            `close-${position.symbol}-${closeSide}-${Date.now()}`,
+            position.symbol,
+            position.exchangeType,
+            closeSide,
+            threadId,
+            position.size,
+            markPrice
+          );
+        }
+
+        const closeResult = await adapter.placeOrder(closeOrder);
+        if (closeResult && closeResult.orderId) {
+          if (this.executionLockService) {
+            this.executionLockService.updateOrderStatus(
+              position.exchangeType,
+              position.symbol,
+              closeSide,
+              closeResult.isFilled() ? 'FILLED' : 'WAITING_FILL',
+              closeResult.orderId,
+              markPrice,
+              true
+            );
+          }
+          this.logger.log(
+            `✅ Closed single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}`,
+          );
+          return true;
+        } else {
+          if (this.executionLockService) {
+            this.executionLockService.updateOrderStatus(
+              position.exchangeType,
+              position.symbol,
+              closeSide,
+              'FAILED'
+            );
+          }
+          this.logger.warn(
+            `⚠️ Failed to close single-leg position ${position.symbol} (${position.side}) on ${position.exchangeType}`,
+          );
+          result.errors.push(
+            `Failed to close single-leg position ${position.symbol} on ${position.exchangeType}`,
+          );
+          return false;
+        }
+      } finally {
+        if (this.executionLockService) {
+          this.executionLockService.releaseSymbolLock(position.symbol, threadId);
+        }
       }
     } catch (error: any) {
       this.logger.error(
