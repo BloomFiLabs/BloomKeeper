@@ -67,7 +67,12 @@ export class LighterExchangeAdapter
 
   // Rate limit weights
   private readonly WEIGHT_TX = 6;
-  private readonly WEIGHT_INFO = 30; // Heavy info endpoints
+  private readonly WEIGHT_INFO = 1; // Standard REST GET is usually weight 1 or low
+
+  private async callApi<T>(weight: number, fn: () => Promise<T>): Promise<T> {
+    await this.rateLimiter.acquire(ExchangeType.LIGHTER, weight);
+    return await fn();
+  }
 
   constructor(
     private readonly configService: ConfigService,
@@ -415,10 +420,10 @@ export class LighterExchangeAdapter
       );
 
       const explorerUrl = 'https://explorer.elliot.ai/api/markets';
-      const response = await axios.get(explorerUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(explorerUrl, {
         timeout: 10000,
         headers: { accept: 'application/json' },
-      });
+      }));
 
       if (!response.data || !Array.isArray(response.data)) {
         this.logger.warn('Lighter Explorer API returned invalid data format');
@@ -807,16 +812,16 @@ export class LighterExchangeAdapter
             }
 
             // Use createMarketOrder for closing positions (per Lighter docs)
-            await this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX);
-            const [tx, hash, error] =
-              await this.signerClient!.createMarketOrder({
+            const [tx, hash, error] = await this.callApi(this.WEIGHT_TX, () =>
+              this.signerClient!.createMarketOrder({
                 marketIndex,
                 clientOrderIndex: Date.now(),
                 baseAmount,
                 avgExecutionPrice: market.priceToUnits(adjustedPrice),
                 isAsk,
                 reduceOnly: true,
-              });
+              })
+            );
 
             if (error) {
               throw new Error(`Failed to close position: ${error}`);
@@ -1299,10 +1304,10 @@ export class LighterExchangeAdapter
     // Fallback: query markets API directly
     try {
       const explorerUrl = 'https://explorer.elliot.ai/api/markets';
-      const response = await axios.get(explorerUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(explorerUrl, {
         timeout: 10000,
         headers: { accept: 'application/json' },
-      });
+      }));
 
       if (response.data && Array.isArray(response.data)) {
         for (const market of response.data) {
@@ -1346,10 +1351,10 @@ export class LighterExchangeAdapter
         `Fetching positions from Lighter Explorer API for account ${accountIndex}...`,
       );
 
-      const response = await axios.get(explorerUrl, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(explorerUrl, {
         timeout: 10000,
         headers: { accept: 'application/json' },
-      });
+      }));
 
       if (!response.data) {
         this.logger.warn('Lighter Explorer API returned empty positions data');
@@ -1565,8 +1570,7 @@ export class LighterExchangeAdapter
       const price = BigInt(Math.round((request.price || 0) * 1e8));
 
       // Lighter SDK updateOrder
-      await this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX);
-      const [tx, txHash, error] = await (this.signerClient as any).updateOrder({
+      const [tx, txHash, error] = await this.callApi(this.WEIGHT_TX, () => (this.signerClient as any).updateOrder({
         marketIndex,
         orderIndex,
         side: request.side === OrderSide.LONG ? 0 : 1,
@@ -1576,7 +1580,7 @@ export class LighterExchangeAdapter
           request.type === OrderType.MARKET
             ? LighterOrderType.MARKET
             : LighterOrderType.LIMIT,
-      });
+      }));
 
       if (error) {
         throw new Error(error);
@@ -1646,7 +1650,7 @@ export class LighterExchangeAdapter
         // Get open orders for this market
         const authToken =
           await this.signerClient!.createAuthTokenWithExpiry(600);
-        const response = await axios.get(
+        const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
           `${this.config.baseUrl}/api/v1/accountActiveOrders`,
           {
             params: {
@@ -1657,7 +1661,7 @@ export class LighterExchangeAdapter
             timeout: 10000,
             headers: { accept: 'application/json' },
           },
-        );
+        ));
 
         if (!response.data || response.data.code !== 200) {
           this.logger.warn(
@@ -1766,12 +1770,12 @@ export class LighterExchangeAdapter
         );
 
         // SDK types are incorrect - it actually accepts { marketIndex, orderIndex } object
-        const [tx, txHash, error] = await (
+        const [tx, txHash, error] = await this.callApi(this.WEIGHT_TX, () => (
           this.signerClient as any
         ).cancelOrder({
           marketIndex,
           orderIndex,
-        });
+        }));
 
         if (error) {
           this.logger.error(`❌ Cancel order failed: ${error}`);
@@ -1814,7 +1818,7 @@ export class LighterExchangeAdapter
 
       // Get open orders for this specific market first
       const authToken = await this.signerClient!.createAuthTokenWithExpiry(600);
-      const response = await axios.get(
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
         `${this.config.baseUrl}/api/v1/accountActiveOrders`,
         {
           params: {
@@ -1825,7 +1829,7 @@ export class LighterExchangeAdapter
           timeout: 10000,
           headers: { accept: 'application/json' },
         },
-      );
+      ));
 
       if (!response.data || response.data.code !== 200) {
         this.logger.debug(`No open orders found for ${symbol}`);
@@ -1917,7 +1921,7 @@ export class LighterExchangeAdapter
       // Note: accountActiveOrders requires market_id, so we need to query each market
       // For now, query all markets we care about (0-100) or use a different endpoint
       // Actually, let's try the account endpoint which includes open_order_count per position
-      const accountResponse = await axios.get(
+      const accountResponse = await this.callApi(this.WEIGHT_INFO, () => axios.get(
         `${this.config.baseUrl}/api/v1/account`,
         {
           params: {
@@ -1927,7 +1931,7 @@ export class LighterExchangeAdapter
           timeout: 10000,
           headers: { accept: 'application/json' },
         },
-      );
+      ));
 
       if (!accountResponse.data || accountResponse.data.code !== 200) {
         this.logger.debug(
@@ -1962,7 +1966,7 @@ export class LighterExchangeAdapter
 
       for (const marketId of marketsWithOrders) {
         try {
-          const response = await axios.get(
+          const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
             `${this.config.baseUrl}/api/v1/accountActiveOrders`,
             {
               params: {
@@ -1973,7 +1977,7 @@ export class LighterExchangeAdapter
               timeout: 10000,
               headers: { accept: 'application/json' },
             },
-          );
+          ));
 
           if (!response.data || response.data.code !== 200) {
             this.logger.debug(
@@ -2195,13 +2199,13 @@ export class LighterExchangeAdapter
       const baseUrl = this.config.baseUrl;
 
       // Use the orderBookOrders endpoint - requires market_id and limit
-      const response = await axios.get(`${baseUrl}/api/v1/orderBookOrders`, {
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(`${baseUrl}/api/v1/orderBookOrders`, {
         params: {
           market_id: marketIndex,
           limit: 20,
         },
         timeout: 10000,
-      });
+      }));
 
       const data = response.data;
       if (data.code !== 200) {
@@ -2309,7 +2313,7 @@ export class LighterExchangeAdapter
           const oneMinuteAgo = now - 60;
           const baseUrl = this.config.baseUrl;
 
-          const candlestickResponse = await axios.get(
+          const candlestickResponse = await this.callApi(this.WEIGHT_INFO, () => axios.get(
             `${baseUrl}/api/v1/candlesticks`,
             {
               params: {
@@ -2322,7 +2326,7 @@ export class LighterExchangeAdapter
               },
               timeout: 10000,
             },
-          );
+          ));
 
           const candlestickData = candlestickResponse.data;
           const candlesticks = candlestickData?.candlesticks || [];
@@ -2487,9 +2491,9 @@ export class LighterExchangeAdapter
           this.configService.get<string>('LIGHTER_API_BASE_URL') ||
           'https://mainnet.zklighter.elliot.ai';
         const fundingUrl = `${baseUrl}/api/v1/funding-rates`;
-        const response = await axios.get(fundingUrl, {
+        const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(fundingUrl, {
           timeout: 10000,
-        });
+        }));
 
         // Handle different response structures
         if (
@@ -2590,10 +2594,10 @@ export class LighterExchangeAdapter
           }
 
           const explorerUrl = `https://explorer.elliot.ai/api/markets/${symbol}/logs`;
-          const response = await axios.get(explorerUrl, {
+          const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(explorerUrl, {
             timeout: 10000,
             headers: { accept: 'application/json' },
-          });
+          }));
 
           // Try multiple response structures
           if (response.data) {
@@ -2804,10 +2808,10 @@ export class LighterExchangeAdapter
         const accountApi = new AccountApi(apiClient);
 
         // Call getAccount with proper parameters
-        const response = await (accountApi.getAccount as any)({
+        const response = await this.callApi(this.WEIGHT_INFO, () => (accountApi.getAccount as any)({
           by: 'index',
           value: String(accountIndex),
-        });
+        }));
 
         // Response structure from actual API call:
         // { code: 200, total: 1, accounts: [{ collateral, available_balance, status, ... }] }
@@ -2831,7 +2835,7 @@ export class LighterExchangeAdapter
 
         // Fallback: try direct REST API call if SDK response structure is different
         try {
-          const httpResponse = await axios.get(
+          const httpResponse = await this.callApi(this.WEIGHT_INFO, () => axios.get(
             `${this.config.baseUrl}/api/v1/account`,
             {
               params: {
@@ -2840,7 +2844,7 @@ export class LighterExchangeAdapter
               },
               timeout: 10000,
             },
-          );
+          ));
 
           if (httpResponse.data && httpResponse.data.collateral !== undefined) {
             const balance = parseFloat(httpResponse.data.collateral || '0');
@@ -3032,9 +3036,9 @@ export class LighterExchangeAdapter
             await new Promise((resolve) => setTimeout(resolve, 2000));
           }
 
-          const response = await axios.get(`${this.config.baseUrl}/api/v1/markets`, {
+          const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(`${this.config.baseUrl}/api/v1/markets`, {
             timeout: 10000,
-          });
+          }));
           const markets = response.data?.data || response.data?.markets || response.data;
 
           if (Array.isArray(markets)) {
@@ -3159,7 +3163,7 @@ export class LighterExchangeAdapter
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const response = await axios.get(
+        const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
           `${this.config.baseUrl}/api/v1/fastwithdraw/info`,
           {
             params: {
@@ -3168,7 +3172,7 @@ export class LighterExchangeAdapter
             },
             timeout: 30000,
           },
-        );
+        ));
 
         if (response.data.code !== 200) {
           throw new Error(
@@ -3202,7 +3206,7 @@ export class LighterExchangeAdapter
     toAccountIndex: number,
     authToken: string,
   ): Promise<number> {
-    const response = await axios.get(
+    const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
       `${this.config.baseUrl}/api/v1/transferFeeInfo`,
       {
         params: {
@@ -3212,7 +3216,7 @@ export class LighterExchangeAdapter
         },
         timeout: 10000,
       },
-    );
+    ));
 
     if (response.data.code !== 200) {
       throw new Error(
@@ -3231,7 +3235,7 @@ export class LighterExchangeAdapter
     apiKeyIndex: number;
     nonce: number;
   }> {
-    const response = await axios.get(
+    const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
       `${this.config.baseUrl}/api/v1/nextNonce`,
       {
         params: {
@@ -3240,7 +3244,7 @@ export class LighterExchangeAdapter
         },
         timeout: 10000,
       },
-    );
+    ));
 
     if (response.data && typeof response.data === 'object') {
       if (
@@ -3714,7 +3718,7 @@ export class LighterExchangeAdapter
       formData.append('tx_info', txInfoStr);
       formData.append('to_address', destination);
 
-      const response = await axios.post(
+      const response = await this.callApi(this.WEIGHT_TX, () => axios.post(
         `${this.config.baseUrl}/api/v1/fastwithdraw?auth=${encodeURIComponent(authToken)}`,
         formData.toString(),
         {
@@ -3723,7 +3727,7 @@ export class LighterExchangeAdapter
           },
           timeout: 30000,
         },
-      );
+      ));
 
       if (response.data.code === 200) {
         const txHash =
@@ -3779,7 +3783,7 @@ export class LighterExchangeAdapter
       const authToken = await this.signerClient!.createAuthTokenWithExpiry(600); // 10 minutes
 
       // Call the positionFunding endpoint
-      const response = await axios.get(
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
         `${this.config.baseUrl}/api/v1/positionFunding`,
         {
           params: {
@@ -3792,7 +3796,7 @@ export class LighterExchangeAdapter
             accept: 'application/json',
           },
         },
-      );
+      ));
 
       const data = response.data;
 

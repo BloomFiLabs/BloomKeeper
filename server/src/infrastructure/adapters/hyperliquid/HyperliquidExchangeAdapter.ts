@@ -58,6 +58,16 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
   private readonly WEIGHT_INFO_HEAVY = 20;
   private readonly WEIGHT_INFO_LIGHT = 2;
 
+  private async callInfo<T>(weight: number, fn: () => Promise<T>): Promise<T> {
+    await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, weight);
+    return await fn();
+  }
+
+  private async callExchange<T>(weight: number, fn: () => Promise<T>): Promise<T> {
+    await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, weight);
+    return await fn();
+  }
+
   constructor(
     private readonly configService: ConfigService,
     private readonly dataProvider: HyperLiquidDataProvider,
@@ -175,9 +185,9 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         this.logger.debug(
           `Initializing SymbolConverter (attempt ${attempt + 1}/${maxRetries})...`,
         );
-        this.symbolConverter = await SymbolConverter.create({
+        this.symbolConverter = await this.callInfo(this.WEIGHT_INFO_HEAVY, () => SymbolConverter.create({
           transport: this.transport,
-        });
+        }));
         this.logger.debug('SymbolConverter initialized successfully');
         return this.symbolConverter;
       } catch (error: any) {
@@ -381,8 +391,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           }
 
           // Use the order() method matching simple-hyperliquid-order.ts format
-          await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_EXCHANGE);
-          result = await this.exchangeClient.order({
+          result = await this.callExchange(this.WEIGHT_EXCHANGE, () => this.exchangeClient.order({
             orders: [
               {
                 a: assetId,
@@ -394,7 +403,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
               },
             ],
             grouping: 'na',
-          });
+          }));
 
           // Parse response matching the script format
           if (
@@ -532,27 +541,17 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
   }
 
   async getPosition(symbol: string): Promise<PerpPosition | null> {
-    try {
-      const positions = await this.getPositions();
-      return positions.find((p) => p.symbol === symbol) || null;
-    } catch (error: any) {
-      this.logger.error(`Failed to get position: ${error.message}`);
-      throw new ExchangeError(
-        `Failed to get position: ${error.message}`,
-        ExchangeType.HYPERLIQUID,
-        undefined,
-        error,
-      );
-    }
+    // getPositions already uses callInfo
+    const positions = await this.getPositions();
+    return positions.find((p) => p.symbol === symbol) || null;
   }
 
   async getPositions(): Promise<PerpPosition[]> {
-    try {
+    return this.callInfo(this.WEIGHT_INFO_LIGHT, async () => {
       // Always fetch fresh positions (no caching to ensure we see latest state)
       this.logger.debug(
         `Fetching fresh positions from Hyperliquid for ${this.walletAddress}...`,
       );
-      await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_INFO_LIGHT);
       const clearinghouseState = await this.infoClient.clearinghouseState({
         user: this.walletAddress,
       });
@@ -634,19 +633,11 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       }
 
       return positions;
-    } catch (error: any) {
-      this.logger.error(`Failed to get positions: ${error.message}`);
-      throw new ExchangeError(
-        `Failed to get positions: ${error.message}`,
-        ExchangeType.HYPERLIQUID,
-        undefined,
-        error,
-      );
-    }
+    });
   }
 
   private async getCoinFromAssetIndex(assetIndex: number): Promise<string> {
-    try {
+    return this.callInfo(this.WEIGHT_INFO_HEAVY, async () => {
       if (isNaN(assetIndex) || assetIndex < 0) {
         this.logger.error(`Invalid asset index: ${assetIndex}`);
         throw new Error(`Invalid asset index: ${assetIndex}`);
@@ -675,12 +666,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       }
 
       throw new Error(`Asset not found for index ${assetIndex}`);
-    } catch (error: any) {
-      this.logger.error(
-        `Failed to get coin from asset index ${assetIndex}: ${error.message}`,
-      );
-      throw new Error(`Could not find asset ID for index ${assetIndex}`);
-    }
+    });
   }
 
   /**
@@ -703,7 +689,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       }
 
       const isPerp = request.symbol.includes('-PERP');
-      const meta = await this.infoClient.meta();
+      const meta = await this.callInfo(this.WEIGHT_INFO_HEAVY, () => this.infoClient.meta());
       const asset = meta.universe[assetId];
       const szDecimals = asset.szDecimals;
 
@@ -719,8 +705,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       );
 
       // Use the dedicated updateOrder method for atomic modification
-      await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_EXCHANGE);
-      const result = await this.exchangeClient.updateOrder({
+      const result = await this.callExchange(this.WEIGHT_EXCHANGE, () => this.exchangeClient.updateOrder({
         order: {
           asset: assetId,
           isBuy: request.side === OrderSide.LONG,
@@ -730,7 +715,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           tif: request.timeInForce === TimeInForce.IOC ? 'Ioc' : 'Gtc',
         },
         oid: parseInt(orderId),
-      });
+      }));
 
       if (result.status === 'ok' && result.response?.type === 'order') {
         const status = result.response.data.statuses[0];
@@ -806,15 +791,14 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
       // Hyperliquid SDK: Use the cancel() method (not cancelOrder)
       // See: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#cancel-order-s
-      await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_EXCHANGE);
-      const result = await this.exchangeClient.cancel({
+      const result = await this.callExchange(this.WEIGHT_EXCHANGE, () => this.exchangeClient.cancel({
         cancels: [
           {
             a: assetId, // Asset index
             o: orderIdNum, // Order ID
           },
         ],
-      });
+      }));
 
       if (result.status === 'ok') {
         this.logger.log(
@@ -859,9 +843,9 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       );
 
       // Fetch open orders first
-      const openOrders = await this.infoClient.openOrders({
+      const openOrders = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.openOrders({
         user: this.walletAddress,
-      });
+      }));
 
       // Filter orders for this specific asset
       const ordersToCancel = openOrders.filter((o: any) => {
@@ -918,7 +902,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
     orderId: string,
     symbol?: string,
   ): Promise<PerpOrderResponse> {
-    try {
+    return this.callInfo(this.WEIGHT_INFO_LIGHT, async () => {
       const orderIdBigInt = BigInt(orderId);
       const openOrders = await this.infoClient.openOrders({
         user: this.walletAddress,
@@ -929,10 +913,10 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       });
 
       if (!order) {
-        // Order might be filled or cancelled - check user fills
-        const userFills = await this.infoClient.userFills({
+        // Order might be filled or cancelled - check user fills (weight 20)
+        const userFills = await this.callInfo(this.WEIGHT_INFO_HEAVY, () => this.infoClient.userFills({
           user: this.walletAddress,
-        });
+        }));
         const fill = userFills.find((f: any) => {
           const oid = typeof f.oid === 'bigint' ? f.oid : BigInt(f.oid || '0');
           return oid === orderIdBigInt;
@@ -986,7 +970,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         undefined,
         new Date(),
       );
-    } catch (error: any) {
+    }).catch((error: any) => {
       this.logger.error(`Failed to get order status: ${error.message}`);
       throw new ExchangeError(
         `Failed to get order status: ${error.message}`,
@@ -994,7 +978,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         undefined,
         error,
       );
-    }
+    });
   }
 
   // Price cache: key = symbol, value = { price: number, timestamp: number }
@@ -1034,11 +1018,11 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       // Use REST API l2Book endpoint directly to get order book snapshot
       // Hyperliquid API: POST /info with { type: "l2Book", coin: "YZY" } (no -PERP suffix!)
       const baseUrl = this.config.baseUrl || 'https://api.hyperliquid.xyz';
-      const response = await axios.post(
+      const response = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => axios.post(
         `${baseUrl}/info`,
         { type: 'l2Book', coin: baseCoin },
         { timeout: 5000 },
-      );
+      ));
 
       const l2Book = response.data;
 
@@ -1147,7 +1131,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
         // Use allMids() to get mark prices (matching simple-hyperliquid-order.ts)
         // Weight: 2 per request (1200 weight/minute limit = 600 requests/minute max)
-        const allMidsData = await this.infoClient.allMids();
+        const allMidsData = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.allMids());
         const coin = this.formatCoin(symbol);
         const baseCoin = coin.replace('-PERP', '');
 
@@ -1205,6 +1189,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       await this.ensureSymbolConverter();
       // Hyperliquid uses 5 significant figures for price.
       // We can derive a safe tick size from the current mark price.
+      // Note: getMarkPrice already uses rate limiter
       const markPrice = await this.getMarkPrice(symbol);
       if (markPrice <= 0) return 0.0001;
       
@@ -1243,9 +1228,9 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       this.logger.debug(
         `Fetching fresh balance from Hyperliquid for ${this.walletAddress}...`,
       );
-      const clearinghouseState = await this.infoClient.clearinghouseState({
+      const clearinghouseState = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.clearinghouseState({
         user: this.walletAddress,
-      });
+      }));
       const marginSummary = clearinghouseState.marginSummary;
 
       const accountValue = parseFloat(marginSummary.accountValue || '0');
@@ -1303,18 +1288,18 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         // We need accountValue, not freeCollateral, so we still need to fetch
         // But we can reduce calls by using the same cached clearinghouseState
         // For now, just fetch (it's cached in getBalance, but we need accountValue specifically)
-        const clearinghouseState = await this.infoClient.clearinghouseState({
+        const clearinghouseState = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.clearinghouseState({
           user: this.walletAddress,
-        });
+        }));
         const marginSummary = clearinghouseState.marginSummary;
         return parseFloat(marginSummary.accountValue || '0');
       }
 
       // If balance cache is expired, getBalance will refresh it, but we still need accountValue
       // So we fetch here (weight 2, but cached for 30s)
-      const clearinghouseState = await this.infoClient.clearinghouseState({
+      const clearinghouseState = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.clearinghouseState({
         user: this.walletAddress,
-      });
+      }));
       const marginSummary = clearinghouseState.marginSummary;
       const accountValue = parseFloat(marginSummary.accountValue || '0');
 
@@ -1341,9 +1326,10 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
    */
   async getAvailableMargin(): Promise<number> {
     try {
-      const clearinghouseState = await this.infoClient.clearinghouseState({
+      // Weight: 2 per request
+      const clearinghouseState = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.clearinghouseState({
         user: this.walletAddress,
-      });
+      }));
       const marginSummary = clearinghouseState.marginSummary;
 
       // Hyperliquid provides availableMargin directly
@@ -1448,19 +1434,19 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       const coin = this.formatCoin(symbol);
 
       // Hyperliquid provides maxLeverage per asset in the clearinghouseState
-      const clearinghouseState = await this.infoClient.clearinghouseState({
+      const clearinghouseState = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.clearinghouseState({
         user: this.walletAddress,
-      });
+      }));
 
       // Look for the asset's position info which includes leverage config
       const assetPositions = clearinghouseState.assetPositions || [];
       for (const pos of assetPositions) {
-        const position = pos.position || pos;
+        const position = (pos as any).position || pos;
         if (position.coin === coin) {
           // maxTradeSzs is often related to leverage limits
           // For now, return a sensible default
-          const leverage = position.leverage;
-          if (leverage && leverage.value) {
+          const leverage = (position as any).leverage;
+          if (leverage && (leverage as any).value) {
             // This is the current leverage, not max
             // Hyperliquid typically allows up to 50x for BTC/ETH, less for others
           }
@@ -1492,7 +1478,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
   async testConnection(): Promise<void> {
     try {
-      await this.infoClient.meta();
+      await this.callInfo(this.WEIGHT_INFO_HEAVY, () => this.infoClient.meta());
     } catch (error: any) {
       throw new ExchangeError(
         `Connection test failed: ${error.message}`,
@@ -1520,9 +1506,9 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         typeof (this.exchangeClient as any).transferBetweenSpotAndPerp ===
         'function'
       ) {
-        const result = await (
+        const result = await this.callExchange(this.WEIGHT_EXCHANGE, () => (
           this.exchangeClient as any
-        ).transferBetweenSpotAndPerp(amount, toPerp);
+        ).transferBetweenSpotAndPerp(amount, toPerp));
 
         if (result.status === 'ok') {
           const txHash =
@@ -1822,10 +1808,10 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
       // Step 1: Ensure funds are in perp account (withdrawals come from perp, not spot)
       // According to Hyperliquid: "If you have USDC in your Spot Balances, transfer to Perps to make it available to withdraw"
-      try {
-        const clearinghouseState = await this.infoClient.clearinghouseState({
-          user: this.walletAddress,
-        });
+    try {
+      const clearinghouseState = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.clearinghouseState({
+        user: this.walletAddress,
+      }));
         const marginSummary = clearinghouseState.marginSummary;
         const accountValue = parseFloat(marginSummary.accountValue || '0');
         const totalMarginUsed = parseFloat(
@@ -1858,9 +1844,9 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
             await new Promise((resolve) => setTimeout(resolve, 2000));
 
             // Re-check perp balance after transfer
-            const updatedState = await this.infoClient.clearinghouseState({
+            const updatedState = await this.callInfo(this.WEIGHT_INFO_LIGHT, () => this.infoClient.clearinghouseState({
               user: this.walletAddress,
-            });
+            }));
             const updatedMarginSummary = updatedState.marginSummary;
             const updatedAccountValue = parseFloat(
               updatedMarginSummary.accountValue || '0',
@@ -1914,10 +1900,10 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       // Check if ExchangeClient has withdraw3 method (this is the correct method name)
       // withdraw3 expects an object with destination and amount properties
       if (typeof (this.exchangeClient as any).withdraw3 === 'function') {
-        const result = await (this.exchangeClient as any).withdraw3({
+        const result = await this.callExchange(this.WEIGHT_EXCHANGE, () => (this.exchangeClient as any).withdraw3({
           destination: destination,
           amount: amount,
-        });
+        }));
 
         if (result && result.status === 'ok') {
           // Hyperliquid withdraw3 returns { status: 'ok', response: { type: 'default' } }
@@ -2006,9 +1992,9 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           `(${new Date(start).toISOString()} to ${new Date(end).toISOString()})`,
       );
 
-      // Call the userFunding endpoint
-      const response = await axios.post(
-        `${this.config.baseUrl}/info`,
+    // Call the userFunding endpoint
+    const response = await this.callInfo(this.WEIGHT_INFO_HEAVY, () => axios.post(
+      `${this.config.baseUrl}/info`,
         {
           type: 'userFunding',
           user: this.walletAddress,
@@ -2019,7 +2005,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           headers: { 'Content-Type': 'application/json' },
           timeout: 30000,
         },
-      );
+      ));
 
       const data = response.data;
 
@@ -2071,7 +2057,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
   async getOpenOrders(): Promise<
     import('../../../domain/ports/IPerpExchangeAdapter').OpenOrder[]
   > {
-    try {
+    return this.callInfo(this.WEIGHT_INFO_LIGHT, async () => {
       await this.ensureSymbolConverter();
 
       const openOrders = await this.infoClient.openOrders({
@@ -2096,14 +2082,6 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           timestamp: new Date(order.timestamp || Date.now()),
         };
       });
-    } catch (error: any) {
-      this.logger.error(`Failed to get open orders: ${error.message}`);
-      throw new ExchangeError(
-        `Failed to get open orders: ${error.message}`,
-        ExchangeType.HYPERLIQUID,
-        undefined,
-        error,
-      );
-    }
+    });
   }
 }
