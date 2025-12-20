@@ -29,6 +29,7 @@ import {
 import { HyperLiquidDataProvider } from './HyperLiquidDataProvider';
 import { DiagnosticsService } from '../../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../../domain/services/MarketQualityFilter';
+import { RateLimiterService } from '../../services/RateLimiterService';
 
 /**
  * HyperliquidExchangeAdapter - Implements IPerpExchangeAdapter for Hyperliquid
@@ -52,9 +53,15 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
   private readonly BALANCE_CACHE_TTL_IDLE = 10000; // 10 seconds cache when not actively trading
   private isActiveTradingMode = false; // Set to true during order placement
 
+  // Rate limit weights
+  private readonly WEIGHT_EXCHANGE = 1;
+  private readonly WEIGHT_INFO_HEAVY = 20;
+  private readonly WEIGHT_INFO_LIGHT = 2;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly dataProvider: HyperLiquidDataProvider,
+    private readonly rateLimiter: RateLimiterService,
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
   ) {
@@ -374,6 +381,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
           }
 
           // Use the order() method matching simple-hyperliquid-order.ts format
+          await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_EXCHANGE);
           result = await this.exchangeClient.order({
             orders: [
               {
@@ -544,6 +552,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       this.logger.debug(
         `Fetching fresh positions from Hyperliquid for ${this.walletAddress}...`,
       );
+      await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_INFO_LIGHT);
       const clearinghouseState = await this.infoClient.clearinghouseState({
         user: this.walletAddress,
       });
@@ -710,6 +719,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       );
 
       // Use the dedicated updateOrder method for atomic modification
+      await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_EXCHANGE);
       const result = await this.exchangeClient.updateOrder({
         order: {
           asset: assetId,
@@ -796,6 +806,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
 
       // Hyperliquid SDK: Use the cancel() method (not cancelOrder)
       // See: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#cancel-order-s
+      await this.rateLimiter.acquire(ExchangeType.HYPERLIQUID, this.WEIGHT_EXCHANGE);
       const result = await this.exchangeClient.cancel({
         cancels: [
           {

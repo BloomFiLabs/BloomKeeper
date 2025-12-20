@@ -14,50 +14,57 @@ export interface RateLimitConfig {
 /**
  * Rate limit bucket for tracking requests
  */
+interface RateEntry {
+  timestamp: number;
+  weight: number;
+}
+
 interface RateBucket {
   // Sliding window for per-second limiting
-  secondWindow: number[];
+  secondWindow: RateEntry[];
   // Sliding window for per-minute limiting
-  minuteWindow: number[];
+  minuteWindow: RateEntry[];
   // Queue for waiting requests
-  waitQueue: Array<() => void>;
+  waitQueue: Array<{ resolve: () => void; weight: number }>;
 }
 
 /**
  * Rate limiter usage statistics
  */
 export interface RateLimiterUsage {
-  currentRequestsPerSecond: number;
-  currentRequestsPerMinute: number;
-  maxRequestsPerSecond: number;
-  maxRequestsPerMinute: number;
+  currentWeightPerSecond: number;
+  currentWeightPerMinute: number;
+  maxWeightPerSecond: number;
+  maxWeightPerMinute: number;
   queuedRequests: number;
+  budgetHealth: number; // 0.0 to 1.0 (1.0 = full budget available)
 }
 
 /**
  * Default rate limits for each exchange
  * Based on documented API limits and observed behavior
+ * Limits are expressed in WEIGHT units per window
  */
 const DEFAULT_LIMITS: RateLimitConfig[] = [
   {
     exchange: ExchangeType.LIGHTER,
-    maxRequestsPerSecond: 5, // Conservative - Lighter has strict limits
-    maxRequestsPerMinute: 100,
+    maxRequestsPerSecond: 12, // 2 tx/s (weight 6 each)
+    maxRequestsPerMinute: 60, // Standard Account limit
   },
   {
     exchange: ExchangeType.HYPERLIQUID,
-    maxRequestsPerSecond: 10,
-    maxRequestsPerMinute: 200,
+    maxRequestsPerSecond: 100, // Shared REST weight
+    maxRequestsPerMinute: 1200, // Shared REST weight
   },
   {
     exchange: ExchangeType.ASTER,
-    maxRequestsPerSecond: 10,
-    maxRequestsPerMinute: 200,
+    maxRequestsPerSecond: 50,
+    maxRequestsPerMinute: 1200,
   },
   {
     exchange: ExchangeType.EXTENDED,
-    maxRequestsPerSecond: 10,
-    maxRequestsPerMinute: 200,
+    maxRequestsPerSecond: 50,
+    maxRequestsPerMinute: 1200,
   },
 ];
 
@@ -129,9 +136,10 @@ export class RateLimiterService {
    * Will wait if rate limit is exceeded
    *
    * @param exchange - The exchange to acquire a slot for
+   * @param weight - The weight of this request (default: 1)
    * @returns Promise that resolves when a slot is available
    */
-  async acquire(exchange: ExchangeType): Promise<void> {
+  async acquire(exchange: ExchangeType, weight: number = 1): Promise<void> {
     const bucket = this.buckets.get(exchange);
     const config = this.limits.get(exchange);
 
@@ -145,42 +153,45 @@ export class RateLimiterService {
 
     const now = Date.now();
 
+    // Calculate current weights
+    const currentSecondWeight = bucket.secondWindow.reduce((sum, e) => sum + e.weight, 0);
+    const currentMinuteWeight = bucket.minuteWindow.reduce((sum, e) => sum + e.weight, 0);
+
     // Check if we're at the limit
-    const withinSecondLimit =
-      bucket.secondWindow.length < config.maxRequestsPerSecond;
-    const withinMinuteLimit =
-      bucket.minuteWindow.length < config.maxRequestsPerMinute;
+    const withinSecondLimit = (currentSecondWeight + weight) <= config.maxRequestsPerSecond;
+    const withinMinuteLimit = (currentMinuteWeight + weight) <= config.maxRequestsPerMinute;
 
     if (withinSecondLimit && withinMinuteLimit) {
       // We have capacity - record and proceed
-      bucket.secondWindow.push(now);
-      bucket.minuteWindow.push(now);
+      bucket.secondWindow.push({ timestamp: now, weight });
+      bucket.minuteWindow.push({ timestamp: now, weight });
       return;
     }
 
     // We're at the limit - need to wait
-    const waitTime = this.calculateWaitTime(bucket, config, now);
+    const waitTime = this.calculateWaitTime(bucket, config, now, weight);
 
     this.logger.debug(
       `Rate limit reached for ${exchange}, waiting ${waitTime}ms ` +
-        `(${bucket.secondWindow.length}/${config.maxRequestsPerSecond}/s, ` +
-        `${bucket.minuteWindow.length}/${config.maxRequestsPerMinute}/min)`,
+        `(${currentSecondWeight + weight}/${config.maxRequestsPerSecond}/s, ` +
+        `${currentMinuteWeight + weight}/${config.maxRequestsPerMinute}/min)`,
     );
 
     // Wait for the calculated time
     await new Promise<void>((resolve) => {
-      bucket.waitQueue.push(resolve);
+      bucket.waitQueue.push({ resolve, weight });
       setTimeout(() => {
         // Remove from queue and resolve
-        const index = bucket.waitQueue.indexOf(resolve);
+        const index = bucket.waitQueue.findIndex(q => q.resolve === resolve);
         if (index > -1) {
           bucket.waitQueue.splice(index, 1);
         }
 
         // Re-prune and record
         this.pruneWindows(bucket);
-        bucket.secondWindow.push(Date.now());
-        bucket.minuteWindow.push(Date.now());
+        const actualNow = Date.now();
+        bucket.secondWindow.push({ timestamp: actualNow, weight });
+        bucket.minuteWindow.push({ timestamp: actualNow, weight });
 
         resolve();
       }, waitTime);
@@ -191,9 +202,10 @@ export class RateLimiterService {
    * Try to acquire a rate limit slot without waiting
    *
    * @param exchange - The exchange to try acquiring a slot for
+   * @param weight - The weight of this request (default: 1)
    * @returns true if slot was acquired, false if rate limited
    */
-  tryAcquire(exchange: ExchangeType): boolean {
+  tryAcquire(exchange: ExchangeType, weight: number = 1): boolean {
     const bucket = this.buckets.get(exchange);
     const config = this.limits.get(exchange);
 
@@ -203,15 +215,16 @@ export class RateLimiterService {
 
     this.pruneWindows(bucket);
 
-    const withinSecondLimit =
-      bucket.secondWindow.length < config.maxRequestsPerSecond;
-    const withinMinuteLimit =
-      bucket.minuteWindow.length < config.maxRequestsPerMinute;
+    const currentSecondWeight = bucket.secondWindow.reduce((sum, e) => sum + e.weight, 0);
+    const currentMinuteWeight = bucket.minuteWindow.reduce((sum, e) => sum + e.weight, 0);
+
+    const withinSecondLimit = (currentSecondWeight + weight) <= config.maxRequestsPerSecond;
+    const withinMinuteLimit = (currentMinuteWeight + weight) <= config.maxRequestsPerMinute;
 
     if (withinSecondLimit && withinMinuteLimit) {
       const now = Date.now();
-      bucket.secondWindow.push(now);
-      bucket.minuteWindow.push(now);
+      bucket.secondWindow.push({ timestamp: now, weight });
+      bucket.minuteWindow.push({ timestamp: now, weight });
       return true;
     }
 
@@ -227,22 +240,32 @@ export class RateLimiterService {
 
     if (!bucket || !config) {
       return {
-        currentRequestsPerSecond: 0,
-        currentRequestsPerMinute: 0,
-        maxRequestsPerSecond: 0,
-        maxRequestsPerMinute: 0,
+        currentWeightPerSecond: 0,
+        currentWeightPerMinute: 0,
+        maxWeightPerSecond: 0,
+        maxWeightPerMinute: 0,
         queuedRequests: 0,
+        budgetHealth: 1.0,
       };
     }
 
     this.pruneWindows(bucket);
 
+    const currentSecondWeight = bucket.secondWindow.reduce((sum, e) => sum + e.weight, 0);
+    const currentMinuteWeight = bucket.minuteWindow.reduce((sum, e) => sum + e.weight, 0);
+
+    // Budget health is determined by the most constrained limit
+    const secondHealth = 1 - (currentSecondWeight / config.maxRequestsPerSecond);
+    const minuteHealth = 1 - (currentMinuteWeight / config.maxRequestsPerMinute);
+    const budgetHealth = Math.max(0, Math.min(secondHealth, minuteHealth));
+
     return {
-      currentRequestsPerSecond: bucket.secondWindow.length,
-      currentRequestsPerMinute: bucket.minuteWindow.length,
-      maxRequestsPerSecond: config.maxRequestsPerSecond,
-      maxRequestsPerMinute: config.maxRequestsPerMinute,
+      currentWeightPerSecond: currentSecondWeight,
+      currentWeightPerMinute: currentMinuteWeight,
+      maxWeightPerSecond: config.maxRequestsPerSecond,
+      maxWeightPerMinute: config.maxRequestsPerMinute,
       queuedRequests: bucket.waitQueue.length,
+      budgetHealth,
     };
   }
 
@@ -311,22 +334,39 @@ export class RateLimiterService {
     bucket: RateBucket,
     config: RateLimitConfig,
     now: number,
+    weight: number,
   ): number {
-    // Calculate wait time based on which limit is hit
     let waitTime = 0;
 
-    // Check per-second limit
-    if (bucket.secondWindow.length >= config.maxRequestsPerSecond) {
-      const oldestInSecond = bucket.secondWindow[0];
-      const secondWaitTime = 1000 - (now - oldestInSecond);
-      waitTime = Math.max(waitTime, secondWaitTime);
+    // Check per-second limit: find when enough weight will have expired
+    let secondWeight = bucket.secondWindow.reduce((sum, e) => sum + e.weight, 0);
+    if (secondWeight + weight > config.maxRequestsPerSecond) {
+      // Find how many entries need to expire
+      let weightToDrop = (secondWeight + weight) - config.maxRequestsPerSecond;
+      let droppedWeight = 0;
+      for (const entry of bucket.secondWindow) {
+        droppedWeight += entry.weight;
+        if (droppedWeight >= weightToDrop) {
+          const secondWaitTime = 1000 - (now - entry.timestamp);
+          waitTime = Math.max(waitTime, secondWaitTime);
+          break;
+        }
+      }
     }
 
     // Check per-minute limit
-    if (bucket.minuteWindow.length >= config.maxRequestsPerMinute) {
-      const oldestInMinute = bucket.minuteWindow[0];
-      const minuteWaitTime = 60000 - (now - oldestInMinute);
-      waitTime = Math.max(waitTime, minuteWaitTime);
+    let minuteWeight = bucket.minuteWindow.reduce((sum, e) => sum + e.weight, 0);
+    if (minuteWeight + weight > config.maxRequestsPerMinute) {
+      let weightToDrop = (minuteWeight + weight) - config.maxRequestsPerMinute;
+      let droppedWeight = 0;
+      for (const entry of bucket.minuteWindow) {
+        droppedWeight += entry.weight;
+        if (droppedWeight >= weightToDrop) {
+          const minuteWaitTime = 60000 - (now - entry.timestamp);
+          waitTime = Math.max(waitTime, minuteWaitTime);
+          break;
+        }
+      }
     }
 
     // Add a small buffer to avoid edge cases
@@ -341,7 +381,7 @@ export class RateLimiterService {
     const oneSecondAgo = now - 1000;
     const oneMinuteAgo = now - 60000;
 
-    bucket.secondWindow = bucket.secondWindow.filter((t) => t > oneSecondAgo);
-    bucket.minuteWindow = bucket.minuteWindow.filter((t) => t > oneMinuteAgo);
+    bucket.secondWindow = bucket.secondWindow.filter((e) => e.timestamp > oneSecondAgo);
+    bucket.minuteWindow = bucket.minuteWindow.filter((e) => e.timestamp > oneMinuteAgo);
   }
 }

@@ -7,10 +7,13 @@ import { LighterWebSocketProvider } from '../../../infrastructure/adapters/light
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { OrderSide, OrderType, PerpOrderRequest, TimeInForce } from '../../value-objects/PerpOrder';
 
+import { MakerEfficiencyService } from '../../../domain/services/strategy-rules/MakerEfficiencyService';
+import { RateLimiterService } from '../../../infrastructure/services/RateLimiterService';
+
 /**
  * MakerEfficiencyService - Ensures our orders are the most price-efficient on the book
  * 
- * Runs every 7 seconds to check open orders and reposition them to beat other makers.
+ * Runs every 2 seconds to check open orders and reposition them to beat other makers.
  */
 @Injectable()
 export class MakerEfficiencyService implements OnModuleInit {
@@ -22,6 +25,7 @@ export class MakerEfficiencyService implements OnModuleInit {
     private readonly executionLockService: ExecutionLockService,
     private readonly hlWsProvider: HyperLiquidWebSocketProvider,
     private readonly lighterWsProvider: LighterWebSocketProvider,
+    private readonly rateLimiter: RateLimiterService,
   ) {}
 
   onModuleInit() {
@@ -66,26 +70,47 @@ export class MakerEfficiencyService implements OnModuleInit {
     const now = Date.now();
     const lastCheck = this.lastExchangeCheck.get(exchange) || 0;
     
-    // Calculate optimal interval based on exchange rate limits
-    let intervalMs = 7000; // Default
+    // 1. Get current budget health (1.0 = full, 0.0 = empty)
+    const { budgetHealth } = this.rateLimiter.getUsage(exchange);
+    
+    // 2. Calculate base optimal interval based on exchange rate limits
+    let baseIntervalMs = 7000; // Default
     
     if (exchange === ExchangeType.HYPERLIQUID) {
-      // Hyperliquid: Budget of ~400 updates/min to preserve address request buffer
-      // Formula: (60s / 400 budget) * num_orders. Min 1s.
-      intervalMs = Math.max((60000 / 400) * orders.length, 1000); 
+      // Hyperliquid: Budget of ~400 updates/min.
+      baseIntervalMs = Math.max((60000 / 400) * orders.length, 1000); 
     } else if (exchange === ExchangeType.LIGHTER) {
       // Lighter Standard: 60 weight/min. updateOrder = 6 weight.
       // Max 10 updates per minute across ALL orders.
-      // Interval = (60s / 10) * num_orders = 6s * N. Min 10s for safety.
-      intervalMs = Math.max(6000 * orders.length, 10000);
+      baseIntervalMs = Math.max(6000 * orders.length, 10000);
+    }
+
+    // 3. Scale interval based on budget health (Global Token Bank)
+    // If health is > 80%, we use baseInterval.
+    // If health is < 20%, we slow down significantly (4x base).
+    // Linear scaling in between.
+    let intervalMs = baseIntervalMs;
+    if (budgetHealth < 0.8) {
+      const healthMultiplier = 1 + (0.8 - budgetHealth) * 4; // Max multiplier of ~4.2 at health 0
+      intervalMs = baseIntervalMs * healthMultiplier;
+      
+      if (budgetHealth < 0.3) {
+        this.logger.warn(
+          `⚠️ Low budget health for ${exchange} (${(budgetHealth * 100).toFixed(1)}%). ` +
+          `Slowing down maker chasing: ${intervalMs/1000}s interval.`
+        );
+      }
     }
 
     if (now - lastCheck < intervalMs) return;
     this.lastExchangeCheck.set(exchange, now);
 
-    this.logger.debug(`Checking efficiency for ${orders.length} orders on ${exchange} (Interval: ${intervalMs/1000}s)`);
+    this.logger.debug(
+      `Checking efficiency for ${orders.length} orders on ${exchange} ` +
+      `(Health: ${(budgetHealth * 100).toFixed(1)}%, Interval: ${intervalMs/1000}s)`
+    );
 
-    // Process orders one by one for now (can be batched later for HL)
+    // Process orders one by one for now
     for (const order of orders) {
       await this.checkAndRepositionOrder(order);
     }

@@ -29,6 +29,7 @@ import {
 } from '../../../domain/ports/IPerpExchangeAdapter';
 import { DiagnosticsService } from '../../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../../domain/services/MarketQualityFilter';
+import { RateLimiterService } from '../../services/RateLimiterService';
 
 /**
  * LighterExchangeAdapter - Implements IPerpExchangeAdapter for Lighter Protocol
@@ -64,8 +65,13 @@ export class LighterExchangeAdapter
   private consecutiveNonceErrors = 0;
   private lastSuccessfulOrderTime: Date | null = null;
 
+  // Rate limit weights
+  private readonly WEIGHT_TX = 6;
+  private readonly WEIGHT_INFO = 30; // Heavy info endpoints
+
   constructor(
     private readonly configService: ConfigService,
+    private readonly rateLimiter: RateLimiterService,
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
   ) {
@@ -801,6 +807,7 @@ export class LighterExchangeAdapter
             }
 
             // Use createMarketOrder for closing positions (per Lighter docs)
+            await this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX);
             const [tx, hash, error] =
               await this.signerClient!.createMarketOrder({
                 marketIndex,
@@ -991,7 +998,7 @@ export class LighterExchangeAdapter
           })}`,
         );
 
-        const result = await this.signerClient!.createUnifiedOrder(orderParams);
+        const result = await (this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX), this.signerClient!.createUnifiedOrder(orderParams));
 
         if (!result.success) {
           const errorMsg = result.mainOrder.error || 'Order creation failed';
@@ -1558,6 +1565,7 @@ export class LighterExchangeAdapter
       const price = BigInt(Math.round((request.price || 0) * 1e8));
 
       // Lighter SDK updateOrder
+      await this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX);
       const [tx, txHash, error] = await (this.signerClient as any).updateOrder({
         marketIndex,
         orderIndex,
