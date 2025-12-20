@@ -105,6 +105,9 @@ export class WithdrawalFulfiller implements OnModuleInit {
     'processed_withdrawals.json',
   );
 
+  // For compatibility with PerpKeeperScheduler
+  private emergencyMode = false;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly bloomGraphAdapter: BloomGraphAdapter,
@@ -650,5 +653,42 @@ export class WithdrawalFulfiller implements OnModuleInit {
 
   getKeeperAddress(): string | null {
     return this.wallet?.address || null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // COMPATIBILITY METHODS FOR SCHEDULER
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * For compatibility with PerpKeeperScheduler.
+   * Daily withdrawals are now handled via its own @Cron job.
+   */
+  getPendingWithdrawalsList(): any[] {
+    return [];
+  }
+
+  /**
+   * For compatibility with PerpKeeperScheduler.
+   */
+  async processPendingWithdrawals(): Promise<{
+    processed: number;
+    fulfilled: number;
+    failed: number;
+  }> {
+    return { processed: 0, fulfilled: 0, failed: 0 };
+  }
+
+  /**
+   * For compatibility with PerpKeeperScheduler.
+   */
+  getTotalPendingAmount(): bigint {
+    return 0n;
+  }
+
+  /**
+   * For compatibility with PerpKeeperScheduler.
+   */
+  isEmergencyMode(): boolean {
+    return this.emergencyMode;
   }
 }
