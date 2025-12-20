@@ -113,10 +113,15 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       provide: AsterExchangeAdapter,
       useFactory: (
         configService: ConfigService,
+        rateLimiter: RateLimiterService,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
-          return new AsterExchangeAdapter(configService, diagnosticsService);
+          return new AsterExchangeAdapter(
+            configService,
+            rateLimiter,
+            diagnosticsService,
+          );
         } catch (error: any) {
           const logger = new Logger('PerpKeeperModule');
           logger.warn(`Failed to create Aster adapter: ${error.message}`);
@@ -124,30 +129,40 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return null;
         }
       },
-      inject: [ConfigService, DiagnosticsService],
+      inject: [ConfigService, RateLimiterService, DiagnosticsService],
     },
     {
       provide: 'ASTER_ADAPTER',
       useFactory: (
         configService: ConfigService,
+        rateLimiter: RateLimiterService,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
-          return new AsterExchangeAdapter(configService, diagnosticsService);
+          return new AsterExchangeAdapter(
+            configService,
+            rateLimiter,
+            diagnosticsService,
+          );
         } catch (error: any) {
           return null;
         }
       },
-      inject: [ConfigService, DiagnosticsService],
+      inject: [ConfigService, RateLimiterService, DiagnosticsService],
     },
     {
       provide: LighterExchangeAdapter,
       useFactory: (
         configService: ConfigService,
+        rateLimiter: RateLimiterService,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
-          return new LighterExchangeAdapter(configService, diagnosticsService);
+          return new LighterExchangeAdapter(
+            configService,
+            rateLimiter,
+            diagnosticsService,
+          );
         } catch (error: any) {
           const logger = new Logger('PerpKeeperModule');
           logger.warn(`Failed to create Lighter adapter: ${error.message}`);
@@ -155,33 +170,40 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return null;
         }
       },
-      inject: [ConfigService, DiagnosticsService],
+      inject: [ConfigService, RateLimiterService, DiagnosticsService],
     },
     {
       provide: 'LIGHTER_ADAPTER',
       useFactory: (
         configService: ConfigService,
+        rateLimiter: RateLimiterService,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
-          return new LighterExchangeAdapter(configService, diagnosticsService);
+          return new LighterExchangeAdapter(
+            configService,
+            rateLimiter,
+            diagnosticsService,
+          );
         } catch (error: any) {
           return null;
         }
       },
-      inject: [ConfigService, DiagnosticsService],
+      inject: [ConfigService, RateLimiterService, DiagnosticsService],
     },
     {
       provide: HyperliquidExchangeAdapter,
       useFactory: (
         configService: ConfigService,
         dataProvider: HyperLiquidDataProvider,
+        rateLimiter: RateLimiterService,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
           return new HyperliquidExchangeAdapter(
             configService,
             dataProvider,
+            rateLimiter,
             diagnosticsService,
           );
         } catch (error: any) {
@@ -191,32 +213,47 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return null;
         }
       },
-      inject: [ConfigService, HyperLiquidDataProvider, DiagnosticsService],
+      inject: [
+        ConfigService,
+        HyperLiquidDataProvider,
+        RateLimiterService,
+        DiagnosticsService,
+      ],
     },
     {
       provide: 'HYPERLIQUID_ADAPTER',
       useFactory: (
         configService: ConfigService,
         dataProvider: HyperLiquidDataProvider,
+        rateLimiter: RateLimiterService,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
           return new HyperliquidExchangeAdapter(
             configService,
             dataProvider,
+            rateLimiter,
             diagnosticsService,
           );
         } catch (error: any) {
           return null;
         }
       },
-      inject: [ConfigService, HyperLiquidDataProvider, DiagnosticsService],
+      inject: [
+        ConfigService,
+        HyperLiquidDataProvider,
+        RateLimiterService,
+        DiagnosticsService,
+      ],
     },
     {
       provide: ExtendedExchangeAdapter,
-      useFactory: (configService: ConfigService) => {
+      useFactory: (
+        configService: ConfigService,
+        rateLimiter: RateLimiterService,
+      ) => {
         try {
-          return new ExtendedExchangeAdapter(configService);
+          return new ExtendedExchangeAdapter(configService, rateLimiter);
         } catch (error: any) {
           const logger = new Logger('PerpKeeperModule');
           logger.warn(`Failed to create Extended adapter: ${error.message}`);
@@ -224,18 +261,21 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return null;
         }
       },
-      inject: [ConfigService],
+      inject: [ConfigService, RateLimiterService],
     },
     {
       provide: 'EXTENDED_ADAPTER',
-      useFactory: (configService: ConfigService) => {
+      useFactory: (
+        configService: ConfigService,
+        rateLimiter: RateLimiterService,
+      ) => {
         try {
-          return new ExtendedExchangeAdapter(configService);
+          return new ExtendedExchangeAdapter(configService, rateLimiter);
         } catch (error: any) {
           return null;
         }
       },
-      inject: [ConfigService],
+      inject: [ConfigService, RateLimiterService],
     },
 
     // Spot exchange adapters

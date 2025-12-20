@@ -21,6 +21,7 @@ import {
   FundingPayment,
 } from '../../../domain/ports/IPerpExchangeAdapter';
 import { ExtendedSigningService } from './ExtendedSigningService';
+import { RateLimiterService } from '../../services/RateLimiterService';
 
 /**
  * ExtendedExchangeAdapter - Implements IPerpExchangeAdapter for Extended exchange
@@ -54,7 +55,15 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
   private marketCacheTimestamp: number = 0;
   private readonly MARKET_CACHE_TTL = 3600000; // 1 hour
 
-  constructor(private readonly configService: ConfigService) {
+  private async callApi<T>(weight: number, fn: () => Promise<T>): Promise<T> {
+    await this.rateLimiter.acquire(ExchangeType.EXTENDED, weight);
+    return await fn();
+  }
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly rateLimiter: RateLimiterService,
+  ) {
     // Extended Starknet instance base URL
     const baseUrl =
       this.configService.get<string>('EXTENDED_API_BASE_URL') ||
@@ -409,7 +418,7 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
    */
   async getPositions(): Promise<PerpPosition[]> {
     try {
-      const response = await this.client.get('/api/v1/user/positions');
+      const response = await this.callApi(1, () => this.client.get('/api/v1/user/positions'));
 
       if (
         response.data?.status !== 'OK' ||
@@ -646,7 +655,7 @@ export class ExtendedExchangeAdapter implements IPerpExchangeAdapter {
 
   async getBalance(): Promise<number> {
     try {
-      const response = await this.client.get('/api/v1/user/balance');
+      const response = await this.callApi(1, () => this.client.get('/api/v1/user/balance'));
 
       if (response.data?.status === 'OK' && response.data.data) {
         // availableForTrade = Available Balance for Trading

@@ -23,6 +23,7 @@ import {
 } from '../../../domain/ports/IPerpExchangeAdapter';
 import { DiagnosticsService } from '../../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../../domain/services/MarketQualityFilter';
+import { RateLimiterService } from '../../services/RateLimiterService';
 
 /**
  * AsterExchangeAdapter - Implements IPerpExchangeAdapter for Aster DEX
@@ -42,8 +43,14 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
   private symbolPricePrecisionCache: Map<string, number> = new Map(); // Cache price precision per symbol
   private symbolTickSizeCache: Map<string, number> = new Map(); // Cache tickSize per symbol
 
+  private async callApi<T>(weight: number, fn: () => Promise<T>): Promise<T> {
+    await this.rateLimiter.acquire(ExchangeType.ASTER, weight);
+    return await fn();
+  }
+
   constructor(
     private readonly configService: ConfigService,
+    private readonly rateLimiter: RateLimiterService,
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
   ) {
@@ -493,7 +500,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
         }
       }
 
-      const response = await this.client.post(
+      const response = await this.callApi(1, () => this.client.post(
         '/fapi/v3/order',
         formData.toString(),
         {
@@ -501,7 +508,7 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
             'Content-Type': 'application/x-www-form-urlencoded',
           },
         },
-      );
+      ));
 
       const orderId =
         response.data.orderId?.toString() || response.data.orderId;
@@ -1077,9 +1084,9 @@ export class AsterExchangeAdapter implements IPerpExchangeAdapter {
       const params = this.signParams({}, nonce);
 
       // Use v3 endpoint as per official documentation
-      const response = await this.client.get('/fapi/v3/balance', {
+      const response = await this.callApi(1, () => this.client.get('/fapi/v3/balance', {
         params,
-      });
+      }));
 
       // Aster v3 returns balance in array format
       // Response structure: [{ accountAlias, asset, balance, availableBalance, ... }]
