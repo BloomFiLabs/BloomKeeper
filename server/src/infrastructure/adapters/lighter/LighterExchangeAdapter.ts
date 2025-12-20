@@ -804,7 +804,7 @@ export class LighterExchangeAdapter
             const [tx, hash, error] =
               await this.signerClient!.createMarketOrder({
                 marketIndex,
-                clientOrderIndex: 0, // Forced to 0 as per working examples
+                clientOrderIndex: Date.now(),
                 baseAmount,
                 avgExecutionPrice: market.priceToUnits(adjustedPrice),
                 isAsk,
@@ -933,14 +933,13 @@ export class LighterExchangeAdapter
             const now = Date.now();
             orderParams = {
               marketIndex,
-              clientOrderIndex: 0, // Forced to 0 as per working examples
+              clientOrderIndex: now,
               baseAmount,
               isAsk,
               orderType: LighterOrderType.MARKET,
               idealPrice: market.priceToUnits(idealPrice),
               maxSlippage: 0.01, // 1% max slippage
-              orderExpiry: 0, // 0 for opening orders
-              expiredAt: now, // Set to current time for market orders
+              orderExpiry: 0, // 0 for opening market orders
             };
           }
         } else {
@@ -949,43 +948,31 @@ export class LighterExchangeAdapter
             throw new Error('Limit price is required for LIMIT orders');
           }
 
-          // LIMIT orders always use GTC (Good Till Cancel/Time) - they can sit on the order book
-          // Only MARKET orders use IOC (Immediate Or Cancel) for immediate execution
-          // Note: We ignore request.timeInForce for LIMIT orders and always use GTC
-          // Lighter API mapping: 0 = IOC, 1 = GTC/GTT (Good Till Time)
-          const timeInForce = 1; // Always GTC/GTT (1) for LIMIT orders, regardless of request.timeInForce
-          
-          // Based on working examples: 15 minute expiry with OrderExpiry ~5min after ExpiredAt
+          // Updated to match the known working implementation:
+          // 1 hour expiry, uses Date.now() for clientOrderIndex, no expiredAt field
           const now = Date.now();
-          const EXPIRY_DURATION_MS = 15 * 60 * 1000; // 15 minutes
-          const expiredAt = now + EXPIRY_DURATION_MS;
-          const orderExpiry = expiredAt + (5 * 60 * 1000); // OrderExpiry is 5 minutes after ExpiredAt
+          const EXPIRY_DURATION_MS = 60 * 60 * 1000; // 1 hour
+          const orderExpiry = now + EXPIRY_DURATION_MS;
 
           this.logger.debug(
-            `LIMIT order for ${request.symbol}: Using GTC/GTT (timeInForce=1), ` +
-              `expiredAt=${expiredAt} (15min), orderExpiry=${orderExpiry} (20min)`,
+            `LIMIT order for ${request.symbol}: using 1 hour expiry (${new Date(orderExpiry).toISOString()})`,
           );
 
           orderParams = {
             marketIndex,
-            clientOrderIndex: 0, // Forced to 0 as per working examples
+            clientOrderIndex: now,
             baseAmount,
             price: market.priceToUnits(request.price),
             isAsk,
             orderType: LighterOrderType.LIMIT,
-            timeInForce, // 0 = IOC, 1 = GTC/GTT (Good Till Time)
-            reduceOnly: request.reduceOnly ? 1 : 0, // Critical: must be 1 for closing orders
             orderExpiry,
-            expiredAt,
           };
         }
 
-        // Log timeInForce value to verify LIMIT orders use GTC
+        // Log order details
         if (request.type === OrderType.LIMIT) {
           this.logger.log(
-            `📋 LIMIT order for ${request.symbol}: timeInForce=${orderParams.timeInForce} ` +
-              `(${orderParams.timeInForce === 1 ? 'GTC/GTT' : 'IOC'}) - ` +
-              `request.timeInForce was ${request.timeInForce === TimeInForce.IOC ? 'IOC' : request.timeInForce === TimeInForce.GTC ? 'GTC' : 'undefined'}`,
+            `📋 LIMIT order for ${request.symbol}: 1 hour expiry (${new Date(orderParams.orderExpiry).toISOString()})`,
           );
         }
 
@@ -998,12 +985,9 @@ export class LighterExchangeAdapter
               orderParams.price?.toString() ||
               orderParams.idealPrice?.toString() ||
               'N/A',
-            idealPrice: orderParams.idealPrice?.toString(),
-            maxSlippage: orderParams.maxSlippage,
             isAsk: orderParams.isAsk,
             orderType: orderParams.orderType,
-            timeInForce: orderParams.timeInForce,
-            reduceOnly: orderParams.reduceOnly,
+            orderExpiry: orderParams.orderExpiry,
           })}`,
         );
 
