@@ -2040,6 +2040,163 @@ export class PerpKeeperScheduler implements OnModuleInit {
     }
   }
 
+  /**
+   * Cancel open orders for symbols that have valid paired positions
+   * 
+   * POLICY: When we have a complete cross-exchange position (LONG on one exchange,
+   * SHORT on another), there should be NO open orders for that symbol.
+   * Any lingering orders could accidentally fill and create imbalanced positions.
+   * 
+   * EXCEPTION: If we're actively executing orders (TWAP, position increase, etc.),
+   * we should NOT cancel those orders as they're intentional.
+   * 
+   * Runs every 30 seconds to catch any orders that shouldn't exist.
+   */
+  @Interval(30000) // Every 30 seconds
+  async cancelOrdersForPairedPositions() {
+    try {
+      // ================================================================================
+      // CRITICAL: Check if we have any active executions in progress
+      // If so, skip this cleanup to avoid race conditions with TWAP or position sizing
+      // ================================================================================
+      if (this.executionLockService) {
+        const activeOrders = this.executionLockService.getAllActiveOrders();
+        // Check for orders that are actively being placed or waiting to fill
+        const activeExecutions = activeOrders.filter(
+          o => o.status === 'PLACING' || o.status === 'WAITING_FILL'
+        );
+
+        if (activeExecutions.length > 0) {
+          // Get unique symbols being actively executed
+          const activeSymbols = new Set(
+            activeExecutions.map(o => this.normalizeSymbol(o.symbol))
+          );
+          this.logger.debug(
+            `⏳ Skipping paired position order cleanup - ${activeExecutions.length} active execution(s) ` +
+            `in progress for: ${Array.from(activeSymbols).join(', ')}`
+          );
+          return;
+        }
+      }
+
+      // Also check if global lock is held (another execution is in progress)
+      if (this.executionLockService?.isGlobalLockHeld()) {
+        this.logger.debug(
+          `⏳ Skipping paired position order cleanup - global execution lock is held`
+        );
+        return;
+      }
+      // ================================================================================
+
+      const positions = this.marketStateService?.getAllPositions() || [];
+      if (positions.length === 0) return;
+
+      // Group positions by normalized symbol
+      const positionsBySymbol = new Map<string, PerpPosition[]>();
+      for (const position of positions) {
+        const normalizedSymbol = this.normalizeSymbol(position.symbol);
+        if (!positionsBySymbol.has(normalizedSymbol)) {
+          positionsBySymbol.set(normalizedSymbol, []);
+        }
+        positionsBySymbol.get(normalizedSymbol)!.push(position);
+      }
+
+      // Find symbols with valid cross-exchange pairs
+      const validPairedSymbols = new Set<string>();
+      for (const [symbol, symbolPositions] of positionsBySymbol) {
+        const exchanges = new Set(symbolPositions.map(p => p.exchangeType));
+        const sides = new Set(symbolPositions.map(p => p.side));
+
+        // Valid pair: positions on different exchanges AND both LONG and SHORT exist
+        if (exchanges.size >= 2 && sides.has(OrderSide.LONG) && sides.has(OrderSide.SHORT)) {
+          // Verify LONG and SHORT are on DIFFERENT exchanges
+          const longExchanges = new Set(
+            symbolPositions.filter(p => p.side === OrderSide.LONG).map(p => p.exchangeType)
+          );
+          const shortExchanges = new Set(
+            symbolPositions.filter(p => p.side === OrderSide.SHORT).map(p => p.exchangeType)
+          );
+          
+          // Check if there's at least one LONG on a different exchange than at least one SHORT
+          let hasCrossExchangePair = false;
+          for (const longEx of longExchanges) {
+            for (const shortEx of shortExchanges) {
+              if (longEx !== shortEx) {
+                hasCrossExchangePair = true;
+                break;
+              }
+            }
+            if (hasCrossExchangePair) break;
+          }
+
+          if (hasCrossExchangePair) {
+            validPairedSymbols.add(symbol);
+          }
+        }
+      }
+
+      if (validPairedSymbols.size === 0) return;
+
+      // Check for open orders on these symbols and cancel them
+      const adapters = this.keeperService.getExchangeAdapters();
+      let totalCancelled = 0;
+
+      for (const [exchangeType, adapter] of adapters) {
+        try {
+          if (typeof (adapter as any).getOpenOrders !== 'function') continue;
+
+          const openOrders = await (adapter as any).getOpenOrders();
+          if (!openOrders || openOrders.length === 0) continue;
+
+          for (const order of openOrders) {
+            const normalizedOrderSymbol = this.normalizeSymbol(order.symbol);
+            
+            if (validPairedSymbols.has(normalizedOrderSymbol)) {
+              // Double-check: Make sure this specific order is not being actively tracked
+              // (it might have been placed after our initial check)
+              if (this.executionLockService) {
+                const isActiveOrder = this.executionLockService.hasActiveOrder(
+                  exchangeType as string,
+                  order.symbol,
+                  order.side
+                );
+                if (isActiveOrder) {
+                  this.logger.debug(
+                    `⏳ Skipping order ${order.orderId} - actively tracked by ExecutionLockService`
+                  );
+                  continue;
+                }
+              }
+
+              // This order is for a symbol that already has a valid paired position
+              // AND is not being actively managed - cancel it
+              this.logger.warn(
+                `🗑️ Cancelling orphan order for paired position: ${order.symbol} ${order.side} on ${exchangeType} ` +
+                `(Symbol already has valid cross-exchange pair)`,
+              );
+
+              try {
+                await adapter.cancelOrder(order.orderId, order.symbol);
+                totalCancelled++;
+                this.logger.log(`✅ Cancelled orphan order ${order.orderId}`);
+              } catch (cancelError: any) {
+                this.logger.debug(`Failed to cancel order ${order.orderId}: ${cancelError.message}`);
+              }
+            }
+          }
+        } catch (error: any) {
+          this.logger.debug(`Error checking orders on ${exchangeType}: ${error.message}`);
+        }
+      }
+
+      if (totalCancelled > 0) {
+        this.logger.log(`✅ Cancelled ${totalCancelled} orphan order(s) for paired positions`);
+      }
+    } catch (error: any) {
+      this.logger.debug(`Error in paired position order cleanup: ${error.message}`);
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // LIQUIDATION MONITORING
   // ═══════════════════════════════════════════════════════════════════════════

@@ -290,10 +290,10 @@ export class PositionManager implements IPositionManager {
             let markPrice: number | undefined;
             try {
               markPrice = await adapter.getMarkPrice(position.symbol);
-            } catch (priceError: any) {
+              } catch (priceError: any) {
               this.logger.warn(
                 `Could not get mark price for ${position.symbol} closure, using entry price: ${priceError.message}`,
-              );
+                );
               markPrice = position.entryPrice;
             }
 
@@ -307,9 +307,9 @@ export class PositionManager implements IPositionManager {
               true, // Reduce only - ensures we're closing, not opening
             );
 
-            this.logger.log(
+              this.logger.log(
               `📤 Closing position: ${position.symbol} ${position.side} ${positionSize.toFixed(4)} on ${position.exchangeType} (Maker order @ Mark Price)`,
-            );
+              );
 
             const closeResponse = await adapter.placeOrder(closeOrder);
 
@@ -825,21 +825,21 @@ export class PositionManager implements IPositionManager {
               if (waitResult.isFilled()) {
                 this.logger.log(
                   `✅ ${symbol}: Limit order filled after wait, arbitrage pair complete.`,
-                );
-              } else {
-                this.logger.warn(
+              );
+            } else {
+              this.logger.warn(
                   `⚠️ ${symbol}: Limit order failed to fill after wait. ` +
-                    `Falling back to closing filled position...`,
-                );
-                // Fall through to Option 1
+                  `Falling back to closing filled position...`,
+              );
+              // Fall through to Option 1
                 await this.closeFilledPosition(
-                  filledAdapter,
-                  symbol,
-                  filledSide,
-                  positionSize,
-                  filledExchange,
-                  result,
-                );
+                filledAdapter,
+                symbol,
+                filledSide,
+                positionSize,
+                filledExchange,
+                result,
+              );
               }
             } else {
               this.logger.warn(

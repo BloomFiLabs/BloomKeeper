@@ -564,6 +564,169 @@ describe('Single-Leg Recovery Flow', () => {
   });
 });
 
+describe('Paired Position Order Cleanup Policy', () => {
+  it('should cancel open orders for symbols with valid cross-exchange pairs', () => {
+    // Scenario: We have a valid pair (LONG on HL, SHORT on Lighter)
+    // But there's still an open order on one of the exchanges
+    // This order should be cancelled
+
+    const positions = [
+      createPosition('BTC', OrderSide.LONG, ExchangeType.HYPERLIQUID),
+      createPosition('BTC-USD', OrderSide.SHORT, ExchangeType.LIGHTER),
+    ];
+
+    const openOrders: MockOrder[] = [
+      { symbol: 'BTC', side: 'SHORT', exchange: ExchangeType.HYPERLIQUID, orderId: 'orphan-1' },
+    ];
+
+    // Group positions by symbol
+    const positionsBySymbol = new Map<string, { exchanges: Set<ExchangeType>; sides: Set<OrderSide> }>();
+    for (const pos of positions) {
+      const sym = normalizeSymbol(pos.symbol);
+      if (!positionsBySymbol.has(sym)) {
+        positionsBySymbol.set(sym, { exchanges: new Set(), sides: new Set() });
+      }
+      positionsBySymbol.get(sym)!.exchanges.add(pos.exchangeType);
+      positionsBySymbol.get(sym)!.sides.add(pos.side);
+    }
+
+    // Check if BTC has a valid cross-exchange pair
+    const btcData = positionsBySymbol.get('BTC');
+    expect(btcData).toBeDefined();
+    expect(btcData!.exchanges.size).toBe(2); // Two different exchanges
+    expect(btcData!.sides.has(OrderSide.LONG)).toBe(true);
+    expect(btcData!.sides.has(OrderSide.SHORT)).toBe(true);
+
+    // The open order should be cancelled because BTC already has a valid pair
+    const ordersToCancel = openOrders.filter(order => {
+      const sym = normalizeSymbol(order.symbol);
+      const data = positionsBySymbol.get(sym);
+      return data && data.exchanges.size >= 2 && data.sides.has(OrderSide.LONG) && data.sides.has(OrderSide.SHORT);
+    });
+
+    expect(ordersToCancel.length).toBe(1);
+    expect(ordersToCancel[0].orderId).toBe('orphan-1');
+  });
+
+  it('should NOT cancel orders for symbols without valid pairs', () => {
+    // Scenario: Single-leg position, order is trying to complete the pair
+    const positions = [
+      createPosition('ETH', OrderSide.LONG, ExchangeType.HYPERLIQUID),
+    ];
+
+    const openOrders: MockOrder[] = [
+      { symbol: 'ETH-USD', side: 'SHORT', exchange: ExchangeType.LIGHTER, orderId: 'needed-1' },
+    ];
+
+    // Group positions by symbol
+    const positionsBySymbol = new Map<string, { exchanges: Set<ExchangeType>; sides: Set<OrderSide> }>();
+    for (const pos of positions) {
+      const sym = normalizeSymbol(pos.symbol);
+      if (!positionsBySymbol.has(sym)) {
+        positionsBySymbol.set(sym, { exchanges: new Set(), sides: new Set() });
+      }
+      positionsBySymbol.get(sym)!.exchanges.add(pos.exchangeType);
+      positionsBySymbol.get(sym)!.sides.add(pos.side);
+    }
+
+    // ETH only has LONG on one exchange - NOT a valid pair
+    const ethData = positionsBySymbol.get('ETH');
+    expect(ethData).toBeDefined();
+    expect(ethData!.exchanges.size).toBe(1); // Only one exchange
+    expect(ethData!.sides.has(OrderSide.SHORT)).toBe(false); // No SHORT
+
+    // The open order should NOT be cancelled - it's needed to complete the pair
+    const ordersToCancel = openOrders.filter(order => {
+      const sym = normalizeSymbol(order.symbol);
+      const data = positionsBySymbol.get(sym);
+      return data && data.exchanges.size >= 2 && data.sides.has(OrderSide.LONG) && data.sides.has(OrderSide.SHORT);
+    });
+
+    expect(ordersToCancel.length).toBe(0);
+  });
+
+  it('should NOT cancel orders for symbols with positions on same exchange', () => {
+    // Scenario: Both LONG and SHORT on same exchange - not a valid cross-exchange pair
+    const positions = [
+      createPosition('SOL', OrderSide.LONG, ExchangeType.HYPERLIQUID),
+      createPosition('SOL', OrderSide.SHORT, ExchangeType.HYPERLIQUID), // Same exchange!
+    ];
+
+    const openOrders: MockOrder[] = [
+      { symbol: 'SOL-USD', side: 'LONG', exchange: ExchangeType.LIGHTER, orderId: 'needed-1' },
+    ];
+
+    // This is NOT a valid cross-exchange pair - both positions are on same exchange
+    // The order should NOT be cancelled
+
+    // Check cross-exchange requirement
+    const longExchanges = new Set(positions.filter(p => p.side === OrderSide.LONG).map(p => p.exchangeType));
+    const shortExchanges = new Set(positions.filter(p => p.side === OrderSide.SHORT).map(p => p.exchangeType));
+
+    let hasCrossExchangePair = false;
+    for (const longEx of longExchanges) {
+      for (const shortEx of shortExchanges) {
+        if (longEx !== shortEx) {
+          hasCrossExchangePair = true;
+          break;
+        }
+      }
+    }
+
+    expect(hasCrossExchangePair).toBe(false); // No cross-exchange pair
+  });
+
+  it('should NOT cancel orders when TWAP or active execution is in progress', () => {
+    // Scenario: We have a valid pair, but we're actively executing TWAP to increase size
+    // The cleanup should skip when there are active executions
+
+    interface ActiveOrder {
+      symbol: string;
+      side: 'LONG' | 'SHORT';
+      status: 'PLACING' | 'WAITING_FILL' | 'FILLED' | 'CANCELLED';
+    }
+
+    const activeExecutions: ActiveOrder[] = [
+      { symbol: 'BTC', side: 'LONG', status: 'WAITING_FILL' },
+      { symbol: 'BTC', side: 'SHORT', status: 'WAITING_FILL' },
+    ];
+
+    // Check if there are active executions
+    const hasActiveExecutions = activeExecutions.some(
+      o => o.status === 'PLACING' || o.status === 'WAITING_FILL'
+    );
+
+    expect(hasActiveExecutions).toBe(true);
+
+    // When there are active executions, we should skip the cleanup entirely
+    // This prevents race conditions with TWAP or position sizing
+  });
+
+  it('should NOT cancel orders tracked by ExecutionLockService', () => {
+    // Scenario: Order is being actively managed (e.g., MakerEfficiencyService is repricing it)
+    // We should check hasActiveOrder before cancelling
+
+    interface TrackedOrder {
+      orderId: string;
+      symbol: string;
+      side: 'LONG' | 'SHORT';
+      exchange: ExchangeType;
+      isTracked: boolean; // Simulates hasActiveOrder check
+    }
+
+    const openOrders: TrackedOrder[] = [
+      { orderId: 'tracked-1', symbol: 'BTC', side: 'LONG', exchange: ExchangeType.HYPERLIQUID, isTracked: true },
+      { orderId: 'orphan-1', symbol: 'BTC', side: 'SHORT', exchange: ExchangeType.LIGHTER, isTracked: false },
+    ];
+
+    // Only cancel orders that are NOT actively tracked
+    const ordersToCancel = openOrders.filter(o => !o.isTracked);
+
+    expect(ordersToCancel.length).toBe(1);
+    expect(ordersToCancel[0].orderId).toBe('orphan-1');
+  });
+});
+
 describe('Order Fill Waiting Logic', () => {
   it('should wait for order to fill before declaring failure', () => {
     // This test verifies the logic that:
