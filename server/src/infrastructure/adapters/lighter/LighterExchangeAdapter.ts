@@ -766,10 +766,6 @@ export class LighterExchangeAdapter
               try {
                 const { bestBid, bestAsk } = await this.getOrderBookBidAsk(request.symbol);
                 avgExecutionPrice = isBuy ? bestAsk : bestBid;
-                this.logger.debug(
-                  `Order book for ${request.symbol} close: bestBid=${bestBid.toFixed(6)}, bestAsk=${bestAsk.toFixed(6)}, ` +
-                    `taking ${isBuy ? 'ask' : 'bid'} at $${avgExecutionPrice.toFixed(6)}`,
-                );
               } catch (obError: any) {
                 // Order book failed, try mark price
                 this.logger.warn(
@@ -788,10 +784,6 @@ export class LighterExchangeAdapter
               try {
                 const { bestBid, bestAsk } = await this.getOrderBookBidAsk(request.symbol);
                 avgExecutionPrice = isBuy ? bestAsk : bestBid;
-                this.logger.debug(
-                  `Order book for ${request.symbol} close: bestBid=${bestBid.toFixed(6)}, bestAsk=${bestAsk.toFixed(6)}, ` +
-                    `using ${isBuy ? 'ask' : 'bid'} = $${avgExecutionPrice.toFixed(6)}`,
-                );
               } catch (obError: any) {
                 // Order book failed, try mark price
                 this.logger.warn(
@@ -902,10 +894,6 @@ export class LighterExchangeAdapter
               try {
                 const { bestBid, bestAsk } = await this.getOrderBookBidAsk(request.symbol);
                 idealPrice = isBuy ? bestAsk : bestBid;
-                this.logger.debug(
-                  `Order book for ${request.symbol}: bestBid=${bestBid.toFixed(6)}, bestAsk=${bestAsk.toFixed(6)}, ` +
-                    `taking ${isBuy ? 'ask' : 'bid'} at $${idealPrice.toFixed(6)}`,
-                );
               } catch (obError: any) {
                 // Order book failed, try mark price
                 this.logger.warn(
@@ -927,11 +915,6 @@ export class LighterExchangeAdapter
             idealPrice = isBuy
                   ? bestAsk * (1 + priceImprovement)
                   : bestBid * (1 - priceImprovement);
-
-                this.logger.debug(
-                  `Order book for ${request.symbol}: bestBid=${bestBid.toFixed(6)}, bestAsk=${bestAsk.toFixed(6)}, ` +
-                    `using ${isBuy ? 'ask' : 'bid'} + ${(priceImprovement * 100).toFixed(2)}% = $${idealPrice.toFixed(6)}`,
-                );
               } catch (obError: any) {
                 // Order book failed, try mark price + slippage
               this.logger.warn(
@@ -2288,11 +2271,6 @@ export class LighterExchangeAdapter
         bestAsk,
         timestamp: Date.now(),
       });
-
-      this.logger.debug(
-        `Order book for ${symbol}: bestBid=${bestBid.toFixed(6)}, bestAsk=${bestAsk.toFixed(6)}, ` +
-          `spread=${((bestAsk - bestBid) / bestBid * 100).toFixed(4)}%`,
-      );
 
       return { bestBid, bestAsk };
     } catch (error: any) {

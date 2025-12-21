@@ -106,9 +106,7 @@ export class LighterFundingDataProvider
           }
 
           this.lastCacheUpdate = Date.now();
-          this.logger.log(
-            `Cached ${this.fundingRatesCache.size} Lighter funding rates`,
-          );
+          // Only log when initially caching or if size changes significantly
           return; // Success
         } else {
           this.logger.warn(
@@ -164,25 +162,14 @@ export class LighterFundingDataProvider
     marketIndex: number,
     forceRefresh: boolean = false,
   ): Promise<number> {
-    const wasStale =
-      this.fundingRatesCache.size === 0 ||
-      Date.now() - this.lastCacheUpdate > this.CACHE_TTL;
     await this.ensureCacheFresh(forceRefresh);
 
     const rate = this.fundingRatesCache.get(marketIndex);
     if (rate !== undefined) {
-      if (forceRefresh || wasStale) {
-        this.logger.debug(
-          `Lighter funding rate for market ${marketIndex}: ${(rate * 100).toFixed(4)}% (${forceRefresh ? 'force refreshed' : 'cache refreshed'})`,
-        );
-      }
       return rate;
     }
 
     // If not in cache, return 0 (market might not exist or have no funding rate)
-    this.logger.debug(
-      `Lighter funding rate for market ${marketIndex} not found in cache`,
-    );
     return 0;
   }
 
@@ -968,11 +955,8 @@ export class LighterFundingDataProvider
         this.get24hVolume(marketIndex).catch(() => undefined),
       ]);
 
-      // If OI/price fetch failed, return null
+      // If OI/price fetch failed, return null silently
       if (!oiAndPrice) {
-        this.logger.debug(
-          `Skipping Lighter for ${request.normalizedSymbol} - OI/price unavailable`,
-        );
         return null;
       }
 
@@ -987,9 +971,7 @@ export class LighterFundingDataProvider
         timestamp: new Date(),
       };
     } catch (error: any) {
-      this.logger.debug(
-        `Failed to get Lighter funding data for market ${marketIndex}: ${error.message}`,
-      );
+      // Silently fail for individual symbols - this is expected for some assets
       return null;
     }
   }
