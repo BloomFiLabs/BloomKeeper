@@ -346,6 +346,15 @@ export class PerpKeeperScheduler implements OnModuleInit {
       // Reconcile persisted position state with actual exchange positions
       await this.reconcilePositions();
 
+      // Update performance metrics immediately on startup so APY is available
+      // This populates fundingSnapshots for estimated APY calculation
+      try {
+        await this.updatePerformanceMetrics();
+        this.logger.log('📊 Initial performance metrics loaded');
+      } catch (error: any) {
+        this.logger.warn(`Failed to load initial metrics: ${error.message}`);
+      }
+
       // Removed startup log - execution logs will show when it runs
       await this.executeHourly();
     }, 2000); // 2 second delay to ensure all services are ready
@@ -1269,22 +1278,19 @@ export class PerpKeeperScheduler implements OnModuleInit {
   }
 
   /**
-   * Log comprehensive performance metrics every 5 minutes
-   * DISABLED: Portfolio tracking moved to execution cycle
+   * Update performance metrics periodically (every 2 minutes)
+   * This ensures APY calculations are always up-to-date, even between hourly executions.
+   * Critical for diagnostics endpoint to show accurate estimated APY.
    */
-  // @Interval(5 * 60 * 1000) // Every 5 minutes
-  // async logPerformanceMetrics() {
-  //   // Disabled - portfolio tracking now happens in execution cycle
-  // }
-
-  /**
-   * Log compact performance summary every minute
-   * DISABLED: Portfolio tracking moved to execution cycle
-   */
-  // @Interval(60 * 1000) // Every minute
-  // async logCompactSummary() {
-  //   // Disabled - portfolio tracking now happens in execution cycle
-  // }
+  @Interval(120000) // Every 2 minutes (120000 ms)
+  async updatePerformanceMetricsPeriodically(): Promise<void> {
+    try {
+      await this.updatePerformanceMetrics();
+    } catch (error: any) {
+      // Silently fail - this is just for diagnostics
+      this.logger.debug(`Periodic metrics update failed: ${error.message}`);
+    }
+  }
 
   /**
    * Check for single-leg positions and try to open missing side
