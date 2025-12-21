@@ -534,10 +534,10 @@ export class FundingRateAggregator {
     }
 
     // Process symbols in parallel batches to avoid rate limits
-    // Process 3 symbols at a time with a delay between batches
-    // Reduced from 5 to 3 due to Lighter API rate limiting (429 errors)
-    const BATCH_SIZE = 3;
-    const BATCH_DELAY_MS = 1500; // 1.5 seconds between batches
+    // Process 5 symbols at a time with a delay between batches
+    // Increased from 3 to 5 because we now use WebSocket caches for most data
+    const BATCH_SIZE = 5;
+    const BATCH_DELAY_MS = 500; // 0.5 seconds between batches (was 1.5s)
 
     for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
       const batch = symbols.slice(i, i + BATCH_SIZE);

@@ -238,7 +238,7 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
       const marketStats = message.market_stats;
       const marketIndex = marketStats.market_id;
 
-      if (!marketIndex) {
+      if (marketIndex === undefined) {
         this.logger.warn(
           `Received market_stats message without market_id: ${JSON.stringify(message)}`,
         );

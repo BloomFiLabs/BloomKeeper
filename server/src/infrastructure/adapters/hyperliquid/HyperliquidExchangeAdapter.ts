@@ -31,6 +31,8 @@ import { DiagnosticsService } from '../../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../../domain/services/MarketQualityFilter';
 import { RateLimiterService } from '../../services/RateLimiterService';
 
+import { HyperLiquidWebSocketProvider } from './HyperLiquidWebSocketProvider';
+
 /**
  * HyperliquidExchangeAdapter - Implements IPerpExchangeAdapter for Hyperliquid
  *
@@ -86,6 +88,7 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
     private readonly configService: ConfigService,
     private readonly dataProvider: HyperLiquidDataProvider,
     private readonly rateLimiter: RateLimiterService,
+    @Optional() private readonly wsProvider?: HyperLiquidWebSocketProvider,
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
   ) {
@@ -1022,6 +1025,20 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
       .replace('USDT', '')
       .replace('USDC', '')
       .replace('-PERP', '');
+
+    // 1. Try WebSocket provider first (zero cost, real-time)
+    if (this.wsProvider) {
+      const wsBest = this.wsProvider.getBestBidAsk(baseCoin);
+      if (wsBest) {
+        // Cache for consistency
+        this.orderBookCache.set(symbol, {
+          bestBid: wsBest.bestBid,
+          bestAsk: wsBest.bestAsk,
+          timestamp: Date.now(),
+        });
+        return wsBest;
+      }
+    }
 
     // Check cache first (very short TTL for order execution)
     const cached = this.orderBookCache.get(symbol);

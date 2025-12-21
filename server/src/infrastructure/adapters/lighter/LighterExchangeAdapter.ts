@@ -31,6 +31,8 @@ import { DiagnosticsService } from '../../services/DiagnosticsService';
 import { MarketQualityFilter } from '../../../domain/services/MarketQualityFilter';
 import { RateLimiterService } from '../../services/RateLimiterService';
 
+import { LighterWebSocketProvider } from './LighterWebSocketProvider';
+
 /**
  * LighterExchangeAdapter - Implements IPerpExchangeAdapter for Lighter Protocol
  *
@@ -84,6 +86,7 @@ export class LighterExchangeAdapter
   constructor(
     private readonly configService: ConfigService,
     private readonly rateLimiter: RateLimiterService,
+    @Optional() private readonly wsProvider?: LighterWebSocketProvider,
     @Optional() private readonly diagnosticsService?: DiagnosticsService,
     @Optional() private readonly marketQualityFilter?: MarketQualityFilter,
   ) {
@@ -2203,6 +2206,20 @@ export class LighterExchangeAdapter
     symbol: string,
   ): Promise<{ bestBid: number; bestAsk: number } | null> {
     try {
+      // 1. Try WebSocket provider first (zero cost, real-time)
+      if (this.wsProvider) {
+        try {
+          const marketIndex = await this.getMarketIndex(symbol);
+          const wsBest = this.wsProvider.getBestBidAsk(marketIndex);
+          if (wsBest) {
+            return wsBest;
+          }
+        } catch (e) {
+          // Fall back to REST if market index lookup fails
+        }
+      }
+
+      // 2. Fall back to existing method
       return await this.getOrderBookBidAsk(symbol);
     } catch (error) {
       return null;
@@ -2303,12 +2320,24 @@ export class LighterExchangeAdapter
 
     try {
       await this.ensureInitialized();
-
       const marketIndex = await this.getMarketIndex(symbol);
+
+      // Method 1: Try WebSocket provider (zero cost, real-time)
+      if (this.wsProvider) {
+        const wsPrice = this.wsProvider.getMarkPrice(marketIndex);
+        if (wsPrice !== undefined && wsPrice > 0) {
+          this.priceCache.set(symbol, {
+            price: wsPrice,
+            timestamp: Date.now(),
+          });
+          return wsPrice;
+        }
+      }
+
       let markPrice: number | null = null;
       let lastError: string | null = null;
 
-      // Method 0: Try candlesticks endpoint (proven to work reliably)
+      // Method 2: Try candlesticks endpoint (proven to work reliably)
       // Using axios directly to avoid ES module import issues with @api/zklighter
       // Add retry logic for rate limiting (429 errors) with improved exponential backoff
       const maxRetries = 8; // Increased from 6 to 8 for more aggressive backoff

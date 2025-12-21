@@ -211,8 +211,15 @@ export class LighterFundingDataProvider
    * @returns Open interest in USD
    */
   async getOpenInterest(marketIndex: number): Promise<number> {
-    // Use orderBookDetails API endpoint (REST API)
+    // 1. Try WebSocket provider first (zero cost, real-time)
+    if (this.wsProvider) {
+      const wsOi = this.wsProvider.getOpenInterest(marketIndex);
+      if (wsOi !== undefined && wsOi > 0) {
+        return wsOi;
+      }
+    }
 
+    // 2. Fall back to REST API
     try {
       const orderBookUrl = `${this.baseUrl}/api/v1/orderBookDetails`;
       const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(orderBookUrl, {
@@ -355,6 +362,17 @@ export class LighterFundingDataProvider
   async getOpenInterestAndMarkPrice(
     marketIndex: number,
   ): Promise<{ openInterest: number; markPrice: number }> {
+    // 1. Try WebSocket provider first (zero cost, real-time)
+    if (this.wsProvider) {
+      const wsOi = this.wsProvider.getOpenInterest(marketIndex);
+      const wsMarkPrice = this.wsProvider.getMarkPrice(marketIndex);
+      
+      if (wsOi !== undefined && wsMarkPrice !== undefined && wsOi > 0 && wsMarkPrice > 0) {
+        return { openInterest: wsOi, markPrice: wsMarkPrice };
+      }
+    }
+
+    // 2. Fall back to REST API
     const maxRetries = 3;
     let lastError: Error | null = null;
 

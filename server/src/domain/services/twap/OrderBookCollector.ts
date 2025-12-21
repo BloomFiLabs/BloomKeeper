@@ -77,7 +77,7 @@ export class OrderBookCollector implements OnModuleInit, OnModuleDestroy {
   private snapshots: Map<string, OrderBookSnapshot[]> = new Map(); // key: symbol-exchange
   
   // Configuration
-  private readonly COLLECTION_INTERVAL_MS = 60 * 1000; // 1 minute
+  private readonly COLLECTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes (was 1 minute)
   private readonly RETENTION_DAYS = 7;
   private readonly RETENTION_MS = this.RETENTION_DAYS * 24 * 60 * 60 * 1000;
   private readonly MAX_SNAPSHOTS_PER_SYMBOL = 7 * 24 * 60; // 7 days of minute data

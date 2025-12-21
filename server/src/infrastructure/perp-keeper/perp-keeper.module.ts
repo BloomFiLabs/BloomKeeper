@@ -158,12 +158,14 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       useFactory: (
         configService: ConfigService,
         rateLimiter: RateLimiterService,
+        wsProvider: LighterWebSocketProvider,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
           return new LighterExchangeAdapter(
             configService,
             rateLimiter,
+            wsProvider,
             diagnosticsService,
           );
         } catch (error: any) {
@@ -173,26 +175,28 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
           return null;
         }
       },
-      inject: [ConfigService, RateLimiterService, DiagnosticsService],
+      inject: [ConfigService, RateLimiterService, LighterWebSocketProvider, DiagnosticsService],
     },
     {
       provide: 'LIGHTER_ADAPTER',
       useFactory: (
         configService: ConfigService,
         rateLimiter: RateLimiterService,
+        wsProvider: LighterWebSocketProvider,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
           return new LighterExchangeAdapter(
             configService,
             rateLimiter,
+            wsProvider,
             diagnosticsService,
           );
         } catch (error: any) {
           return null;
         }
       },
-      inject: [ConfigService, RateLimiterService, DiagnosticsService],
+      inject: [ConfigService, RateLimiterService, LighterWebSocketProvider, DiagnosticsService],
     },
     {
       provide: HyperliquidExchangeAdapter,
@@ -200,6 +204,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         configService: ConfigService,
         dataProvider: HyperLiquidDataProvider,
         rateLimiter: RateLimiterService,
+        wsProvider: HyperLiquidWebSocketProvider,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
@@ -207,6 +212,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
             configService,
             dataProvider,
             rateLimiter,
+            wsProvider,
             diagnosticsService,
           );
         } catch (error: any) {
@@ -220,6 +226,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         ConfigService,
         HyperLiquidDataProvider,
         RateLimiterService,
+        HyperLiquidWebSocketProvider,
         DiagnosticsService,
       ],
     },
@@ -229,6 +236,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         configService: ConfigService,
         dataProvider: HyperLiquidDataProvider,
         rateLimiter: RateLimiterService,
+        wsProvider: HyperLiquidWebSocketProvider,
         diagnosticsService: DiagnosticsService,
       ) => {
         try {
@@ -236,6 +244,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
             configService,
             dataProvider,
             rateLimiter,
+            wsProvider,
             diagnosticsService,
           );
         } catch (error: any) {
@@ -246,6 +255,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         ConfigService,
         HyperLiquidDataProvider,
         RateLimiterService,
+        HyperLiquidWebSocketProvider,
         DiagnosticsService,
       ],
     },

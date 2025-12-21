@@ -29,6 +29,9 @@ import {
 } from '../../domain/services/ExchangeBalanceRebalancer';
 import { ArbitrageOpportunity } from '../../domain/services/FundingRateAggregator';
 import { RateLimiterService } from '../../infrastructure/services/RateLimiterService';
+import { LighterWebSocketProvider } from '../../infrastructure/adapters/lighter/LighterWebSocketProvider';
+import { HyperLiquidWebSocketProvider } from '../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider';
+import { HyperLiquidDataProvider } from '../../infrastructure/adapters/hyperliquid/HyperLiquidDataProvider';
 
 /**
  * PerpKeeperService - Implements IPerpKeeperService
@@ -68,6 +71,12 @@ export class PerpKeeperService implements IPerpKeeperService {
     @Optional()
     @Inject(ExtendedSpotAdapter)
     private readonly extendedSpotAdapter: ExtendedSpotAdapter | null,
+    @Optional()
+    private readonly lighterWsProvider: LighterWebSocketProvider | null,
+    @Optional()
+    private readonly hyperliquidWsProvider: HyperLiquidWebSocketProvider | null,
+    @Optional()
+    private readonly hyperliquidDataProvider: HyperLiquidDataProvider | null,
     private readonly performanceLogger: PerpKeeperPerformanceLogger,
     private readonly balanceRebalancer: ExchangeBalanceRebalancer,
     private readonly configService: ConfigService,
@@ -92,10 +101,10 @@ export class PerpKeeperService implements IPerpKeeperService {
       // Mock adapters need real adapters to get market data
       const aster = null; // ASTER DISABLED
       const lighter =
-        lighterAdapter || new LighterExchangeAdapter(this.configService, this.rateLimiter);
+        lighterAdapter || new LighterExchangeAdapter(this.configService, this.rateLimiter, this.lighterWsProvider || undefined);
       const hyperliquid =
         hyperliquidAdapter ||
-        new HyperliquidExchangeAdapter(this.configService, null as any, this.rateLimiter);
+        new HyperliquidExchangeAdapter(this.configService, this.hyperliquidDataProvider || null as any, this.rateLimiter, this.hyperliquidWsProvider || undefined);
 
       // Extended adapter is optional - only create if API key is available
       let extended: ExtendedExchangeAdapter | null = extendedAdapter;
