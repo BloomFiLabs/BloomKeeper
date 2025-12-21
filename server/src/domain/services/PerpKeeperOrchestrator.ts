@@ -144,15 +144,15 @@ export class PerpKeeperOrchestrator {
     // Get mark price for limit order
     const markPrice = await adapter.getMarkPrice(position.symbol);
 
-    const request: PerpOrderRequest = {
-      symbol: position.symbol,
-      side: closeSide,
-      amount: reductionSize,
-      price: markPrice,
-      orderType: OrderType.LIMIT,
-      timeInForce: TimeInForce.GTC,
-      reduceOnly: true,
-    };
+    const request = new PerpOrderRequest(
+      position.symbol,
+      closeSide,
+      OrderType.LIMIT,
+      reductionSize,
+      markPrice,
+      TimeInForce.GTC,
+      true, // reduceOnly
+    );
 
     await adapter.placeOrder(request);
   }

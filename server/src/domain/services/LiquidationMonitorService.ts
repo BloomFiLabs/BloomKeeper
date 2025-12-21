@@ -21,7 +21,7 @@ import { PerpOrderRequest, OrderSide, OrderType, TimeInForce } from '../value-ob
 import { ExecutionLockService } from '../../infrastructure/services/ExecutionLockService';
 import { RateLimiterService, RateLimitPriority } from '../../infrastructure/services/RateLimiterService';
 import { MarketStateService } from '../../infrastructure/services/MarketStateService';
-import { IOptimalLeverageService } from '../ports/IOptimalLeverageService';
+import type { IOptimalLeverageService } from '../ports/IOptimalLeverageService';
 
 /**
  * Internal type for tracking paired positions.

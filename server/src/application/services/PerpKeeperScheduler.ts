@@ -806,7 +806,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
       const recommendation = await this.optimalLeverageService.calculateOptimalLeverage(
         position.symbol,
         position.exchangeType,
-        Math.abs(position.sizeUsd)
+        Math.abs(position.getPositionValue())
       );
       const targetDistance = 1 / recommendation.optimalLeverage;
 
