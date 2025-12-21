@@ -662,12 +662,14 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         fundingPaymentsService: RealFundingPaymentsService,
         historicalService: IHistoricalFundingRateService,
         garchService: GarchService,
+        analyticsTracker: ExecutionAnalyticsTracker,
       ) => {
         return new OptimalLeverageService(
           configService,
           fundingPaymentsService,
           historicalService,
           garchService,
+          analyticsTracker,
         );
       },
       inject: [
@@ -675,6 +677,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
         RealFundingPaymentsService,
         'IHistoricalFundingRateService',
         GarchService,
+        ExecutionAnalyticsTracker,
       ],
     },
     {

@@ -677,8 +677,8 @@ export class PerpKeeperScheduler implements OnModuleInit {
       const filteredOpportunities =
         await this.findAndFilterOpportunities(filteredSymbols);
 
-      // Handle existing positions (single-leg detection, closing, etc.)
-      await this.handleExistingPositions();
+      // 2. Manage active positions (LP-style recentering and rebalancing)
+      await this.manageActivePositions();
 
       // Rebalance exchange balances based on opportunities
       await this.rebalanceIfNeeded(filteredOpportunities);
@@ -761,6 +761,86 @@ export class PerpKeeperScheduler implements OnModuleInit {
     }
 
     return filtered;
+  }
+
+  /**
+   * Manage active positions using an LP-style approach (Recentering vs Closing)
+   */
+  private async manageActivePositions(): Promise<void> {
+    try {
+      this.logger.log('📈 Managing active positions (LP-style check)...');
+      
+      const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+      const allPositions = positionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
+
+      if (allPositions.length === 0) return;
+
+      // 1. Handle single-leg positions (Emergency Fix)
+      const remainingPositions = await this.handleSingleLegPositions(allPositions);
+
+      // 2. Recenter healthy positions (LP-Style)
+      for (const position of remainingPositions) {
+        await this.checkAndRecenterPosition(position);
+      }
+
+    } catch (error: any) {
+      this.logger.warn(`Failed during position management: ${error.message}`);
+    }
+  }
+
+  /**
+   * Check if a position needs "Recentering" (Laddered LP-style adjustment)
+   */
+  private async checkAndRecenterPosition(position: PerpPosition): Promise<void> {
+    try {
+      if (!this.optimalLeverageService) return;
+
+      // 1. Get current safety distance (LP Range)
+      const currentPrice = position.markPrice;
+      const liqPrice = position.liquidationPrice;
+      if (!liqPrice || liqPrice === 0) return;
+
+      const distanceToLiq = Math.abs(currentPrice - liqPrice) / currentPrice;
+      
+      // 2. Get optimal target distance
+      const recommendation = await this.optimalLeverageService.calculateOptimalLeverage(
+        position.symbol,
+        position.exchangeType,
+        Math.abs(position.sizeUsd)
+      );
+      const targetDistance = 1 / recommendation.optimalLeverage;
+
+      // 3. Proactive Laddered Rebalancing
+      // Tier 1: Proactive (30% consumed) -> 5% rebalance
+      // Tier 2: Maintaining (60% consumed) -> 10% rebalance
+      // Tier 3: Emergency (85% consumed) -> 20% rebalance
+      
+      let reductionPercent = 0;
+      let tier = '';
+
+      if (distanceToLiq < targetDistance * 0.15) { // 85% consumed
+        reductionPercent = 0.20;
+        tier = 'EMERGENCY (85%)';
+      } else if (distanceToLiq < targetDistance * 0.40) { // 60% consumed
+        reductionPercent = 0.10;
+        tier = 'MAINTAINING (60%)';
+      } else if (distanceToLiq < targetDistance * 0.70) { // 30% consumed
+        reductionPercent = 0.05;
+        tier = 'PROACTIVE (30%)';
+      }
+
+      if (reductionPercent > 0) {
+        this.logger.warn(
+          `⚖️ ${tier} Recentering ${position.symbol}: Distance to Liq (${(distanceToLiq * 100).toFixed(1)}%) ` +
+          `vs Target (${(targetDistance * 100).toFixed(1)}%). Reducing size by ${(reductionPercent * 100).toFixed(0)}%.`
+        );
+        
+        const reductionSize = Math.abs(position.size) * reductionPercent;
+        await this.orchestrator.executePartialClose(position, reductionSize, `Recentering (${tier})`);
+      }
+    } catch (error: any) {
+      this.logger.debug(`Could not check recentering for ${position.symbol}: ${error.message}`);
+    }
   }
 
   /**

@@ -107,4 +107,17 @@ export interface IHistoricalFundingRateService {
     currentLongRate: number,
     currentShortRate: number,
   ): number;
+
+  /**
+   * Get average duration of funding regimes (consecutive positive or negative periods)
+   */
+  getAverageRegimeDuration(
+    symbol: string,
+    exchange: ExchangeType,
+    minRateThreshold?: number,
+  ): {
+    avgHours: number;
+    currentRegimeHours: number;
+    regimeType: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL';
+  };
 }

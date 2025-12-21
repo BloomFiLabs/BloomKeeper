@@ -68,6 +68,16 @@ describe('OptimalLeverageService', () => {
       getAverageRateForPeriod: jest.fn().mockReturnValue(null),
       getWeightedAverageRate: jest.fn().mockReturnValue(0.0001),
       getAverageSpread: jest.fn().mockReturnValue(0.0002),
+      getAverageRegimeDuration: jest.fn().mockReturnValue({
+        avgHours: 24,
+        currentRegimeHours: 12,
+        regimeType: 'POSITIVE',
+      }),
+    };
+
+    // Mock ExecutionAnalyticsTracker
+    const mockAnalyticsTracker = {
+      getQualitySummary: jest.fn().mockReturnValue(null),
     };
 
     service = new OptimalLeverageService(
@@ -75,6 +85,7 @@ describe('OptimalLeverageService', () => {
       mockFundingPaymentsService as RealFundingPaymentsService,
       mockHistoricalService as IHistoricalFundingRateService,
       mockGarchService as GarchService,
+      mockAnalyticsTracker as any,
     );
   });
 
@@ -566,11 +577,12 @@ describe('OptimalLeverageService', () => {
   describe('Leverage formula (Sigma-Targeted)', () => {
     it('should calculate leverage based on inverse volatility (1 / k*sigma)', async () => {
       // Formula: L = 1 / (k * dailyVol)
-      // k defaults to 5.0 in code if not in config
+      // k defaults to 5.0, dailyVol = 0.04 (4%)
+      // L = 1 / (5.0 * 0.04) = 5.0x
       jest.spyOn(service, 'getAssetVolatility').mockResolvedValue({
         symbol: 'BTC',
         exchange: ExchangeType.HYPERLIQUID,
-        dailyVolatility: 0.04, // 4% daily
+        dailyVolatility: 0.04, 
         hourlyVolatility: 0.008,
         maxDrawdown24h: 0.05,
         atr: 0,
@@ -579,11 +591,11 @@ describe('OptimalLeverageService', () => {
         timestamp: new Date(),
       });
 
-      // Mock high liquidity to avoid slippage penalty
+      // Mock high liquidity
       jest.spyOn(service, 'getLiquidityAssessment').mockResolvedValue({
         symbol: 'BTC',
         exchange: ExchangeType.HYPERLIQUID,
-        openInterest: 100000000, // Very high OI
+        openInterest: 100000000,
         positionSizeUsd: 1000,
         positionAsPercentOfOI: 0.001,
         estimatedSlippage: 0.0001,
@@ -591,26 +603,54 @@ describe('OptimalLeverageService', () => {
         liquidityScore: 1.0,
       });
 
-      const result = await service.calculateOptimalLeverage(
-        'BTC',
-        ExchangeType.HYPERLIQUID,
-        1000,
-      );
-
-      // Expected: 1 / (5.0 * 0.04) = 1 / 0.20 = 5.0x
+      const result = await service.calculateOptimalLeverage('BTC', ExchangeType.HYPERLIQUID, 1000);
       expect(result.optimalLeverage).toBe(5.0);
-      expect(result.reason).toContain('Sigma-Targeted');
+    });
+
+    it('should use dynamic K for high volatility assets', async () => {
+      // k base = 5.0
+      // dailyVol = 0.12 (12%)
+      // volExcess = 0.12 - 0.08 = 0.04
+      // dynamicK = 5.0 + (0.04 / 0.04) * 1.0 = 6.0
+      // L = 1 / (6.0 * 0.12) = 1 / 0.72 = 1.38x -> rounded to 1.4x
+      jest.spyOn(service, 'getAssetVolatility').mockResolvedValue({
+        symbol: 'HIGH_VOL',
+        exchange: ExchangeType.HYPERLIQUID,
+        dailyVolatility: 0.12, 
+        hourlyVolatility: 0.02,
+        maxDrawdown24h: 0.10,
+        atr: 0,
+        lookbackHours: 24,
+        dataPoints: 100,
+        timestamp: new Date(),
+      });
+
+      // Mock high liquidity
+      jest.spyOn(service, 'getLiquidityAssessment').mockResolvedValue({
+        symbol: 'HIGH_VOL',
+        exchange: ExchangeType.HYPERLIQUID,
+        openInterest: 100000000,
+        positionSizeUsd: 1000,
+        positionAsPercentOfOI: 0.001,
+        estimatedSlippage: 0.0001,
+        maxRecommendedSize: 1000000,
+        liquidityScore: 1.0,
+      });
+
+      const result = await service.calculateOptimalLeverage('HIGH_VOL', ExchangeType.HYPERLIQUID, 1000);
+      expect(result.optimalLeverage).toBe(1.4);
+      expect(result.reason).toContain('Liquidation is 6.0σ away');
     });
 
     it('should reduce leverage proportionally for higher volatility', async () => {
-      // k=5.0, dailyVol=0.10 (10%)
-      // Expected: 1 / (5.0 * 0.10) = 1 / 0.50 = 2.0x
+      // k=5.0 (constant below 8% vol), dailyVol=0.06 (6%)
+      // Expected: 1 / (5.0 * 0.06) = 1 / 0.30 = 3.333x -> 3.3x
       jest.spyOn(service, 'getAssetVolatility').mockResolvedValue({
-        symbol: 'PEPE',
+        symbol: 'SOL',
         exchange: ExchangeType.HYPERLIQUID,
-        dailyVolatility: 0.10, 
-        hourlyVolatility: 0.02,
-        maxDrawdown24h: 0.15,
+        dailyVolatility: 0.06, 
+        hourlyVolatility: 0.012,
+        maxDrawdown24h: 0.08,
         atr: 0,
         lookbackHours: 24,
         dataPoints: 100,
@@ -618,12 +658,12 @@ describe('OptimalLeverageService', () => {
       });
 
       const result = await service.calculateOptimalLeverage(
-        'PEPE',
+        'SOL',
         ExchangeType.HYPERLIQUID,
         1000,
       );
 
-      expect(result.optimalLeverage).toBe(2.0);
+      expect(result.optimalLeverage).toBe(3.3);
     });
 
     it('should apply liquidity penalty for large positions relative to OI', async () => {

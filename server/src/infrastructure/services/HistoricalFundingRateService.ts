@@ -520,6 +520,61 @@ export class HistoricalFundingRateService
   }
 
   /**
+   * Get average duration of funding regimes (consecutive positive or negative periods)
+   * This helps estimate how long we can expect to stay in a position.
+   * Based on LP-style "divergence time" targeting.
+   */
+  getAverageRegimeDuration(
+    symbol: string,
+    exchange: ExchangeType,
+    minRateThreshold: number = 0.00001, // 0.001% hourly
+  ): {
+    avgHours: number;
+    currentRegimeHours: number;
+    regimeType: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL';
+  } {
+    const key = `${symbol}_${exchange}`;
+    const dataPoints = this.historicalData.get(key) || [];
+
+    if (dataPoints.length < 24) {
+      return { avgHours: 24, currentRegimeHours: 0, regimeType: 'NEUTRAL' };
+    }
+
+    let regimes: number[] = [];
+    let currentRegimeCount = 1;
+    let currentType: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' = 
+      dataPoints[0].rate > minRateThreshold ? 'POSITIVE' : 
+      dataPoints[0].rate < -minRateThreshold ? 'NEGATIVE' : 'NEUTRAL';
+
+    for (let i = 1; i < dataPoints.length; i++) {
+      const rate = dataPoints[i].rate;
+      const type: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' = 
+        rate > minRateThreshold ? 'POSITIVE' : 
+        rate < -minRateThreshold ? 'NEGATIVE' : 'NEUTRAL';
+
+      if (type === currentType) {
+        currentRegimeCount++;
+      } else {
+        if (currentType !== 'NEUTRAL') {
+          regimes.push(currentRegimeCount);
+        }
+        currentRegimeCount = 1;
+        currentType = type;
+      }
+    }
+
+    const avgHours = regimes.length > 0 
+      ? regimes.reduce((a, b) => a + b, 0) / regimes.length 
+      : 24;
+
+    return {
+      avgHours: Math.max(avgHours, 8), // Minimum 8h regime
+      currentRegimeHours: currentRegimeCount,
+      regimeType: currentType
+    };
+  }
+
+  /**
    * Fetch historical funding rates from Hyperliquid native API
    * Implements pagination to handle API limit of 500 entries per request
    * @param symbol Hyperliquid symbol (e.g., 'ETH')

@@ -4,6 +4,9 @@ import {
   PerpOrderRequest,
   PerpOrderResponse,
   OrderStatus,
+  OrderSide,
+  OrderType,
+  TimeInForce,
 } from '../value-objects/PerpOrder';
 import { PerpPosition } from '../entities/PerpPosition';
 import { PerpOrder } from '../entities/PerpOrder';
@@ -120,6 +123,38 @@ export class PerpKeeperOrchestrator {
       );
       throw error;
     }
+  }
+
+  /**
+   * Execute a partial close of a position (LP-style recentering)
+   */
+  async executePartialClose(
+    position: PerpPosition,
+    reductionSize: number,
+    reason: string = 'Partial Close'
+  ): Promise<void> {
+    const adapter = this.exchangeAdapters.get(position.exchangeType);
+    if (!adapter) throw new Error(`Adapter not found for ${position.exchangeType}`);
+
+    this.logger.log(`🔄 Executing ${reason} for ${position.symbol}: Reducing size by ${reductionSize.toFixed(4)}`);
+
+    // Side is opposite of current position
+    const closeSide = position.side === 'LONG' ? OrderSide.SHORT : OrderSide.LONG;
+    
+    // Get mark price for limit order
+    const markPrice = await adapter.getMarkPrice(position.symbol);
+
+    const request: PerpOrderRequest = {
+      symbol: position.symbol,
+      side: closeSide,
+      amount: reductionSize,
+      price: markPrice,
+      orderType: OrderType.LIMIT,
+      timeInForce: TimeInForce.GTC,
+      reduceOnly: true,
+    };
+
+    await adapter.placeOrder(request);
   }
 
   /**

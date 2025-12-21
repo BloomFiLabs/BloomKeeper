@@ -15,6 +15,7 @@ import {
 import { RealFundingPaymentsService } from './RealFundingPaymentsService';
 import type { IHistoricalFundingRateService } from '../../domain/ports/IHistoricalFundingRateService';
 import { GarchService } from '../../domain/services/GarchService';
+import { ExecutionAnalyticsTracker } from '../../domain/services/twap/ExecutionAnalyticsTracker';
 
 /**
  * Price candle data
@@ -72,6 +73,8 @@ export class OptimalLeverageService implements IOptimalLeverageService {
     private readonly historicalService?: IHistoricalFundingRateService,
     @Optional()
     private readonly garchService?: GarchService,
+    @Optional()
+    private readonly analyticsTracker?: ExecutionAnalyticsTracker,
   ) {
     // Initialize configuration from env or defaults
     // Use longer lookback (168h = 7 days) to capture weekly volatility patterns
@@ -161,11 +164,75 @@ export class OptimalLeverageService implements IOptimalLeverageService {
 
     // Calculate optimal leverage using Sigma-Distance Model (Volatility Targeting)
     // Non-heuristic formula: L = 1 / (k * sigma)
-    const k = this.config.sigmaFactor || 5.0;
+    const baseK = this.config.sigmaFactor || 5.0;
+    let dynamicK = baseK;
+
+    // Adjust K based on "Fat Tail" risk (High Volatility)
+    // For stable assets (vol < 8%), we use baseK.
+    // For volatile assets, we increase K to provide a wider safety buffer.
+    if (volatilityMetrics.dailyVolatility > 0.08) {
+      const volExcess = volatilityMetrics.dailyVolatility - 0.08;
+      // Increase K factor by 1.0 for every 4% additional daily volatility
+      dynamicK += (volExcess / 0.04) * 1.0;
+      
+      this.logger.debug(
+        `${normalizedSymbol}: High vol detected (${(volatilityMetrics.dailyVolatility * 100).toFixed(1)}% daily). ` +
+        `Adjusting safety K: ${baseK.toFixed(1)} -> ${dynamicK.toFixed(1)}`
+      );
+    }
     
-    // We use the daily volatility from metrics
-    // If daily vol is 5%, and k=5, optimal leverage = 1 / (5 * 0.05) = 4x
-    let optimalLeverage = 1 / (k * volatilityMetrics.dailyVolatility);
+    // LP-Style Enhancement: Duration-Targeted Leverage
+    // We want our liquidation buffer to last for the entire expected duration of the funding regime.
+    // sigma_total = sigma_daily * sqrt(duration_days)
+    if (this.historicalService) {
+      const regime = this.historicalService.getAverageRegimeDuration(normalizedSymbol, exchange);
+      const expectedDurationDays = regime.avgHours / 24;
+      
+      // Scale dynamicK based on duration (square root rule)
+      // This ensures we have enough buffer to survive the cumulative move over the whole period.
+      const durationMultiplier = Math.sqrt(Math.max(1, expectedDurationDays));
+      dynamicK *= durationMultiplier;
+      
+      this.logger.debug(
+        `${normalizedSymbol}: Expected regime duration: ${regime.avgHours.toFixed(1)}h. ` +
+        `Duration-weighted K multiplier: ${durationMultiplier.toFixed(2)}x`
+      );
+    }
+
+    // 🚨 PROFIT OPTIMIZATION UPGRADE: "LP-Style Efficiency Frontier"
+    // Instead of just safety, we consider if higher leverage + more frequent rebalancing 
+    // is more profitable than low leverage + no rebalancing.
+    if (this.analyticsTracker) {
+      const summary = this.analyticsTracker.getQualitySummary(normalizedSymbol);
+      if (summary) {
+        // Calculate rebalance cost (Slippage + Maker Fee/Rebate)
+        const slippageBps = summary.avgActualSlippageBps;
+        const rebalanceCostPct = slippageBps / 10000;
+        
+        // Expected execution time factor (TWAP risk)
+        const executionHours = summary.avgExecutionLatencyMs / (3600 * 1000);
+        const gapRisk = volatilityMetrics.hourlyVolatility * Math.sqrt(Math.max(1, executionHours));
+        
+        // Total rebalance friction (Slippage + Fees + Opportunity Cost of time)
+        // TWAP gap is time spent not earning funding.
+        const hourlyFunding = (volatilityMetrics.dailyVolatility / 24) * 0.1; // Estimate 10% of vol as funding (heuristic)
+        const opportunityCost = hourlyFunding * executionHours;
+        
+        const friction = rebalanceCostPct + opportunityCost;
+        
+        // If friction is low (< 0.1%), we can afford higher leverage/rebalance frequency
+        if (friction < 0.001) {
+          this.logger.debug(`${normalizedSymbol}: Execution friction is very low (${(friction*100).toFixed(3)}%). Increasing leverage target.`);
+          dynamicK *= 0.8; // Reduce safety buffer requirement by 20% (more aggressive)
+        } else if (friction > 0.01) {
+          this.logger.debug(`${normalizedSymbol}: Execution friction is high (${(friction*100).toFixed(3)}%). Decreasing leverage target.`);
+          dynamicK *= 1.2; // Increase safety buffer requirement by 20% (more conservative)
+        }
+      }
+    }
+
+    // Calculate leverage: Inverse of (Safety Multiplier * Volatility)
+    let optimalLeverage = 1 / (dynamicK * volatilityMetrics.dailyVolatility);
 
     // Adjust for liquidity (non-heuristic slippage penalty)
     if (liquidityAssessment.positionAsPercentOfOI > 1) {
@@ -196,7 +263,7 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       this.config.maxLeverage,
     );
 
-    const reason = `Sigma-Targeted: Liquidation is ${k}σ away (${(volatilityMetrics.dailyVolatility * 100).toFixed(1)}% daily vol)`;
+    const reason = `Sigma-Targeted: Liquidation is ${dynamicK.toFixed(1)}σ away (${(volatilityMetrics.dailyVolatility * 100).toFixed(1)}% daily vol)`;
 
     return {
       symbol: normalizedSymbol,
@@ -635,35 +702,22 @@ export class OptimalLeverageService implements IOptimalLeverageService {
       );
     }
 
-    // Cap at 3x for moderate volatility (> 5% daily vol)
-    if (volatility.dailyVolatility > 0.05) {
-      constrained = Math.min(constrained, 3);
-    }
-
-    // Cap at 2x for high volatility (> 8% daily vol)
-    if (volatility.dailyVolatility > 0.08) {
-      constrained = Math.min(constrained, 2);
-    }
-
-    // Cap at 1.5x for very high volatility (> 12% daily vol)
-    if (volatility.dailyVolatility > 0.12) {
-      constrained = Math.min(constrained, 1.5);
-    }
-
     // Cap based on max drawdown - if asset dropped >15% in lookback, use 2x max
+    // This is a "Crash Protection" circuit breaker for assets in freefall
     if (volatility.maxDrawdown24h > 0.15) {
       constrained = Math.min(constrained, 2);
       this.logger.debug(
-        `${volatility.symbol}: High drawdown (${(volatility.maxDrawdown24h * 100).toFixed(1)}%), capping at 2x`,
+        `${volatility.symbol}: High drawdown (${(volatility.maxDrawdown24h * 100).toFixed(1)}%), capping at 2x as circuit breaker`,
       );
     }
 
-    // Cap at 2x for low win rate assets (< 50%)
-    if (winRateScore < 0.5 / 0.7) {
+    // Cap based on performance (Low Win Rate)
+    // If win rate is < 40%, limit to 2x max
+    if (winRateScore < 0.4 / 0.7) {
       constrained = Math.min(constrained, 2);
     }
 
-    // Ensure within bounds
+    // Ensure within global bounds
     constrained = Math.max(this.config.minLeverage, constrained);
     constrained = Math.min(this.config.maxLeverage, constrained);
 
