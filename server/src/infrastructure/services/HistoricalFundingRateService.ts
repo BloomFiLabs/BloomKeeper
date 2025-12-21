@@ -104,11 +104,11 @@ export class HistoricalFundingRateService
   private startPeriodicCollection() {
     // Collect after a delay to avoid blocking strategy startup
     setTimeout(() => {
-      this.collectCurrentRates().catch((err) => {
-        this.logger.error(
-          `Failed to collect initial funding rates: ${err.message}`,
-        );
-      });
+    this.collectCurrentRates().catch((err) => {
+      this.logger.error(
+        `Failed to collect initial funding rates: ${err.message}`,
+      );
+    });
     }, 120000); // 2 minute delay
 
     // Then collect every hour
@@ -947,11 +947,11 @@ export class HistoricalFundingRateService
             
             // Only fetch if we don't have data or need to go back further
             if (oldestCached === null || oldestCached.getTime() > Date.now() - this.RETENTION_MS) {
-              const hyperliquidData = await this.fetchHyperliquidHistory(
-                mapping.hyperliquidSymbol,
-                30,
-              );
-              if (hyperliquidData.length > 0) {
+            const hyperliquidData = await this.fetchHyperliquidHistory(
+              mapping.hyperliquidSymbol,
+              30,
+            );
+            if (hyperliquidData.length > 0) {
                 // Filter out data we already have
                 const existingTimestamps = new Set(
                   (this.historicalData.get(`${symbol}_${ExchangeType.HYPERLIQUID}`) || []).map(
@@ -960,26 +960,26 @@ export class HistoricalFundingRateService
                 );
                 
                 let newEntries = 0;
-                for (const entry of hyperliquidData) {
+              for (const entry of hyperliquidData) {
                   // Only add if we don't already have this timestamp
                   if (!existingTimestamps.has(entry.timestamp.getTime())) {
-                    this.addHistoricalDataPoint(
-                      symbol,
-                      ExchangeType.HYPERLIQUID,
-                      entry.rate,
-                      entry.timestamp,
-                    );
-                    totalFetched++;
-                    hyperliquidCount++;
+                this.addHistoricalDataPoint(
+                  symbol,
+                  ExchangeType.HYPERLIQUID,
+                  entry.rate,
+                  entry.timestamp,
+                );
+                totalFetched++;
+                hyperliquidCount++;
                     newEntries++;
                   }
                 }
                 
                 if (newEntries === 0) {
                   hyperliquidSkipped++;
-                }
-              } else {
-                hyperliquidFailed++;
+              }
+            } else {
+              hyperliquidFailed++;
               }
             } else {
               hyperliquidSkipped++;
@@ -1000,11 +1000,11 @@ export class HistoricalFundingRateService
             
             // Only fetch if we don't have data or need to go back further
             if (oldestCached === null || oldestCached.getTime() > Date.now() - this.RETENTION_MS) {
-              const asterData = await this.fetchAsterHistory(
-                mapping.asterSymbol,
-                30,
-              );
-              if (asterData.length > 0) {
+            const asterData = await this.fetchAsterHistory(
+              mapping.asterSymbol,
+              30,
+            );
+            if (asterData.length > 0) {
                 // Filter out data we already have
                 const existingTimestamps = new Set(
                   (this.historicalData.get(`${symbol}_${ExchangeType.ASTER}`) || []).map(
@@ -1013,26 +1013,26 @@ export class HistoricalFundingRateService
                 );
                 
                 let newEntries = 0;
-                for (const entry of asterData) {
+              for (const entry of asterData) {
                   // Only add if we don't already have this timestamp
                   if (!existingTimestamps.has(entry.timestamp.getTime())) {
-                    this.addHistoricalDataPoint(
-                      symbol,
-                      ExchangeType.ASTER,
-                      entry.rate,
-                      entry.timestamp,
-                    );
-                    totalFetched++;
-                    asterCount++;
+                this.addHistoricalDataPoint(
+                  symbol,
+                  ExchangeType.ASTER,
+                  entry.rate,
+                  entry.timestamp,
+                );
+                totalFetched++;
+                asterCount++;
                     newEntries++;
                   }
                 }
                 
                 if (newEntries === 0) {
                   asterSkipped++;
-                }
-              } else {
-                asterFailed++;
+              }
+            } else {
+              asterFailed++;
               }
             } else {
               asterSkipped++;
@@ -1053,12 +1053,12 @@ export class HistoricalFundingRateService
             
             // Only fetch if we don't have data or need to go back further
             if (oldestCached === null || oldestCached.getTime() > Date.now() - this.RETENTION_MS) {
-              const lighterData = await this.fetchLighterHistory(
-                symbol,
-                mapping.lighterMarketIndex,
-                30,
-              );
-              if (lighterData.length > 0) {
+            const lighterData = await this.fetchLighterHistory(
+              symbol,
+              mapping.lighterMarketIndex,
+              30,
+            );
+            if (lighterData.length > 0) {
                 // Filter out data we already have
                 const existingTimestamps = new Set(
                   (this.historicalData.get(`${symbol}_${ExchangeType.LIGHTER}`) || []).map(
@@ -1067,26 +1067,26 @@ export class HistoricalFundingRateService
                 );
                 
                 let newEntries = 0;
-                for (const entry of lighterData) {
+              for (const entry of lighterData) {
                   // Only add if we don't already have this timestamp
                   if (!existingTimestamps.has(entry.timestamp.getTime())) {
-                    this.addHistoricalDataPoint(
-                      symbol,
-                      ExchangeType.LIGHTER,
-                      entry.rate,
-                      entry.timestamp,
-                    );
-                    totalFetched++;
-                    lighterCount++;
+                this.addHistoricalDataPoint(
+                  symbol,
+                  ExchangeType.LIGHTER,
+                  entry.rate,
+                  entry.timestamp,
+                );
+                totalFetched++;
+                lighterCount++;
                     newEntries++;
                   }
                 }
                 
                 if (newEntries === 0) {
                   lighterSkipped++;
-                }
-              } else {
-                lighterFailed++;
+              }
+            } else {
+              lighterFailed++;
               }
             } else {
               lighterSkipped++;

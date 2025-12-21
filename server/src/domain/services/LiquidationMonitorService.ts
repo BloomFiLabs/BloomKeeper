@@ -109,34 +109,14 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
         if (pairedPosition) {
           result.positions.push(pairedPosition);
 
-          // NEW LOGIC: Calculate risk based on BUFFER CONSUMPTION
-          // A position is at risk if its current distance to liquidation is significantly
-          // smaller than its target safety buffer (derived from volatility/leverage).
+          // Use the buffer consumption logic from the LiquidationRisk object
+          // This measures how much of the ACTUAL buffer (based on the position's own leverage)
+          // has been eaten by price movement.
+          const longConsumed = pairedPosition.longRisk.proximityToLiquidation;
+          const shortConsumed = pairedPosition.shortRisk.proximityToLiquidation;
           
-          let longAtRisk = false;
-          let shortAtRisk = false;
-          let longConsumed = 0;
-          let shortConsumed = 0;
-
-          if (pair.long) {
-            const recommendation = await this.optimalLeverageService?.calculateOptimalLeverage(
-              pair.long.symbol, pair.long.exchangeType, pair.long.getPositionValue()
-            );
-            const targetBuffer = 1 / (recommendation?.optimalLeverage || pair.long.leverage || 5);
-            const currentBuffer = pairedPosition.longRisk.distanceToLiquidation;
-            longConsumed = targetBuffer > 0 ? (targetBuffer - currentBuffer) / targetBuffer : 0;
-            longAtRisk = longConsumed >= this.config.emergencyCloseThreshold;
-          }
-
-          if (pair.short) {
-            const recommendation = await this.optimalLeverageService?.calculateOptimalLeverage(
-              pair.short.symbol, pair.short.exchangeType, pair.short.getPositionValue()
-            );
-            const targetBuffer = 1 / (recommendation?.optimalLeverage || pair.short.leverage || 5);
-            const currentBuffer = pairedPosition.shortRisk.distanceToLiquidation;
-            shortConsumed = targetBuffer > 0 ? (targetBuffer - currentBuffer) / targetBuffer : 0;
-            shortAtRisk = shortConsumed >= this.config.emergencyCloseThreshold;
-          }
+          const longAtRisk = pairedPosition.longRisk.shouldEmergencyClose(this.config.emergencyCloseThreshold);
+          const shortAtRisk = pairedPosition.shortRisk.shouldEmergencyClose(this.config.emergencyCloseThreshold);
 
           if (longAtRisk || shortAtRisk) {
             result.positionsAtRisk++;

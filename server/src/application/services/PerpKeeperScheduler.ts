@@ -2527,74 +2527,74 @@ export class PerpKeeperScheduler implements OnModuleInit {
       let markPrice: number | undefined;
       try {
         markPrice = await adapter.getMarkPrice(position.symbol);
-      } catch (priceError: any) {
+            } catch (priceError: any) {
         this.logger.warn(
           `Could not get mark price for ${position.symbol} closure, using entry price: ${priceError.message}`,
         );
         markPrice = position.entryPrice;
-      }
+          }
 
-      const closeOrder = new PerpOrderRequest(
-        position.symbol,
-        closeSide,
+          const closeOrder = new PerpOrderRequest(
+            position.symbol,
+            closeSide,
         OrderType.LIMIT,
-        position.size,
+            position.size,
         markPrice,
         TimeInForce.GTC,
-        true, // Reduce only
-      );
+            true, // Reduce only
+          );
 
-      const closeResponse = await adapter.placeOrder(closeOrder);
+          const closeResponse = await adapter.placeOrder(closeOrder);
 
-      // Wait and check if order filled
-      if (!closeResponse.isFilled() && closeResponse.orderId) {
+          // Wait and check if order filled
+          if (!closeResponse.isFilled() && closeResponse.orderId) {
         const maxPollRetries = 10;
         const pollIntervalMs = 3000;
 
         for (let pollAttempt = 0; pollAttempt < maxPollRetries; pollAttempt++) {
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 
-          try {
-            const statusResponse = await adapter.getOrderStatus(
-              closeResponse.orderId,
-              position.symbol,
-            );
-            if (statusResponse.isFilled()) {
-              break;
+              try {
+                const statusResponse = await adapter.getOrderStatus(
+                  closeResponse.orderId,
+                  position.symbol,
+                );
+                if (statusResponse.isFilled()) {
+                  break;
+                }
+                if (
+                  statusResponse.status === OrderStatus.CANCELLED ||
+                  statusResponse.error
+                ) {
+                  break;
+                }
+              } catch (pollError: any) {
+                // Continue polling
+              }
             }
-            if (
-              statusResponse.status === OrderStatus.CANCELLED ||
-              statusResponse.error
-            ) {
-              break;
-            }
-          } catch (pollError: any) {
-            // Continue polling
           }
-        }
-      }
 
-      // Check if position is actually closed
+          // Check if position is actually closed
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
       // Clear any position caches
-      if (
-        'clearPositionCache' in adapter &&
-        typeof (adapter as any).clearPositionCache === 'function'
-      ) {
-        (adapter as any).clearPositionCache();
-      }
+          if (
+            'clearPositionCache' in adapter &&
+            typeof (adapter as any).clearPositionCache === 'function'
+          ) {
+            (adapter as any).clearPositionCache();
+          }
 
       const updatedPositions = await adapter.getPositions();
       const stillExists = updatedPositions.some(
-        (p) =>
+            (p) =>
           normalizeSymbol(p.symbol) === normalizedSymbol &&
-          p.exchangeType === position.exchangeType &&
+              p.exchangeType === position.exchangeType &&
           Math.abs(p.size) > 0.0001,
-      );
+          );
 
       if (!stillExists) {
-        this.logger.log(
+            this.logger.log(
           `✅ Successfully closed single-leg position for ${position.symbol}`,
         );
       } else {
