@@ -46,6 +46,7 @@ interface WsMessage {
   market_stats?: MarketStatsMessage['market_stats'];
   data?: any;
   market_id?: number;
+  error?: { code: number; message: string };
 }
 
 /**
@@ -276,15 +277,11 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // Handle orderbook updates
-    if ((message.channel?.startsWith('orderbook/') || message.channel?.startsWith('orderbook:') || message.channel === 'orderbook') && message.data) {
-      let marketIndex = 0;
-      if (message.channel.includes(':')) marketIndex = parseInt(message.channel.split(':')[1]);
-      else if (message.channel.includes('/')) marketIndex = parseInt(message.channel.split('/')[1]);
-      else if (message.data.market_id !== undefined) marketIndex = message.data.market_id;
-      else if (message.market_id !== undefined) marketIndex = message.market_id;
+    // Handle orderbook updates (channel format: order_book/{MARKET_INDEX})
+    if ((message.channel?.startsWith('order_book/') || message.channel?.startsWith('order_book:')) && message.data) {
+      const marketIndex = parseInt(message.channel.split(/[:/]/)[1]);
       
-      if (marketIndex || marketIndex === 0) {
+      if (!isNaN(marketIndex)) {
         this.orderbookCache.set(marketIndex, {
           bids: message.data.bids || [],
           asks: message.data.asks || []
@@ -295,10 +292,11 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
 
     // Handle other message types (subscription confirmations, etc.)
     if (message.type && message.channel) {
-      // Log subscription confirmations - note: channel format is "market_stats:1" (colon, not slash)
+      // Log subscription confirmations
       if (
         message.type === 'subscribed' ||
-        message.channel.startsWith('market_stats')
+        message.channel.startsWith('market_stats') ||
+        message.channel.startsWith('order_book')
       ) {
         this.logger.debug(
           `WebSocket message: type=${message.type}, channel=${message.channel}`,
@@ -308,6 +306,11 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
           `Received other WebSocket message: type=${message.type}, channel=${message.channel}`,
         );
       }
+    } else if (message.error) {
+      // Log errors but don't spam
+      this.logger.warn(
+        `WebSocket error: code=${message.error.code}, message=${message.error.message}`,
+      );
     } else {
       // Log any unhandled messages for debugging
       this.logger.debug(
@@ -329,8 +332,7 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
     if (this.isConnected && this.ws) {
       const subscribeMessage = {
         type: 'subscribe',
-        channel: 'orderbook',
-        market_id: marketIndex,
+        channel: `order_book/${marketIndex}`,
       };
       this.ws.send(JSON.stringify(subscribeMessage));
     }
@@ -396,8 +398,7 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
     try {
       const subscribeMessage = {
         type: 'subscribe',
-        channel: 'market_stats',
-        market_id: marketIndex,
+        channel: `market_stats/${marketIndex}`,
       };
 
       const messageStr = JSON.stringify(subscribeMessage);
@@ -410,7 +411,7 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
 
       this.ws.send(messageStr);
       this.logger.log(
-        `📡 LIGHTER: Subscribed to market ${marketIndex} (channel: market_stats)`,
+        `📡 LIGHTER: Subscribed to market ${marketIndex} (channel: market_stats/${marketIndex})`,
       );
       this.logger.debug(`Subscription message: ${messageStr}`);
     } catch (error: any) {
@@ -424,7 +425,7 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Subscribe to multiple markets at once
+   * Subscribe to multiple markets at once (with throttling to avoid rate limits)
    */
   subscribeToMarkets(marketIndexes: number[]): void {
     this.logger.debug(
@@ -446,11 +447,23 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
         (index) => !this.hasMarketData(index),
       );
       if (marketsToSubscribe.length > 0) {
-        // Removed WebSocket subscription log - only execution logs shown
-        marketsToSubscribe.forEach((index) => {
-          // Force subscribe to ensure message is sent
-          this.subscribeToMarket(index, true);
-        });
+        // Throttle subscriptions to avoid "Too Many Websocket Messages!" error
+        // Subscribe in batches of 5 with 200ms delay between batches
+        const BATCH_SIZE = 5;
+        const BATCH_DELAY_MS = 200;
+        
+        this.logger.log(`📡 Subscribing to ${marketsToSubscribe.length} Lighter markets in batches...`);
+        
+        for (let i = 0; i < marketsToSubscribe.length; i += BATCH_SIZE) {
+          const batch = marketsToSubscribe.slice(i, i + BATCH_SIZE);
+          const delay = Math.floor(i / BATCH_SIZE) * BATCH_DELAY_MS;
+          
+          setTimeout(() => {
+            batch.forEach((index) => {
+              this.subscribeToMarket(index, true);
+            });
+          }, delay);
+        }
       } else {
         this.logger.debug(
           `All ${marketIndexes.length} markets already have data`,
@@ -489,10 +502,20 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `Ensuring ${marketsToSubscribe.length} Lighter markets are subscribed (no data yet)...`,
       );
-      marketsToSubscribe.forEach((index) => {
-        // Force subscription even if market is already in set
-        this.subscribeToMarket(index, true);
-      });
+      // Throttle subscriptions
+      const BATCH_SIZE = 5;
+      const BATCH_DELAY_MS = 200;
+      
+      for (let i = 0; i < marketsToSubscribe.length; i += BATCH_SIZE) {
+        const batch = marketsToSubscribe.slice(i, i + BATCH_SIZE);
+        const delay = Math.floor(i / BATCH_SIZE) * BATCH_DELAY_MS;
+        
+        setTimeout(() => {
+          batch.forEach((index) => {
+            this.subscribeToMarket(index, true);
+          });
+        }, delay);
+      }
     } else {
       this.logger.debug(
         `All ${this.subscribedMarkets.size} tracked Lighter markets already have data`,
@@ -501,15 +524,26 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Resubscribe to all previously subscribed markets
+   * Resubscribe to all previously subscribed markets (with throttling)
    */
   private resubscribeAll(): void {
+    const BATCH_SIZE = 5;
+    const BATCH_DELAY_MS = 200;
+    
     if (this.subscribedMarkets.size > 0) {
       this.logger.log(
         `Resubscribing to ${this.subscribedMarkets.size} Lighter market stats...`,
       );
       const markets = Array.from(this.subscribedMarkets);
-      markets.forEach((index) => this.subscribeToMarket(index, true));
+      
+      for (let i = 0; i < markets.length; i += BATCH_SIZE) {
+        const batch = markets.slice(i, i + BATCH_SIZE);
+        const delay = Math.floor(i / BATCH_SIZE) * BATCH_DELAY_MS;
+        
+        setTimeout(() => {
+          batch.forEach((index) => this.subscribeToMarket(index, true));
+        }, delay);
+      }
     }
     
     if (this.subscribedOrderbooks.size > 0) {
@@ -517,10 +551,19 @@ export class LighterWebSocketProvider implements OnModuleInit, OnModuleDestroy {
         `Resubscribing to ${this.subscribedOrderbooks.size} Lighter orderbooks...`,
       );
       const markets = Array.from(this.subscribedOrderbooks);
-      markets.forEach((index) => {
-        this.subscribedOrderbooks.delete(index);
-        this.subscribeToOrderbook(index);
-      });
+      
+      // Clear and resubscribe with delay
+      this.subscribedOrderbooks.clear();
+      
+      for (let i = 0; i < markets.length; i += BATCH_SIZE) {
+        const batch = markets.slice(i, i + BATCH_SIZE);
+        // Add offset to avoid overlap with market_stats subscriptions
+        const delay = Math.floor(i / BATCH_SIZE) * BATCH_DELAY_MS + (this.subscribedMarkets.size / BATCH_SIZE) * BATCH_DELAY_MS + 500;
+        
+        setTimeout(() => {
+          batch.forEach((index) => this.subscribeToOrderbook(index));
+        }, delay);
+      }
     }
   }
 
