@@ -42,6 +42,7 @@ import {
 } from '../../infrastructure/services/AsyncMutex';
 import { LiquidationMonitorService } from '../../domain/services/LiquidationMonitorService';
 import { MarketStateService } from '../../infrastructure/services/MarketStateService';
+import { OrderBookCollector } from '../../domain/services/twap/OrderBookCollector';
 
 import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
 
@@ -109,6 +110,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
     @Optional()
     private readonly liquidationMonitor?: LiquidationMonitorService,
     @Optional() private readonly marketStateService?: MarketStateService,
+    @Optional() private readonly orderBookCollector?: OrderBookCollector,
   ) {
     // Initialize orchestrator with exchange adapters
     const adapters = this.keeperService.getExchangeAdapters();
@@ -559,6 +561,16 @@ export class PerpKeeperScheduler implements OnModuleInit {
       // Filter out blacklisted symbols using normalized comparison
       this.symbols = discoveredSymbols.filter((s) => !this.isBlacklisted(s));
       this.lastDiscoveryTime = now;
+
+      // Start order book collection for discovered symbols
+      if (this.orderBookCollector && this.symbols.length > 0) {
+        this.logger.log(`📊 Starting order book collection for ${this.symbols.length} symbols`);
+        if (!this.orderBookCollector.isCollectingStatus()) {
+          this.orderBookCollector.startCollection(this.symbols);
+        } else {
+          this.orderBookCollector.addSymbols(this.symbols);
+        }
+      }
 
       // Removed discovery logs - only execution logs shown
       return this.symbols;

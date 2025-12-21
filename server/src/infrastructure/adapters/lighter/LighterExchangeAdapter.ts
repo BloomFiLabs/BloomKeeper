@@ -2189,6 +2189,19 @@ export class LighterExchangeAdapter
    * Get actual bid/ask prices from the order book using /api/v1/orderBookOrders
    * This is more accurate than candlesticks for order execution
    */
+  /**
+   * Get best bid and ask prices for a symbol (IPerpExchangeAdapter compliance)
+   */
+  async getBestBidAsk(
+    symbol: string,
+  ): Promise<{ bestBid: number; bestAsk: number } | null> {
+    try {
+      return await this.getOrderBookBidAsk(symbol);
+    } catch (error) {
+      return null;
+    }
+  }
+
   async getOrderBookBidAsk(
     symbol: string,
   ): Promise<{ bestBid: number; bestAsk: number }> {

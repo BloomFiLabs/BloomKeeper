@@ -87,6 +87,8 @@ export class OrderBookCollector implements OnModuleInit, OnModuleDestroy {
   private activeSymbols: Set<string> = new Set();
   private adapters: Map<ExchangeType, IPerpExchangeAdapter> = new Map();
   private isCollecting = false;
+  private lastStatusLog = 0;
+  private readonly STATUS_LOG_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
   
   // Metrics cache (computed periodically)
   private metricsCache: Map<string, LiquidityMetrics> = new Map();
@@ -99,6 +101,13 @@ export class OrderBookCollector implements OnModuleInit, OnModuleDestroy {
 
   async onModuleDestroy(): Promise<void> {
     this.stopCollection();
+  }
+
+  /**
+   * Check if collection is running
+   */
+  public isCollectingStatus(): boolean {
+    return this.isCollecting;
   }
 
   /**
@@ -190,6 +199,18 @@ export class OrderBookCollector implements OnModuleInit, OnModuleDestroy {
     }
     
     await Promise.allSettled(collectionPromises);
+    
+    // Log progress periodically
+    const now = Date.now();
+    if (now - this.lastStatusLog > this.STATUS_LOG_INTERVAL_MS) {
+      let totalSnapshots = 0;
+      for (const list of this.snapshots.values()) totalSnapshots += list.length;
+      this.logger.log(
+        `📊 Order book collection: ${this.activeSymbols.size} symbols, ` +
+        `${totalSnapshots} total snapshots stored`
+      );
+      this.lastStatusLog = now;
+    }
     
     // Prune old snapshots
     this.pruneOldSnapshots();

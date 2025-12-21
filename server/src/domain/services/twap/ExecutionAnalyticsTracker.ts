@@ -123,6 +123,10 @@ export class ExecutionAnalyticsTracker {
   private readonly SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
   
   private summaryCacheLastUpdate: Map<string, Date> = new Map();
+  
+  // Last log time to prevent noise
+  private lastLogTimes: Map<string, number> = new Map();
+  private readonly LOG_THROTTLE_MS = 10 * 60 * 1000; // 10 minutes
 
   /**
    * Record a TWAP slice execution
@@ -321,10 +325,14 @@ export class ExecutionAnalyticsTracker {
     const records = this.executionRecords.get(symbol);
     
     if (!records || records.length < this.MIN_SAMPLES_FOR_MODEL) {
-      this.logger.debug(
-        `Not enough data to calibrate slippage model for ${symbol}: ` +
-        `${records?.length || 0} records (need ${this.MIN_SAMPLES_FOR_MODEL})`,
-      );
+      const lastLog = this.lastLogTimes.get(symbol) || 0;
+      if (Date.now() - lastLog > this.LOG_THROTTLE_MS) {
+        this.logger.debug(
+          `Not enough data to calibrate slippage model for ${symbol}: ` +
+          `${records?.length || 0} records (need ${this.MIN_SAMPLES_FOR_MODEL})`
+        );
+        this.lastLogTimes.set(symbol, Date.now());
+      }
       return null;
     }
     

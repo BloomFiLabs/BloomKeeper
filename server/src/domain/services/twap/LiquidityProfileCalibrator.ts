@@ -73,6 +73,10 @@ export class LiquidityProfileCalibrator {
   private profileCache: Map<string, LiquidityProfile> = new Map();
   private readonly CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
   private cacheTimestamps: Map<string, number> = new Map();
+  
+  // Last log time to prevent noise
+  private lastLogTimes: Map<string, number> = new Map();
+  private readonly LOG_THROTTLE_MS = 10 * 60 * 1000; // 10 minutes
 
   constructor(private readonly orderBookCollector: OrderBookCollector) {}
 
@@ -106,10 +110,15 @@ export class LiquidityProfileCalibrator {
     const snapshots = this.orderBookCollector.getSnapshots(symbol, exchange);
     
     if (snapshots.length < this.MIN_SAMPLES_FOR_CALIBRATION) {
-      this.logger.debug(
-        `Insufficient data for ${symbol} on ${exchange}: ` +
-        `${snapshots.length} samples (need ${this.MIN_SAMPLES_FOR_CALIBRATION})`,
-      );
+      const key = `${symbol}-${exchange}`;
+      const lastLog = this.lastLogTimes.get(key) || 0;
+      if (Date.now() - lastLog > this.LOG_THROTTLE_MS) {
+        this.logger.debug(
+          `Insufficient data for ${symbol} on ${exchange}: ` +
+          `${snapshots.length} samples (need ${this.MIN_SAMPLES_FOR_CALIBRATION})`
+        );
+        this.lastLogTimes.set(key, Date.now());
+      }
       return null;
     }
     

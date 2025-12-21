@@ -817,6 +817,9 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     // TWAP services
     TWAPEngine,
     TWAPOptimizer,
+    OrderBookCollector,
+    ReplenishmentRateAnalyzer,
+    LiquidityProfileCalibrator,
   ],
 })
 export class PerpKeeperModule implements OnModuleInit {
