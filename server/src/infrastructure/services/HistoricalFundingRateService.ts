@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -58,7 +58,7 @@ export class HistoricalFundingRateService
   constructor(
     private readonly configService: ConfigService,
     private readonly hyperliquidProvider: HyperLiquidDataProvider,
-    private readonly asterProvider: AsterFundingDataProvider,
+    @Optional() private readonly asterProvider: AsterFundingDataProvider,
     private readonly lighterProvider: LighterFundingDataProvider,
     private readonly aggregator: FundingRateAggregator,
   ) {

@@ -99,7 +99,7 @@ export class FundingRateAggregator {
   private readonly fundingProviders: IFundingDataProvider[];
 
   constructor(
-    private readonly asterProvider: AsterFundingDataProvider,
+    @Optional() private readonly asterProvider: AsterFundingDataProvider,
     private readonly lighterProvider: LighterFundingDataProvider,
     private readonly hyperliquidProvider: HyperLiquidDataProvider,
     private readonly hyperliquidWsProvider: HyperLiquidWebSocketProvider,
