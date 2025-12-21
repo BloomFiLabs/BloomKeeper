@@ -2197,6 +2197,149 @@ export class PerpKeeperScheduler implements OnModuleInit {
     }
   }
 
+  /**
+   * Check for position size imbalances between paired legs
+   * 
+   * POLICY: For delta-neutral arbitrage, both legs should have the same size.
+   * If sizes differ (e.g., LONG=100, SHORT=50), we have price exposure.
+   * 
+   * This check detects imbalances and reduces the larger position to match the smaller one.
+   * 
+   * Runs every 60 seconds.
+   */
+  @Interval(60000) // Every 60 seconds
+  async checkPositionSizeBalance() {
+    try {
+      // Skip if active executions in progress
+      if (this.executionLockService) {
+        const activeOrders = this.executionLockService.getAllActiveOrders();
+        const activeExecutions = activeOrders.filter(
+          o => o.status === 'PLACING' || o.status === 'WAITING_FILL'
+        );
+        if (activeExecutions.length > 0) {
+          this.logger.debug(
+            `⏳ Skipping position size balance check - ${activeExecutions.length} active execution(s) in progress`
+          );
+          return;
+        }
+      }
+
+      if (this.executionLockService?.isGlobalLockHeld()) {
+        return;
+      }
+
+      const positions = this.marketStateService?.getAllPositions() || [];
+      if (positions.length < 2) return;
+
+      // Group positions by normalized symbol
+      const positionsBySymbol = new Map<string, PerpPosition[]>();
+      for (const position of positions) {
+        const normalizedSymbol = this.normalizeSymbol(position.symbol);
+        if (!positionsBySymbol.has(normalizedSymbol)) {
+          positionsBySymbol.set(normalizedSymbol, []);
+        }
+        positionsBySymbol.get(normalizedSymbol)!.push(position);
+      }
+
+      // Check each symbol for size imbalances
+      for (const [symbol, symbolPositions] of positionsBySymbol) {
+        // Find LONG and SHORT positions on DIFFERENT exchanges
+        const longPositions = symbolPositions.filter(p => p.side === OrderSide.LONG);
+        const shortPositions = symbolPositions.filter(p => p.side === OrderSide.SHORT);
+
+        if (longPositions.length === 0 || shortPositions.length === 0) continue;
+
+        // Find cross-exchange pair
+        let longPos: PerpPosition | undefined;
+        let shortPos: PerpPosition | undefined;
+
+        for (const lp of longPositions) {
+          for (const sp of shortPositions) {
+            if (lp.exchangeType !== sp.exchangeType) {
+              longPos = lp;
+              shortPos = sp;
+              break;
+            }
+          }
+          if (longPos && shortPos) break;
+        }
+
+        if (!longPos || !shortPos) continue;
+
+        const longSize = Math.abs(longPos.size);
+        const shortSize = Math.abs(shortPos.size);
+
+        // Check for imbalance (allow 5% tolerance for rounding)
+        const sizeDiff = Math.abs(longSize - shortSize);
+        const avgSize = (longSize + shortSize) / 2;
+        const imbalancePercent = avgSize > 0 ? (sizeDiff / avgSize) * 100 : 0;
+
+        if (imbalancePercent > 5) {
+          this.logger.warn(
+            `⚠️ Position size imbalance detected for ${symbol}: ` +
+            `LONG=${longSize.toFixed(4)} on ${longPos.exchangeType}, ` +
+            `SHORT=${shortSize.toFixed(4)} on ${shortPos.exchangeType} ` +
+            `(${imbalancePercent.toFixed(1)}% difference)`
+          );
+
+          // Determine which position to reduce
+          const largerPos = longSize > shortSize ? longPos : shortPos;
+          const smallerSize = Math.min(longSize, shortSize);
+          const excessSize = Math.abs(largerPos.size) - smallerSize;
+
+          // Only fix if excess is significant (> 1% of position)
+          if (excessSize / Math.abs(largerPos.size) < 0.01) {
+            this.logger.debug(`Imbalance too small to fix (${excessSize.toFixed(4)})`);
+            continue;
+          }
+
+          this.logger.warn(
+            `🔧 Fixing imbalance: Reducing ${largerPos.side} on ${largerPos.exchangeType} ` +
+            `by ${excessSize.toFixed(4)} to match ${smallerSize.toFixed(4)}`
+          );
+
+          // Get adapter and place reduce-only order
+          const adapter = this.keeperService.getExchangeAdapter(largerPos.exchangeType);
+          if (!adapter) continue;
+
+          try {
+            const closeSide = largerPos.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
+            const markPrice = await adapter.getMarkPrice(largerPos.symbol);
+
+            const reduceOrder = new PerpOrderRequest(
+              largerPos.symbol,
+              closeSide,
+              OrderType.LIMIT,
+              excessSize,
+              markPrice,
+              TimeInForce.GTC,
+              true, // reduceOnly
+            );
+
+            const response = await adapter.placeOrder(reduceOrder);
+            
+            if (response.isSuccess()) {
+              this.logger.log(
+                `✅ Placed reduce order to fix imbalance: ${response.orderId} ` +
+                `(${closeSide} ${excessSize.toFixed(4)} ${largerPos.symbol} @ ${markPrice})`
+              );
+            } else {
+              this.logger.warn(
+                `⚠️ Failed to place reduce order: ${response.error}`
+              );
+            }
+          } catch (error: any) {
+            this.logger.warn(
+              `⚠️ Error fixing position imbalance for ${symbol}: ${error.message}`
+            );
+          }
+        }
+      }
+    } catch (error: any) {
+      this.logger.debug(`Error in position size balance check: ${error.message}`);
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // LIQUIDATION MONITORING
   // ═══════════════════════════════════════════════════════════════════════════

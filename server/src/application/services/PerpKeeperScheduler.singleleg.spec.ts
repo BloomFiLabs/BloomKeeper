@@ -727,6 +727,104 @@ describe('Paired Position Order Cleanup Policy', () => {
   });
 });
 
+describe('Position Size Balance Check', () => {
+  it('should detect imbalance when LONG and SHORT sizes differ significantly', () => {
+    const longPos = createPosition('BTC', OrderSide.LONG, ExchangeType.HYPERLIQUID, 100);
+    const shortPos = createPosition('BTC-USD', OrderSide.SHORT, ExchangeType.LIGHTER, 50);
+
+    const longSize = Math.abs(longPos.size);
+    const shortSize = Math.abs(shortPos.size);
+    const sizeDiff = Math.abs(longSize - shortSize);
+    const avgSize = (longSize + shortSize) / 2;
+    const imbalancePercent = (sizeDiff / avgSize) * 100;
+
+    // 100 vs 50 = 50 diff / 75 avg = 66.7% imbalance
+    expect(imbalancePercent).toBeGreaterThan(5); // Threshold is 5%
+    expect(imbalancePercent).toBeCloseTo(66.67, 1);
+  });
+
+  it('should NOT flag imbalance when sizes are within 5% tolerance', () => {
+    const longPos = createPosition('ETH', OrderSide.LONG, ExchangeType.HYPERLIQUID, 100);
+    const shortPos = createPosition('ETH-USD', OrderSide.SHORT, ExchangeType.LIGHTER, 98);
+
+    const longSize = Math.abs(longPos.size);
+    const shortSize = Math.abs(shortPos.size);
+    const sizeDiff = Math.abs(longSize - shortSize);
+    const avgSize = (longSize + shortSize) / 2;
+    const imbalancePercent = (sizeDiff / avgSize) * 100;
+
+    // 100 vs 98 = 2 diff / 99 avg = ~2% imbalance
+    expect(imbalancePercent).toBeLessThan(5); // Within tolerance
+  });
+
+  it('should identify which position to reduce', () => {
+    const longPos = createPosition('SOL', OrderSide.LONG, ExchangeType.HYPERLIQUID, 150);
+    const shortPos = createPosition('SOL-USD', OrderSide.SHORT, ExchangeType.LIGHTER, 100);
+
+    const longSize = Math.abs(longPos.size);
+    const shortSize = Math.abs(shortPos.size);
+    const smallerSize = Math.min(longSize, shortSize);
+    const largerPos = longSize > shortSize ? longPos : shortPos;
+    const excessSize = Math.abs(largerPos.size) - smallerSize;
+
+    expect(largerPos.side).toBe(OrderSide.LONG);
+    expect(largerPos.exchangeType).toBe(ExchangeType.HYPERLIQUID);
+    expect(excessSize).toBe(50); // 150 - 100 = 50 excess
+    expect(smallerSize).toBe(100); // Target size
+  });
+
+  it('should calculate correct close side for reducing position', () => {
+    // To reduce a LONG, we place a SHORT order
+    const longPos = createPosition('AVAX', OrderSide.LONG, ExchangeType.HYPERLIQUID, 100);
+    const closeSide = longPos.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
+    expect(closeSide).toBe(OrderSide.SHORT);
+
+    // To reduce a SHORT, we place a LONG order
+    const shortPos = createPosition('AVAX', OrderSide.SHORT, ExchangeType.LIGHTER, 100);
+    const closeSide2 = shortPos.side === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG;
+    expect(closeSide2).toBe(OrderSide.LONG);
+  });
+
+  it('should skip imbalance fix if excess is too small (< 1%)', () => {
+    const longPos = createPosition('LINK', OrderSide.LONG, ExchangeType.HYPERLIQUID, 100);
+    const shortPos = createPosition('LINK-USD', OrderSide.SHORT, ExchangeType.LIGHTER, 99.5);
+
+    const longSize = Math.abs(longPos.size);
+    const shortSize = Math.abs(shortPos.size);
+    const smallerSize = Math.min(longSize, shortSize);
+    const largerPos = longSize > shortSize ? longPos : shortPos;
+    const excessSize = Math.abs(largerPos.size) - smallerSize;
+    const excessPercent = excessSize / Math.abs(largerPos.size);
+
+    // 0.5 / 100 = 0.5% - too small to fix
+    expect(excessPercent).toBeLessThan(0.01); // < 1%
+  });
+
+  it('should only check cross-exchange pairs', () => {
+    // Both on same exchange - not a valid pair to check
+    const positions = [
+      createPosition('UNI', OrderSide.LONG, ExchangeType.HYPERLIQUID, 100),
+      createPosition('UNI', OrderSide.SHORT, ExchangeType.HYPERLIQUID, 50),
+    ];
+
+    const longPositions = positions.filter(p => p.side === OrderSide.LONG);
+    const shortPositions = positions.filter(p => p.side === OrderSide.SHORT);
+
+    // Check for cross-exchange pair
+    let hasCrossExchangePair = false;
+    for (const lp of longPositions) {
+      for (const sp of shortPositions) {
+        if (lp.exchangeType !== sp.exchangeType) {
+          hasCrossExchangePair = true;
+          break;
+        }
+      }
+    }
+
+    expect(hasCrossExchangePair).toBe(false);
+  });
+});
+
 describe('Order Fill Waiting Logic', () => {
   it('should wait for order to fill before declaring failure', () => {
     // This test verifies the logic that:
