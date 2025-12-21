@@ -110,6 +110,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     // Note: Mock adapters are created in PerpKeeperService, not here
     // These factory providers are kept for backward compatibility but not used in test mode
     // Keep original adapters for backward compatibility (will be replaced in PerpKeeperService)
+    /* DISABLED ASTER
     {
       provide: AsterExchangeAdapter,
       useFactory: (
@@ -151,6 +152,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       },
       inject: [ConfigService, RateLimiterService, DiagnosticsService],
     },
+    */
     {
       provide: LighterExchangeAdapter,
       useFactory: (
@@ -295,6 +297,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       },
       inject: [ConfigService],
     },
+    /* DISABLED ASTER SPOT
     {
       provide: AsterSpotAdapter,
       useFactory: (configService: ConfigService) => {
@@ -308,6 +311,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       },
       inject: [ConfigService],
     },
+    */
     {
       provide: LighterSpotAdapter,
       useFactory: (configService: ConfigService) => {
@@ -340,7 +344,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     },
 
     // Funding data providers
-    AsterFundingDataProvider,
+    // AsterFundingDataProvider, // DISABLED
     LighterWebSocketProvider, // WebSocket provider for Lighter (real-time OI data)
     LighterFundingDataProvider,
     HyperLiquidWebSocketProvider, // WebSocket provider for Hyperliquid (reduces rate limits)

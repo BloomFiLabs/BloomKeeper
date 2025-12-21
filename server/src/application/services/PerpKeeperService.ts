@@ -90,7 +90,7 @@ export class PerpKeeperService implements IPerpKeeperService {
 
       // Create real adapters if they're null (for market data)
       // Mock adapters need real adapters to get market data
-      const aster = null; // DISABLED: asterAdapter || new AsterExchangeAdapter(this.configService, this.rateLimiter);
+      const aster = null; // ASTER DISABLED
       const lighter =
         lighterAdapter || new LighterExchangeAdapter(this.configService, this.rateLimiter);
       const hyperliquid =
@@ -110,19 +110,6 @@ export class PerpKeeperService implements IPerpKeeperService {
         }
       }
 
-      /* DISABLED ASTER MOCK
-      this.adapters.set(
-        ExchangeType.ASTER,
-        new MockExchangeAdapter(
-          this.configService,
-          ExchangeType.ASTER,
-          aster,
-          lighter,
-          hyperliquid,
-          extended,
-        ),
-      );
-      */
       this.adapters.set(
         ExchangeType.LIGHTER,
         new MockExchangeAdapter(
@@ -147,15 +134,6 @@ export class PerpKeeperService implements IPerpKeeperService {
       );
     } else {
       // Use real adapters, but only if they were successfully created
-      /* DISABLED ASTER
-      if (asterAdapter) {
-        this.adapters.set(ExchangeType.ASTER, asterAdapter);
-      } else {
-        this.logger.warn(
-          'Aster adapter not available - will be created lazily if needed',
-        );
-      }
-      */
       if (lighterAdapter) {
         this.adapters.set(ExchangeType.LIGHTER, lighterAdapter);
       } else {
@@ -171,20 +149,17 @@ export class PerpKeeperService implements IPerpKeeperService {
         );
       }
       // EXTENDED is disabled
+      // ASTER is disabled
     }
 
     // Initialize spot adapters
     if (hyperliquidSpotAdapter) {
       this.spotAdapters.set(ExchangeType.HYPERLIQUID, hyperliquidSpotAdapter);
     }
-    /* DISABLED ASTER SPOT
-    if (asterSpotAdapter) {
-      this.spotAdapters.set(ExchangeType.ASTER, asterSpotAdapter);
-    }
-    */
     if (lighterSpotAdapter) {
       this.spotAdapters.set(ExchangeType.LIGHTER, lighterSpotAdapter);
     }
+    // EXTENDED and ASTER spot are disabled
     // EXTENDED spot is disabled
 
     this.logger.log(

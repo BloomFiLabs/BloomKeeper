@@ -976,7 +976,6 @@ export class PerpKeeperScheduler implements OnModuleInit {
   private async getTotalCapitalAcrossExchanges(): Promise<number> {
     let totalCapital = 0;
     for (const exchangeType of [
-      ExchangeType.ASTER,
       ExchangeType.LIGHTER,
       ExchangeType.HYPERLIQUID,
     ]) {
