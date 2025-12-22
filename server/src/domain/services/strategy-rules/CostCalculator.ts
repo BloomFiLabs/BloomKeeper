@@ -87,25 +87,22 @@ export class CostCalculator {
 
     // Funding rate impact is typically small unless position > 5% of OI
     // Model: impact scales with position ratio, but capped at reasonable levels
-    // For long positions: increases funding rate (more longs = higher premium)
-    // For short positions: decreases funding rate (more shorts = lower premium)
+    // Adding a position always shifts the funding rate in that direction:
+    // - Adding longs shifts funding rate UP (increases premium)
+    // - Adding shorts shifts funding rate DOWN (decreases premium)
+    
+    // Basis impact: how many bps the rate shifts for 1% of OI
+    // Conservative estimate: 0.1 basis point shift for every 1% of OI ratio
+    // e.g., 1% of OI position = 0.001 * 0.001 = 0.000001 (0.0001% or 0.01 bps)
+    // e.g., 10% of OI position = 0.1 * 0.001 = 0.0001 (0.01% or 1 bps)
+    const basisPointImpact = 0.001; // 0.1% (10 bps) max shift for 100% of OI
+    const impact = positionRatio * basisPointImpact;
 
-    // Impact factor: how much our position affects the rate
-    // Small positions (< 1% of OI): minimal impact (~0.1% of current rate)
-    // Medium positions (1-5% of OI): moderate impact (~1-5% of current rate)
-    // Large positions (> 5% of OI): significant impact (~5-10% of current rate)
-    const impactFactor = Math.min(
-      Math.sqrt(positionRatio) * 0.1, // Square root model, capped at 10% impact
-      0.1, // Maximum 10% impact on funding rate
-    );
-
-    // Apply impact: long positions increase funding rate, short positions decrease it
-    // Since we're taking a long position, it increases the rate
-    // The impact is proportional to current rate magnitude
-    const impact = currentFundingRate * impactFactor;
+    // Cap impact at 5 basis points (0.05%) to avoid over-estimation
+    const cappedImpact = Math.min(impact, 0.0005);
 
     // Validate result is not NaN
-    return isNaN(impact) ? 0 : impact;
+    return isNaN(cappedImpact) ? 0 : cappedImpact;
   }
 
   /**

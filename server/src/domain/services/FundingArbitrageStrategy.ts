@@ -967,22 +967,34 @@ export class FundingArbitrageStrategy {
               (adapter as any).clearBalanceCache();
             }
 
-            // Use deployable capital (excludes accrued profits that will be harvested)
-            const deployableBalance =
-              await this.balanceManager.getDeployableCapital(adapter, exchange);
-            const marginUsed = marginUsedPerExchange.get(exchange) ?? 0;
-            // Available balance = deployable balance - margin already used in existing positions
-            const availableBalance = Math.max(
-              0,
-              deployableBalance - marginUsed,
-            );
+            // Use FREE COLLATERAL directly from getBalance() - this already excludes margin used
+            // DO NOT subtract margin again as getBalance() returns free collateral, not total equity
+            const freeCollateral = await adapter.getBalance();
+            
+            // Only subtract accrued profits if ProfitTracker is configured
+            let availableBalance = freeCollateral;
+            if (this.balanceManager) {
+              try {
+                // Get deployable capital which may subtract accrued profits
+                const deployableFromProfitTracker = 
+                  await this.balanceManager.getDeployableCapital(adapter, exchange);
+                // Use the minimum of free collateral and profit-adjusted amount
+                // This ensures we don't deploy profits that should be harvested
+                availableBalance = Math.min(freeCollateral, deployableFromProfitTracker);
+              } catch {
+                // If profit tracking fails, use free collateral
+                availableBalance = freeCollateral;
+              }
+            }
+            
             exchangeBalances.set(exchange, availableBalance);
 
-            // Log all balances (not just when margin is used) for debugging
+            // Log balance details for debugging
+            const marginUsed = marginUsedPerExchange.get(exchange) ?? 0;
             this.logger.log(
-              `${exchange}: Deployable: $${deployableBalance.toFixed(2)}, ` +
-                `Margin used: $${marginUsed.toFixed(2)}, ` +
-                `Available: $${availableBalance.toFixed(2)}`,
+              `${exchange}: Free collateral: $${freeCollateral.toFixed(2)}, ` +
+                `Margin in positions: $${marginUsed.toFixed(2)}, ` +
+                `Available for new positions: $${availableBalance.toFixed(2)}`,
             );
 
             // Small delay between balance calls to avoid rate limits
@@ -1080,17 +1092,21 @@ export class FundingArbitrageStrategy {
                         (adapter as any).clearBalanceCache();
                       }
 
-                      const deployableBalance =
-                        await this.balanceManager.getDeployableCapital(
-                          adapter,
-                          exchange,
-                        );
-                      const marginUsed =
-                        marginUsedPerExchange.get(exchange) ?? 0;
-                      const availableBalance = Math.max(
-                        0,
-                        deployableBalance - marginUsed,
-                      );
+                      // Use FREE COLLATERAL directly - already excludes margin
+                      const freeCollateral = await adapter.getBalance();
+                      let availableBalance = freeCollateral;
+                      
+                      // Subtract accrued profits if configured
+                      if (this.balanceManager) {
+                        try {
+                          const deployableFromProfitTracker = 
+                            await this.balanceManager.getDeployableCapital(adapter, exchange);
+                          availableBalance = Math.min(freeCollateral, deployableFromProfitTracker);
+                        } catch {
+                          availableBalance = freeCollateral;
+                        }
+                      }
+                      
                       exchangeBalances.set(exchange, availableBalance);
 
                       // Small delay between balance calls
@@ -2383,28 +2399,37 @@ export class FundingArbitrageStrategy {
       }
 
       // Refresh balances after closing positions (they may have changed)
-      // This accounts for positions that failed to close (their margin is still locked)
-      // Uses deployable capital (excludes accrued profits)
+      // Use FREE COLLATERAL directly - already excludes margin used in positions
       for (const [exchange, adapter] of adapters) {
         try {
-          const allPositions = await adapter.getPositions();
-          const marginUsed = allPositions.reduce((sum, pos) => {
-            const posValue = pos.getPositionValue();
-            return sum + (pos.marginUsed ?? posValue / this.leverage);
-          }, 0);
-          // Use deployable capital (excludes accrued profits that will be harvested)
-          const deployableBalance =
-            await this.balanceManager.getDeployableCapital(adapter, exchange);
-          const availableBalance = Math.max(0, deployableBalance - marginUsed);
+          // Clear cache to get fresh balance
+          if (
+            'clearBalanceCache' in adapter &&
+            typeof (adapter as any).clearBalanceCache === 'function'
+          ) {
+            (adapter as any).clearBalanceCache();
+          }
+          
+          // Use FREE COLLATERAL directly - already excludes margin
+          const freeCollateral = await adapter.getBalance();
+          let availableBalance = freeCollateral;
+          
+          // Subtract accrued profits if configured
+          if (this.balanceManager) {
+            try {
+              const deployableFromProfitTracker = 
+                await this.balanceManager.getDeployableCapital(adapter, exchange);
+              availableBalance = Math.min(freeCollateral, deployableFromProfitTracker);
+            } catch {
+              availableBalance = freeCollateral;
+            }
+          }
+          
           exchangeBalances.set(exchange, availableBalance);
 
-          if (marginUsed > 0) {
-            this.logger.debug(
-              `${exchange}: Deployable: $${deployableBalance.toFixed(2)}, ` +
-                `Margin locked: $${marginUsed.toFixed(2)}, ` +
-                `Available: $${availableBalance.toFixed(2)}`,
-            );
-          }
+          this.logger.debug(
+            `${exchange}: Free collateral (available for new positions): $${availableBalance.toFixed(2)}`,
+          );
         } catch (error: any) {
           this.logger.debug(
             `Failed to refresh balance for ${exchange}: ${error.message}`,

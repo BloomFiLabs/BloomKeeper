@@ -180,41 +180,29 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
         }
       }
 
-      // Determine position size based on actual available capital
-      const minBalance = Math.min(longBalance, shortBalance);
-      const availableCapital =
-        minBalance * config.balanceUsagePercent.toDecimal();
-      const leveragedCapital = availableCapital * leverage;
-      const maxSize = maxPositionSizeUsd || Infinity;
-
-      // Calculate position size
-      let positionSizeUsd: number;
-      if (
-        maxPositionSizeUsd &&
-        maxPositionSizeUsd !== Infinity &&
-        maxPositionSizeUsd >= config.minPositionSizeUsd
-      ) {
-        // Portfolio allocation mode
-        const requiredCollateral = maxPositionSizeUsd / leverage;
-        if (minBalance >= requiredCollateral) {
-          positionSizeUsd = maxPositionSizeUsd;
-        } else {
-          positionSizeUsd = Math.min(leveragedCapital, maxSize);
-        }
-      } else {
-        // Standard mode
-        positionSizeUsd = Math.min(leveragedCapital, maxSize);
+      // Calculate max base asset size based on available capital on EACH exchange
+      // This ensures we don't exceed balance * leverage on the more expensive exchange
+      const maxBaseSizeLong = (longBalance * config.balanceUsagePercent.toDecimal() * leverage) / finalLongMarkPrice;
+      const maxBaseSizeShort = (shortBalance * config.balanceUsagePercent.toDecimal() * leverage) / finalShortMarkPrice;
+      
+      let positionSizeBaseAsset = Math.min(maxBaseSizeLong, maxBaseSizeShort);
+      
+      // Limit by maxPositionSizeUsd if provided (using average price for USD limit)
+      const avgMarkPrice = (finalLongMarkPrice + finalShortMarkPrice) / 2;
+      if (maxPositionSizeUsd && maxPositionSizeUsd !== Infinity) {
+        const maxBaseSizeFromLimit = maxPositionSizeUsd / avgMarkPrice;
+        positionSizeBaseAsset = Math.min(positionSizeBaseAsset, maxBaseSizeFromLimit);
       }
+      
+      // Calculate resulting USD size for logging and further checks
+      let positionSizeUsd = positionSizeBaseAsset * avgMarkPrice;
 
       // Check minimum position size
       if (positionSizeUsd < config.minPositionSizeUsd) {
-        // Log at WARN level so it's visible
         this.logger.warn(
           `❌ Insufficient balance for ${opportunity.symbol}: ` +
             `Need $${config.minPositionSizeUsd}, have $${positionSizeUsd.toFixed(2)} ` +
-            `(minBalance: $${Math.min(longBalance, shortBalance).toFixed(2)}, ` +
-            `availableCapital: $${(Math.min(longBalance, shortBalance) * config.balanceUsagePercent.toDecimal()).toFixed(2)}, ` +
-            `leveragedCapital: $${(Math.min(longBalance, shortBalance) * config.balanceUsagePercent.toDecimal() * leverage).toFixed(2)})`,
+            `(max possible: $${positionSizeUsd.toFixed(2)})`,
         );
         return Result.failure(
           new InsufficientBalanceException(
@@ -225,10 +213,6 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
           ),
         );
       }
-
-      // Convert to base asset size
-      const avgMarkPrice = (finalLongMarkPrice + finalShortMarkPrice) / 2;
-      let positionSizeBaseAsset = positionSizeUsd / avgMarkPrice;
 
       // ========== STATISTICAL LIQUIDITY FILTER: Replaces heuristics ==========
       if (this.twapOptimizer) {
