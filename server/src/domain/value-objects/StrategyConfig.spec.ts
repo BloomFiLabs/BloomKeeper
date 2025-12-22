@@ -97,6 +97,7 @@ describe('StrategyConfig', () => {
           20000, // minTotalOpenInterestUsd
           new Map(), // exchangeFeeRates
           new Map(), // takerFeeRates
+          150, // maxBasisRiskBps
           Percentage.fromDecimal(0.0001), // limitOrderPriceImprovement
           120000, // asymmetricFillTimeoutMs
           3, // maxExecutionRetries
@@ -122,6 +123,7 @@ describe('StrategyConfig', () => {
           20000,
           new Map(),
           new Map(),
+          150,
           Percentage.fromDecimal(0.0001),
           120000,
           3,
@@ -147,6 +149,7 @@ describe('StrategyConfig', () => {
           20000,
           new Map(),
           new Map(),
+          150,
           Percentage.fromDecimal(0.0001),
           120000,
           3,
@@ -172,6 +175,7 @@ describe('StrategyConfig', () => {
           20000,
           new Map(),
           new Map(),
+          150,
           Percentage.fromDecimal(0.0001),
           120000,
           -1, // maxExecutionRetries (invalid)

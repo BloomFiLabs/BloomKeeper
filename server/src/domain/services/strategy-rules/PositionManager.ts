@@ -3,6 +3,7 @@ import { IPositionManager, AsymmetricFill } from './IPositionManager';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { IPerpExchangeAdapter } from '../../ports/IPerpExchangeAdapter';
+import type { IPerpKeeperPerformanceLogger } from '../../ports/IPerpKeeperPerformanceLogger';
 import {
   PerpOrderRequest,
   PerpOrderResponse,
@@ -43,6 +44,8 @@ export class PositionManager implements IPositionManager {
     private readonly config: StrategyConfig,
     @Inject(forwardRef(() => 'IOrderExecutor'))
     private readonly orderExecutor: IOrderExecutor,
+    @Inject('IPerpKeeperPerformanceLogger')
+    private readonly performanceLogger: IPerpKeeperPerformanceLogger,
   ) {}
 
   /**
@@ -330,7 +333,8 @@ export class PositionManager implements IPositionManager {
                 true, // isClosingPosition = true
                 closeSide,
                 markPrice,
-                true // reduceOnly
+                true, // reduceOnly
+                position.entryPrice // PASS ENTRY PRICE FOR PNL CALC
               );
             }
 
@@ -348,6 +352,20 @@ export class PositionManager implements IPositionManager {
 
             if (response.isFilled() && !positionStillExists) {
               positionClosed = true;
+              
+              // Calculate and record realized PnL from the close
+              const exitPrice = response.averageFillPrice || markPrice || position.entryPrice;
+              const sideMult = position.side === OrderSide.LONG ? 1 : -1;
+              const realizedPnl = (exitPrice - position.entryPrice) * positionSize * sideMult;
+              
+              if (this.performanceLogger) {
+                this.performanceLogger.recordRealizedPnl(realizedPnl);
+                this.logger.log(
+                  `📈 Recorded realized PnL for ${position.symbol}: $${realizedPnl.toFixed(4)} ` +
+                  `(Entry: $${position.entryPrice.toFixed(4)}, Exit: $${exitPrice.toFixed(4)}, Size: ${positionSize.toFixed(4)})`
+                );
+              }
+              
               break; // Position closed successfully
             } else {
               this.logger.warn(

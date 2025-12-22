@@ -180,6 +180,28 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
         }
       }
 
+      // BASIS RISK CHECK:
+      // Calculate the price discrepancy between venues relative to the index/average
+      // Entering when prices are too far apart creates "Basis Risk" - if they flip against us,
+      // the PnL loss could outweigh days or weeks of funding.
+      const basisBps =
+        (Math.abs(finalLongMarkPrice - finalShortMarkPrice) /
+          ((finalLongMarkPrice + finalShortMarkPrice) / 2)) *
+        10000;
+
+      if (basisBps > config.maxBasisRiskBps) {
+        this.logger.warn(
+          `🚫 Rejecting ${opportunity.symbol}: Basis risk too high (${basisBps.toFixed(1)} bps > ${config.maxBasisRiskBps} bps) ` +
+            `Prices: ${opportunity.longExchange}=${finalLongMarkPrice.toFixed(4)}, ${opportunity.shortExchange}=${finalShortMarkPrice.toFixed(4)}`,
+        );
+        return Result.failure(
+          new ValidationException(
+            `Basis risk too high: ${basisBps.toFixed(1)} bps`,
+            'HIGH_BASIS_RISK',
+          ),
+        );
+      }
+
       // Calculate max base asset size based on available capital on EACH exchange
       // This ensures we don't exceed balance * leverage on the more expensive exchange
       const maxBaseSizeLong = (longBalance * config.balanceUsagePercent.toDecimal() * leverage) / finalLongMarkPrice;

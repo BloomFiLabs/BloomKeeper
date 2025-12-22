@@ -245,6 +245,8 @@ export class PerpKeeperController {
       this.diagnosticsService.updateApyData({
         estimated: perfMetrics.estimatedAPY,
         realized: perfMetrics.realizedAPY,
+        funding: perfMetrics.fundingAPY,
+        pricePnl: perfMetrics.pricePnlAPY,
         byExchange,
       });
     } catch (error) {

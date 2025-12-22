@@ -13,6 +13,7 @@ import { PerpKeeperService } from './PerpKeeperService';
 import { ExchangeType } from '../../domain/value-objects/ExchangeConfig';
 import {
   PerpOrderRequest,
+  PerpOrderResponse,
   OrderSide,
   OrderType,
   TimeInForce,
@@ -355,6 +356,11 @@ export class PerpKeeperScheduler implements OnModuleInit {
       // Update performance metrics immediately on startup so APY is available
       // This populates fundingSnapshots for estimated APY AND syncs real funding payments
       try {
+        // Link prediction service to diagnostics
+        if (this.diagnosticsService && this.predictionService) {
+          this.diagnosticsService.setPredictionService(this.predictionService);
+        }
+
         await this.syncFundingPayments(); // Fetch actual funding payments for Realized APY
         await this.updatePerformanceMetrics(); // Update position metrics for Estimated APY
         this.logger.log('📊 Initial performance metrics loaded (estimated + realized APY)');
@@ -2722,6 +2728,21 @@ export class PerpKeeperScheduler implements OnModuleInit {
         this.logger.log(
           `✅ Successfully closed spread flip positions for ${symbol}`
         );
+
+        // Record PnL for both sides
+        if (this.performanceLogger) {
+          const longRes = (longResult as any).value as PerpOrderResponse;
+          const shortRes = (shortResult as any).value as PerpOrderResponse;
+          
+          const longExitPrice = longRes.averageFillPrice || longMarkPrice;
+          const shortExitPrice = shortRes.averageFillPrice || shortMarkPrice;
+          
+          const longPnl = (longExitPrice - longPosition.entryPrice) * longPosition.size * 1; // LONG
+          const shortPnl = (shortExitPrice - shortPosition.entryPrice) * shortPosition.size * -1; // SHORT
+          
+          this.performanceLogger.recordRealizedPnl(longPnl + shortPnl);
+          this.logger.log(`📈 Recorded realized PnL from spread flip close: $${(longPnl + shortPnl).toFixed(4)} (Long: $${longPnl.toFixed(4)}, Short: $${shortPnl.toFixed(4)})`);
+        }
       } else {
         this.logger.error(
           `⚠️ Partial close for ${symbol}: ` +

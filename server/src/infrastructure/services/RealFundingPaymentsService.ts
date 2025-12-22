@@ -68,6 +68,9 @@ export interface CombinedFundingSummary {
   dailyAverage: number;
   annualized: number;
   realAPY: number; // Based on capital deployed
+  fundingAPY?: number; // APY from funding only
+  pricePnlAPY?: number; // APY from price movement/basis
+  realizedPnL?: number; // Total realized PnL from trades
   breakEvenHours: number | null; // Hours until costs are covered
   winRateMetrics: WinRateMetrics;
   topSymbols: SymbolPerformance[];

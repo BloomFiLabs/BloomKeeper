@@ -19,6 +19,7 @@ import { IPerpExchangeAdapter } from '../ports/IPerpExchangeAdapter';
 import { PerpPosition } from '../entities/PerpPosition';
 import { PerpOrderRequest, OrderSide, OrderType, TimeInForce } from '../value-objects/PerpOrder';
 import { ExecutionLockService } from '../../infrastructure/services/ExecutionLockService';
+import type { IPerpKeeperPerformanceLogger } from '../ports/IPerpKeeperPerformanceLogger';
 import { RateLimiterService, RateLimitPriority } from '../../infrastructure/services/RateLimiterService';
 import { MarketStateService } from '../../infrastructure/services/MarketStateService';
 import type { IOptimalLeverageService } from '../ports/IOptimalLeverageService';
@@ -50,7 +51,12 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
     @Optional() private readonly executionLockService?: ExecutionLockService,
     @Optional() private readonly rateLimiter?: RateLimiterService,
     @Optional() private readonly marketStateService?: MarketStateService,
-    @Optional() @Inject('IOptimalLeverageService') private readonly optimalLeverageService?: IOptimalLeverageService,
+    @Optional()
+    @Inject('IOptimalLeverageService')
+    private readonly optimalLeverageService?: IOptimalLeverageService,
+    @Optional()
+    @Inject('IPerpKeeperPerformanceLogger')
+    private readonly performanceLogger?: IPerpKeeperPerformanceLogger,
   ) {
     this.config = { ...DEFAULT_LIQUIDATION_MONITOR_CONFIG };
   }
@@ -566,6 +572,14 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
 
     if (result.longCloseSuccess && result.shortCloseSuccess) {
         this.logger.log(`✅ Emergency close successful for ${position.symbol}: ${longMsg}, ${shortMsg}`);
+        
+        // Record realized PnL
+        if (this.performanceLogger && result.longClosePrice && result.shortClosePrice) {
+          const longPnl = (result.longClosePrice - result.longEntryPrice!) * position.longRisk.positionSize * 1;
+          const shortPnl = (result.shortClosePrice - result.shortEntryPrice!) * position.shortRisk.positionSize * -1;
+          this.performanceLogger.recordRealizedPnl(longPnl + shortPnl);
+          this.logger.log(`📈 Recorded realized PnL from emergency close: $${(longPnl + shortPnl).toFixed(4)}`);
+        }
     } else {
         this.logger.error(`❌ Emergency close PARTIAL for ${position.symbol}: ${longMsg}, ${shortMsg}`);
     }

@@ -66,6 +66,8 @@ export interface StrategyPerformanceMetrics {
   // APY calculations
   estimatedAPY: number; // Based on current funding rates and positions
   realizedAPY: number; // Based on actual funding captured
+  fundingAPY: number; // Realized APY from funding payments only
+  pricePnlAPY: number; // Realized APY from price movement (basis drift)
   estimatedDailyReturn: number; // Estimated daily return based on current rates
   realizedDailyReturn: number; // Actual daily return from funding captured
 
@@ -805,6 +807,21 @@ export class PerpKeeperPerformanceLogger
     const capitalBase = capitalDeployed || (estimatedCollateral > 0 ? estimatedCollateral : totalPositionValue);
 
     const realizedAPY = this.calculateRealizedAPY(capitalBase);
+    
+    // Calculate split APYs (Funding vs Price PnL)
+    let fundingAPY = 0;
+    let pricePnlAPY = 0;
+    const MAX_REASONABLE_APY = 1000;
+
+    if (capitalBase > 0 && runtimeDays > (1/24)) {
+      // Funding only APY
+      const fundingDailyReturn = netFundingCaptured / capitalBase / runtimeDays;
+      fundingAPY = Math.min(fundingDailyReturn * 365 * 100, MAX_REASONABLE_APY);
+
+      // Price PnL only APY (Basis drift)
+      const pricePnlDailyReturn = (this.totalRealizedPnl - this.totalTradingCosts) / capitalBase / runtimeDays;
+      pricePnlAPY = Math.min(pricePnlDailyReturn * 365 * 100, MAX_REASONABLE_APY);
+    }
 
     // Calculate daily returns
     const estimatedDailyReturn =
@@ -856,6 +873,8 @@ export class PerpKeeperPerformanceLogger
       arbitrageOpportunitiesExecuted: this.arbitrageOpportunitiesExecuted,
       estimatedAPY,
       realizedAPY,
+      fundingAPY,
+      pricePnlAPY,
       estimatedDailyReturn,
       realizedDailyReturn,
       exchangeMetrics: new Map(this.exchangeMetrics),

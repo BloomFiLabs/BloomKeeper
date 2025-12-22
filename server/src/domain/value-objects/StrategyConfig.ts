@@ -21,6 +21,7 @@ export class StrategyConfig {
     public readonly minTotalOpenInterestUsd: number,
     exchangeFeeRates: Map<ExchangeType, Percentage>,
     takerFeeRates: Map<ExchangeType, Percentage>,
+    public readonly maxBasisRiskBps: number = 150, // Max basis (Mark-to-Index) difference in basis points (1.5%)
     public readonly limitOrderPriceImprovement: Percentage,
     public readonly asymmetricFillTimeoutMs: number,
     public readonly maxExecutionRetries: number,
@@ -193,6 +194,9 @@ export class StrategyConfig {
     const maxPositionToVolumePercent = parseFloat(
       configService.get<string>('MAX_POSITION_TO_VOLUME_PERCENT') || '5',
     );
+    const maxBasisRiskBps = parseFloat(
+      configService.get<string>('MAX_BASIS_RISK_BPS') || '150',
+    );
 
     // Parse leverage overrides from env (format: "BTC:5,ETH:3,DOGE:2")
     const leverageOverrides = new Map<string, number>();
@@ -229,6 +233,7 @@ export class StrategyConfig {
       leverageOverrides,
       min24hVolumeUsd,
       maxPositionToVolumePercent,
+      maxBasisRiskBps,
       enablePerpSpotHedging,
       perpSpotMaxPositionSizeUsd,
       deltaNeutralityTolerance,
@@ -248,6 +253,7 @@ export class StrategyConfig {
     leverageOverrides: Map<string, number> = new Map(),
     min24hVolumeUsd: number = 500000,
     maxPositionToVolumePercent: number = 5,
+    maxBasisRiskBps: number = 150,
     enablePerpSpotHedging: boolean = true,
     perpSpotMaxPositionSizeUsd: number = 10000,
     deltaNeutralityTolerance: Percentage = Percentage.fromDecimal(0.01),
@@ -275,6 +281,7 @@ export class StrategyConfig {
       20000, // minTotalOpenInterestUsd
       exchangeFeeRates,
       takerFeeRates,
+      maxBasisRiskBps, // maxBasisRiskBps
       Percentage.fromDecimal(0.0001), // limitOrderPriceImprovement
       30 * 1000, // asymmetricFillTimeoutMs (30 seconds - reduced from 2 minutes for faster response)
       3, // maxExecutionRetries

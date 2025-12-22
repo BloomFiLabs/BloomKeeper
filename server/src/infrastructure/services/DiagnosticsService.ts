@@ -278,6 +278,8 @@ export interface DiagnosticsResponse {
   apy: {
     estimated: number;
     realized: number;
+    funding?: number;
+    pricePnl?: number;
     byExchange: Record<string, number>;
   };
   orders: {
@@ -624,6 +626,8 @@ export class DiagnosticsService {
   private apyData: {
     estimated: number;
     realized: number;
+    funding?: number;
+    pricePnl?: number;
     byExchange: Record<string, number>;
   } = { estimated: 0, realized: 0, byExchange: {} };
   
@@ -1064,6 +1068,8 @@ export class DiagnosticsService {
   updateApyData(data: {
     estimated: number;
     realized: number;
+    funding?: number;
+    pricePnl?: number;
     byExchange: Record<string, number>;
   }): void {
     this.apyData = data;

@@ -22,6 +22,7 @@ export interface IOrderExecutor {
     orderSide?: 'LONG' | 'SHORT',
     expectedPrice?: number,
     reduceOnly?: boolean,
+    entryPrice?: number,
   ): Promise<PerpOrderResponse>;
 
   executeSinglePosition(

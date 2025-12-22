@@ -48,6 +48,8 @@ export interface StrategyPerformanceMetrics {
   // APY calculations
   estimatedAPY: number; // Based on current funding rates and positions
   realizedAPY: number; // Based on actual funding captured
+  fundingAPY: number; // Realized APY from funding payments only
+  pricePnlAPY: number; // Realized APY from price movement (basis drift)
   estimatedDailyReturn: number; // Estimated daily return based on current rates
   realizedDailyReturn: number; // Actual daily return from funding captured
 

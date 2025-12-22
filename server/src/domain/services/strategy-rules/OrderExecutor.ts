@@ -1031,6 +1031,7 @@ export class OrderExecutor implements IOrderExecutor {
     orderSide?: 'LONG' | 'SHORT',
     expectedPrice?: number,
     reduceOnly?: boolean,
+    entryPrice?: number,
   ): Promise<PerpOrderResponse> {
     const operationType = isClosingPosition ? 'CLOSE' : 'OPEN';
 
@@ -1120,6 +1121,16 @@ export class OrderExecutor implements IOrderExecutor {
                     `✅ ${operationType} order ${orderId} filled (detected via position change): ` +
                       `${currentSize.toFixed(4)} ${symbol} (change: ${sizeChange.toFixed(4)})`,
                   );
+
+                  // RECORD REALIZED PNL IF CLOSING
+                  if (isClosingPosition && entryPrice && entryPrice > 0 && this.performanceLogger) {
+                    const fillPrice = expectedPrice || matchingPosition.markPrice || matchingPosition.entryPrice;
+                    const sideMult = orderSide === 'SHORT' ? 1 : -1;
+                    const realizedPnl = (fillPrice - entryPrice) * sizeChange * sideMult;
+                    this.performanceLogger.recordRealizedPnl(realizedPnl);
+                    this.logger.log(`📈 Recorded realized PnL from position change for ${symbol}: $${realizedPnl.toFixed(4)}`);
+                  }
+
                   return new PerpOrderResponse(
                     orderId,
                     OrderStatus.FILLED,
@@ -1142,6 +1153,16 @@ export class OrderExecutor implements IOrderExecutor {
                     `✅ ${operationType} order ${orderId} filled (detected via position): ` +
                       `${currentSize.toFixed(4)} ${symbol}`,
                   );
+
+                  // RECORD REALIZED PNL IF CLOSING
+                  if (isClosingPosition && entryPrice && entryPrice > 0 && this.performanceLogger) {
+                    const fillPrice = expectedPrice || matchingPosition.markPrice || matchingPosition.entryPrice;
+                    const sideMult = orderSide === 'SHORT' ? 1 : -1;
+                    const realizedPnl = (fillPrice - entryPrice) * currentSize * sideMult;
+                    this.performanceLogger.recordRealizedPnl(realizedPnl);
+                    this.logger.log(`📈 Recorded realized PnL from position detection for ${symbol}: $${realizedPnl.toFixed(4)}`);
+                  }
+
                   return new PerpOrderResponse(
                     orderId,
                     OrderStatus.FILLED,
@@ -1160,6 +1181,21 @@ export class OrderExecutor implements IOrderExecutor {
               this.logger.log(
                 `✅ ${operationType} order ${orderId} filled (position closed)`,
               );
+
+              // RECORD REALIZED PNL
+              if (entryPrice && entryPrice > 0 && this.performanceLogger) {
+                const fillPrice = expectedPrice || initialPosition.size; // Fallback to size if price not available? wait.
+                // Using initialPosition.size as fallback for price is wrong. 
+                // Let's use expectedPrice or initialPosition markPrice if available.
+                // Since I don't have markPrice here easily, I'll rely on expectedPrice.
+                if (expectedPrice) {
+                  const sideMult = orderSide === 'SHORT' ? 1 : -1;
+                  const realizedPnl = (expectedPrice - entryPrice) * initialPosition.size * sideMult;
+                  this.performanceLogger.recordRealizedPnl(realizedPnl);
+                  this.logger.log(`📈 Recorded realized PnL from position closure for ${symbol}: $${realizedPnl.toFixed(4)}`);
+                }
+              }
+
               return new PerpOrderResponse(
                 orderId,
                 OrderStatus.FILLED,
@@ -1196,6 +1232,18 @@ export class OrderExecutor implements IOrderExecutor {
               orderId,
             );
           }
+
+          // RECORD REALIZED PNL IF CLOSING
+          if (isClosingPosition && entryPrice && entryPrice > 0 && this.performanceLogger) {
+            const fillPrice = statusResponse.averageFillPrice || expectedPrice;
+            if (fillPrice) {
+              const sideMult = orderSide === 'SHORT' ? 1 : -1; // Closing LONG with SHORT order = exitPrice - entryPrice
+              const realizedPnl = (fillPrice - entryPrice) * (statusResponse.filledSize || expectedSize) * sideMult;
+              this.performanceLogger.recordRealizedPnl(realizedPnl);
+              this.logger.log(`📈 Recorded realized PnL from partial fill for ${symbol}: $${realizedPnl.toFixed(4)}`);
+            }
+          }
+
           return statusResponse;
         }
 
