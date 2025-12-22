@@ -171,6 +171,7 @@ export class HistoricalFundingRateService
                   exchangeType,
                   data.currentRate,
                   timestamp,
+                  data.markPrice, // Store mark price for Basis Z-Score
                 );
               }
             } catch (err: any) {
@@ -215,6 +216,7 @@ export class HistoricalFundingRateService
     exchange: ExchangeType,
     rate: number,
     timestamp: Date,
+    markPrice?: number,
   ): void {
     const key = `${symbol}_${exchange}`;
     const dataPoints = this.historicalData.get(key) || [];
@@ -235,6 +237,7 @@ export class HistoricalFundingRateService
       symbol,
       exchange,
       rate,
+      markPrice,
       timestamp,
     });
 
@@ -571,6 +574,65 @@ export class HistoricalFundingRateService
       avgHours: Math.max(avgHours, 8), // Minimum 8h regime
       currentRegimeHours: currentRegimeCount,
       regimeType: currentType
+    };
+  }
+
+  /**
+   * Get historical basis metrics between two exchanges
+   */
+  getBasisMetrics(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+    currentLongPrice: number,
+    currentShortPrice: number,
+  ): any { // Use any for now, will be cast to BasisMetrics by interface
+    const longData = this.getHistoricalData(symbol, longExchange);
+    const shortData = this.getHistoricalData(symbol, shortExchange);
+
+    if (longData.length === 0 || shortData.length === 0) {
+      return null;
+    }
+
+    // Filter points that have mark prices
+    const longWithPrice = longData.filter(d => d.markPrice !== undefined);
+    const shortWithPrice = shortData.filter(d => d.markPrice !== undefined);
+
+    if (longWithPrice.length < 5 || shortWithPrice.length < 5) {
+      return null;
+    }
+
+    // Match points by timestamp
+    const historicalBasisBps: number[] = [];
+    const windowMs = 60 * 60 * 1000; // 1 hour matching window
+
+    for (const lp of longWithPrice) {
+      const sp = shortWithPrice.find(s => Math.abs(s.timestamp.getTime() - lp.timestamp.getTime()) < windowMs);
+      if (sp && sp.markPrice && lp.markPrice) {
+        // Basis = (Short Price - Long Price) / Avg Price * 10000
+        const basis = ((sp.markPrice - lp.markPrice) / ((sp.markPrice + lp.markPrice) / 2)) * 10000;
+        historicalBasisBps.push(basis);
+      }
+    }
+
+    if (historicalBasisBps.length < 5) {
+      return null;
+    }
+
+    // Calculate Z-Score
+    const avgBasis = historicalBasisBps.reduce((a, b) => a + b, 0) / historicalBasisBps.length;
+    const variance = historicalBasisBps.reduce((a, b) => a + Math.pow(b - avgBasis, 2), 0) / historicalBasisBps.length;
+    const stdDev = Math.sqrt(variance) || 1; // Avoid div by zero
+
+    const currentBasisBps = ((currentShortPrice - currentLongPrice) / ((currentShortPrice + currentLongPrice) / 2)) * 10000;
+    const zScore = (currentBasisBps - avgBasis) / stdDev;
+
+    return {
+      averageBasisBps: avgBasis,
+      stdDevBasisBps: stdDev,
+      currentBasisBps: currentBasisBps,
+      zScore: zScore,
+      dataPoints: historicalBasisBps.length,
     };
   }
 

@@ -379,17 +379,20 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
       useFactory: (
         costCalculator: CostCalculator,
         aggregator: FundingRateAggregator,
+        historicalService: IHistoricalFundingRateService,
         twapOptimizer?: TWAPOptimizer,
       ) => {
         return new ExecutionPlanBuilder(
           costCalculator,
           aggregator,
+          historicalService,
           twapOptimizer,
         );
       },
       inject: [
         CostCalculator,
         FundingRateAggregator,
+        'IHistoricalFundingRateService',
         { token: TWAPOptimizer, optional: true },
       ],
     },

@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import {
   IExecutionPlanBuilder,
   ExecutionPlanContext,
@@ -11,6 +11,7 @@ import {
 import { ArbitrageExecutionPlan } from '../FundingArbitrageStrategy';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { IPerpExchangeAdapter } from '../../ports/IPerpExchangeAdapter';
+import type { IHistoricalFundingRateService } from '../../ports/IHistoricalFundingRateService';
 import { StrategyConfig } from '../../value-objects/StrategyConfig';
 import { PositionSize } from '../../value-objects/PositionSize';
 import { Result } from '../../common/Result';
@@ -39,6 +40,8 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
   constructor(
     private readonly costCalculator: CostCalculator,
     private readonly aggregator: FundingRateAggregator,
+    @Inject('IHistoricalFundingRateService')
+    private readonly historicalService: IHistoricalFundingRateService,
     @Optional() private readonly twapOptimizer?: TWAPOptimizer,
   ) {}
 
@@ -181,25 +184,61 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
       }
 
       // BASIS RISK CHECK:
-      // Calculate the price discrepancy between venues relative to the index/average
-      // Entering when prices are too far apart creates "Basis Risk" - if they flip against us,
-      // the PnL loss could outweigh days or weeks of funding.
+      // Instead of a heuristic (150bps), use Statistical Z-Score and Time-to-Recover
       const basisBps =
-        (Math.abs(finalLongMarkPrice - finalShortMarkPrice) /
+        ((finalShortMarkPrice - finalLongMarkPrice) /
           ((finalLongMarkPrice + finalShortMarkPrice) / 2)) *
         10000;
 
-      if (basisBps > config.maxBasisRiskBps) {
-        this.logger.warn(
-          `🚫 Rejecting ${opportunity.symbol}: Basis risk too high (${basisBps.toFixed(1)} bps > ${config.maxBasisRiskBps} bps) ` +
-            `Prices: ${opportunity.longExchange}=${finalLongMarkPrice.toFixed(4)}, ${opportunity.shortExchange}=${finalShortMarkPrice.toFixed(4)}`,
-        );
-        return Result.failure(
-          new ValidationException(
-            `Basis risk too high: ${basisBps.toFixed(1)} bps`,
-            'HIGH_BASIS_RISK',
-          ),
-        );
+      // 1. Statistical Z-Score Check (Mean Reversion Favorability)
+      if (this.historicalService) {
+        try {
+          const basisMetrics = this.historicalService.getBasisMetrics(
+            opportunity.symbol,
+            opportunity.longExchange,
+            opportunity.shortExchange!,
+            finalLongMarkPrice,
+            finalShortMarkPrice,
+          );
+
+          if (basisMetrics) {
+            const zScore = basisMetrics.zScore;
+            this.logger.debug(`📊 Basis Analysis for ${opportunity.symbol}: Basis=${basisBps.toFixed(1)}bps, Z-Score=${zScore.toFixed(2)}`);
+
+            // If Z-Score is extreme against us (Inverted Basis), reject
+            // A negative Z-Score means the current basis is tighter/worse than usual
+            if (zScore < -2.0) {
+              this.logger.warn(`🚫 Rejecting ${opportunity.symbol}: Statistical Basis Risk (Z-Score ${zScore.toFixed(2)} < -2.0)`);
+              return Result.failure(new ValidationException(`Statistical basis risk too high (Z < -2.0)`, 'HIGH_BASIS_RISK'));
+            }
+            
+            // If Z-Score is in our favor (Extreme Convergence Profit potential), we can log it
+            if (zScore > 2.0) {
+              this.logger.log(`🔥 HIGH CONVERGENCE OPPORTUNITY: ${opportunity.symbol} (Z-Score ${zScore.toFixed(2)}) - Price drift is extremely favorable`);
+            }
+          }
+        } catch (err) {
+          this.logger.debug(`Could not perform statistical basis check: ${err.message}`);
+        }
+      }
+
+      // 2. Time-to-Recover Check (Payback Period)
+      // Calculate how many hours of funding it takes to cover the basis cost if it moves 1 SD against us
+      const hourlyFundingUsd = (opportunity.spread.toDecimal() / 24) * 100; // per $100 notional
+      const basisCostUsd = (Math.abs(basisBps) / 10000) * 100; // per $100 notional
+      
+      const hoursToRecoverBasis = hourlyFundingUsd > 0 ? basisCostUsd / hourlyFundingUsd : Infinity;
+      
+      // If it takes more than 48 hours just to break even on the price gap, reject
+      if (hoursToRecoverBasis > 48 && basisBps < 0) {
+        this.logger.warn(`🚫 Rejecting ${opportunity.symbol}: Payback period too long (${hoursToRecoverBasis.toFixed(1)}h > 48h) for negative basis`);
+        return Result.failure(new ValidationException(`Basis payback period too long: ${hoursToRecoverBasis.toFixed(1)}h`, 'LONG_PAYBACK_PERIOD'));
+      }
+
+      // 3. Fallback heuristic for safety
+      if (Math.abs(basisBps) > (config.maxBasisRiskBps * 2)) {
+        this.logger.warn(`🚫 Rejecting ${opportunity.symbol}: Absolute basis risk safety limit exceeded (${Math.abs(basisBps).toFixed(1)} bps)`);
+        return Result.failure(new ValidationException(`Absolute basis risk safety limit exceeded`, 'HIGH_BASIS_RISK'));
       }
 
       // Calculate max base asset size based on available capital on EACH exchange

@@ -7,7 +7,19 @@ export interface HistoricalFundingRate {
   symbol: string;
   exchange: ExchangeType;
   rate: number;
+  markPrice?: number; // Added for Basis Z-Score calculation
   timestamp: Date;
+}
+
+/**
+ * Historical Basis (Mark-to-Index) metrics
+ */
+export interface BasisMetrics {
+  averageBasisBps: number;
+  stdDevBasisBps: number;
+  currentBasisBps: number;
+  zScore: number;
+  dataPoints: number;
 }
 
 /**
@@ -120,4 +132,20 @@ export interface IHistoricalFundingRateService {
     currentRegimeHours: number;
     regimeType: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL';
   };
+
+  /**
+   * Get historical basis metrics between two exchanges
+   * @param symbol Normalized symbol
+   * @param longExchange Long venue
+   * @param shortExchange Short venue
+   * @param currentLongPrice Current mark price on long venue
+   * @param currentShortPrice Current mark price on short venue
+   */
+  getBasisMetrics(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+    currentLongPrice: number,
+    currentShortPrice: number,
+  ): BasisMetrics | null;
 }
