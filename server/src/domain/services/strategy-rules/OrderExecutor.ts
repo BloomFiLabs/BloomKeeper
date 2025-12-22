@@ -551,102 +551,102 @@ export class OrderExecutor implements IOrderExecutor {
         try {
           // 1. Place LONG leg
           longResponse = await this.executeWithRetry(
-            async () => {
-              longAttempts++;
-              return longAdapter.placeOrder(longOrder);
-            },
-            'Place LONG order',
-            longExchange,
-            longOrder.symbol,
-          );
+          async () => {
+            longAttempts++;
+            return longAdapter.placeOrder(longOrder);
+          },
+          'Place LONG order',
+          longExchange,
+          longOrder.symbol,
+        );
 
           // Update registry
-          if (this.executionLockService) {
-            this.executionLockService.updateOrderStatus(
-              longExchange,
-              longOrder.symbol,
-              'LONG',
-              longResponse.isSuccess() ? 'PLACED' : 'FAILED',
-              longResponse.orderId,
+        if (this.executionLockService) {
+          this.executionLockService.updateOrderStatus(
+            longExchange,
+            longOrder.symbol,
+            'LONG',
+            longResponse.isSuccess() ? 'PLACED' : 'FAILED',
+            longResponse.orderId,
               longOrder.price,
               longOrder.reduceOnly
-            );
-          }
-
-          const longFillTime = Date.now() - startTime;
-          this.recordOrderMetrics(
-            longOrder.symbol,
-            longExchange,
-            'LONG',
-            longOrder.size,
-            longResponse.filledSize || longOrder.size,
-            longOrder.price || 0,
-            longResponse.averageFillPrice || longOrder.price || 0,
-            longFillTime,
-            longAttempts,
-            longResponse.isSuccess(),
           );
+        }
 
-          this.recordOrderToDiagnostics(
-            longResponse.orderId || 'unknown',
-            longOrder.symbol,
-            longExchange,
-            'LONG',
+        const longFillTime = Date.now() - startTime;
+        this.recordOrderMetrics(
+          longOrder.symbol,
+          longExchange,
+          'LONG',
+          longOrder.size,
+          longResponse.filledSize || longOrder.size,
+          longOrder.price || 0,
+          longResponse.averageFillPrice || longOrder.price || 0,
+          longFillTime,
+          longAttempts,
+          longResponse.isSuccess(),
+        );
+
+        this.recordOrderToDiagnostics(
+          longResponse.orderId || 'unknown',
+          longOrder.symbol,
+          longExchange,
+          'LONG',
             longResponse.isSuccess() ? (longResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
-            longFillTime,
-            longResponse.error,
-          );
+          longFillTime,
+          longResponse.error,
+        );
 
           // 2. Place SHORT leg
-          const shortStartTime = Date.now();
+        const shortStartTime = Date.now();
           shortResponse = await this.executeWithRetry(
-            async () => {
-              shortAttempts++;
-              return shortAdapter.placeOrder(shortOrder);
-            },
-            'Place SHORT order',
-            shortExchange,
-            shortOrder.symbol,
-          );
+          async () => {
+            shortAttempts++;
+            return shortAdapter.placeOrder(shortOrder);
+          },
+          'Place SHORT order',
+          shortExchange,
+          shortOrder.symbol,
+        );
 
           // Update registry
-          if (this.executionLockService) {
-            this.executionLockService.updateOrderStatus(
-              shortExchange,
-              shortOrder.symbol,
-              'SHORT',
-              shortResponse.isSuccess() ? 'PLACED' : 'FAILED',
-              shortResponse.orderId,
+        if (this.executionLockService) {
+          this.executionLockService.updateOrderStatus(
+            shortExchange,
+            shortOrder.symbol,
+            'SHORT',
+            shortResponse.isSuccess() ? 'PLACED' : 'FAILED',
+            shortResponse.orderId,
               shortOrder.price,
               shortOrder.reduceOnly
-            );
-          }
-
-          const shortFillTime = Date.now() - shortStartTime;
-          this.recordOrderMetrics(
-            shortOrder.symbol,
-            shortExchange,
-            'SHORT',
-            shortOrder.size,
-            shortResponse.filledSize || shortOrder.size,
-            shortOrder.price || 0,
-            shortResponse.averageFillPrice || shortOrder.price || 0,
-            shortFillTime,
-            shortAttempts,
-            shortResponse.isSuccess(),
           );
+        }
 
-          this.recordOrderToDiagnostics(
-            shortResponse.orderId || 'unknown',
-            shortOrder.symbol,
-            shortExchange,
-            'SHORT',
+        const shortFillTime = Date.now() - shortStartTime;
+        this.recordOrderMetrics(
+          shortOrder.symbol,
+          shortExchange,
+          'SHORT',
+          shortOrder.size,
+          shortResponse.filledSize || shortOrder.size,
+          shortOrder.price || 0,
+          shortResponse.averageFillPrice || shortOrder.price || 0,
+          shortFillTime,
+          shortAttempts,
+          shortResponse.isSuccess(),
+        );
+
+        this.recordOrderToDiagnostics(
+          shortResponse.orderId || 'unknown',
+          shortOrder.symbol,
+          shortExchange,
+          'SHORT',
             shortResponse.isSuccess() ? (shortResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
-            shortFillTime,
-            shortResponse.error,
-          );
+          shortFillTime,
+          shortResponse.error,
+        );
 
-          return [longResponse, shortResponse];
+        return [longResponse, shortResponse];
 
         } catch (error: any) {
           // SEQUENTIAL ROLLBACK: If second leg fails, rollback the first

@@ -90,6 +90,9 @@ export class PerpKeeperScheduler implements OnModuleInit {
     60000,
   );
 
+  // Pending opportunity search trigger (set when positions are closed)
+  private pendingOpportunitySearch: string | null = null;
+
   constructor(
     private readonly orchestrator: PerpKeeperOrchestrator,
     private readonly configService: ConfigService,
@@ -572,6 +575,113 @@ export class PerpKeeperScheduler implements OnModuleInit {
   private isBlacklisted(symbol: string): boolean {
     const normalized = this.normalizeSymbolForBlacklist(symbol);
     return this.blacklistedSymbols.has(normalized);
+  }
+
+  /**
+   * Schedule an opportunity search after positions are closed.
+   * This allows capital to be quickly redeployed to new opportunities.
+   * 
+   * @param reason The reason for the search (for logging)
+   */
+  private scheduleOpportunitySearch(reason: string): void {
+    this.pendingOpportunitySearch = reason;
+    this.logger.log(
+      `🔄 Opportunity search scheduled (reason: ${reason}) - will execute shortly`
+    );
+    
+    // Execute after a short delay to allow positions to settle
+    setTimeout(() => this.executePendingOpportunitySearch(), 5000);
+  }
+
+  /**
+   * Execute a pending opportunity search if one is scheduled.
+   * This is called after positions are closed to quickly redeploy capital.
+   */
+  private async executePendingOpportunitySearch(): Promise<void> {
+    const reason = this.pendingOpportunitySearch;
+    if (!reason) {
+      return; // No pending search
+    }
+    
+    // Clear the pending search
+    this.pendingOpportunitySearch = null;
+    
+    // Skip if main execution is already running
+    if (this.isRunning) {
+      this.logger.debug(
+        `Skipping opportunity search (${reason}) - main execution is running`
+      );
+      return;
+    }
+    
+    // Acquire global lock
+    const threadId = this.executionLockService?.generateThreadId() || `opp-search-${Date.now()}`;
+    if (
+      this.executionLockService &&
+      !this.executionLockService.tryAcquireGlobalLock(threadId, `opportunity-search-${reason}`)
+    ) {
+      this.logger.debug(
+        `Skipping opportunity search (${reason}) - could not acquire global lock`
+      );
+      return;
+    }
+    
+    try {
+      this.logger.log(
+        `🔍 Searching for new opportunities after ${reason}...`
+      );
+      
+      // Refresh market state
+      if (this.marketStateService) {
+        await this.marketStateService.refreshAll();
+      }
+      
+      // Discover symbols
+      const symbols = await this.discoverAssetsIfNeeded();
+      if (symbols.length === 0) {
+        this.logger.log('No symbols available for opportunity search');
+        return;
+      }
+      
+      // Filter out blacklisted symbols
+      const filteredSymbols = symbols.filter((s) => !this.isBlacklisted(s));
+      
+      // Don't filter out existing positions - the opportunity evaluation and 
+      // position sizing logic already handles whether to add to existing positions
+      // based on volume limits, liquidity bounds, etc.
+      
+      // Execute arbitrage strategy for all available symbols
+      const result = await this.orchestrator.executeArbitrageStrategy(
+        filteredSymbols,
+        this.minSpread,
+        this.maxPositionSizeUsd,
+      );
+      
+      if (result.opportunitiesExecuted > 0) {
+        this.logger.log(
+          `✅ Found and executed ${result.opportunitiesExecuted} new opportunity/opportunities ` +
+          `after ${reason} (expected return: $${result.totalExpectedReturn.toFixed(4)}/period)`
+        );
+        
+        // Update performance metrics
+        await this.syncFundingPayments();
+        await this.updatePerformanceMetrics();
+      } else {
+        this.logger.log(
+          `No profitable opportunities found after ${reason} ` +
+          `(evaluated ${result.opportunitiesEvaluated} opportunities)`
+        );
+      }
+    } catch (error: any) {
+      this.logger.error(
+        `Opportunity search after ${reason} failed: ${error.message}`
+      );
+    } finally {
+      // Release global lock
+      if (this.executionLockService) {
+        this.executionLockService.releaseGlobalLock(threadId);
+      }
+    }
   }
 
   /**
@@ -2351,6 +2461,230 @@ export class PerpKeeperScheduler implements OnModuleInit {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // SPREAD FLIP MONITORING - Exit when funding spread turns against us
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Monitor funding rate spreads and close positions when spread flips against us.
+   * 
+   * The strategy is profitable when: shortRate - longRate > 0
+   * - We LONG on the exchange with lower (more negative) funding rate
+   * - We SHORT on the exchange with higher (less negative) funding rate
+   * 
+   * When the spread flips (becomes negative), we're LOSING money and should exit.
+   * 
+   * Runs every 60 seconds to catch spread flips quickly.
+   */
+  @Interval(60000) // Every 60 seconds
+  async checkSpreadFlips(): Promise<void> {
+    // Skip if main execution is running
+    if (this.isRunning) {
+      return;
+    }
+
+    try {
+      const allPositions = await this.keeperService.getAllPositions();
+      const positions = allPositions.filter((p) => Math.abs(p.size) > 0.0001);
+
+      if (positions.length === 0) {
+        return;
+      }
+
+      // Group positions by normalized symbol to find pairs
+      const positionsBySymbol = new Map<string, PerpPosition[]>();
+      for (const position of positions) {
+        const normalizedSymbol = this.normalizeSymbol(position.symbol);
+        if (!positionsBySymbol.has(normalizedSymbol)) {
+          positionsBySymbol.set(normalizedSymbol, []);
+        }
+        positionsBySymbol.get(normalizedSymbol)!.push(position);
+      }
+
+      // Check each paired position for spread flip
+      for (const [symbol, symbolPositions] of positionsBySymbol) {
+        // Need exactly 2 positions (one long, one short) on different exchanges
+        if (symbolPositions.length !== 2) {
+          continue;
+        }
+
+        const longPosition = symbolPositions.find((p) => p.side === OrderSide.LONG);
+        const shortPosition = symbolPositions.find((p) => p.side === OrderSide.SHORT);
+
+        if (!longPosition || !shortPosition) {
+          continue;
+        }
+
+        // Skip if both on same exchange (shouldn't happen but safety check)
+        if (longPosition.exchangeType === shortPosition.exchangeType) {
+          continue;
+        }
+
+        // Get current funding rates for both exchanges
+        try {
+          const comparison = await this.orchestrator.compareFundingRates(symbol);
+          if (!comparison || !comparison.rates || comparison.rates.length < 2) {
+            continue;
+          }
+
+          const longExchangeRate = comparison.rates.find(
+            (r) => r.exchange === longPosition.exchangeType
+          );
+          const shortExchangeRate = comparison.rates.find(
+            (r) => r.exchange === shortPosition.exchangeType
+          );
+
+          if (!longExchangeRate || !shortExchangeRate) {
+            continue;
+          }
+
+          // Calculate current spread: shortRate - longRate
+          // Positive = profitable, Negative = losing money
+          const currentSpread = shortExchangeRate.currentRate - longExchangeRate.currentRate;
+          const spreadPercent = currentSpread * 100;
+
+          // SPREAD FLIP DETECTION:
+          // If spread is negative, we're losing money on funding
+          // Use a small threshold to avoid closing on tiny fluctuations
+          const SPREAD_FLIP_THRESHOLD = -0.0001; // -0.01% threshold (slightly negative)
+          const SPREAD_WARNING_THRESHOLD = 0.0001; // +0.01% warning threshold
+
+          if (currentSpread < SPREAD_FLIP_THRESHOLD) {
+            // SPREAD HAS FLIPPED - Close both positions!
+            this.logger.error(
+              `🚨 SPREAD FLIP DETECTED for ${symbol}! ` +
+              `Current spread: ${spreadPercent.toFixed(4)}% ` +
+              `(LONG on ${longPosition.exchangeType} @ ${(longExchangeRate.currentRate * 100).toFixed(4)}%, ` +
+              `SHORT on ${shortPosition.exchangeType} @ ${(shortExchangeRate.currentRate * 100).toFixed(4)}%) ` +
+              `- CLOSING BOTH POSITIONS`
+            );
+
+            // Record to diagnostics
+            if (this.diagnosticsService) {
+              this.diagnosticsService.recordError({
+                type: 'SPREAD_FLIP_EXIT',
+                exchange: longPosition.exchangeType,
+                message: `Spread flipped for ${symbol}: ${spreadPercent.toFixed(4)}%. Closing positions.`,
+                timestamp: new Date(),
+              });
+            }
+
+            // Close both positions using hedged close
+            await this.closeSpreadFlipPosition(symbol, longPosition, shortPosition);
+
+          } else if (currentSpread < SPREAD_WARNING_THRESHOLD) {
+            // Spread is very thin - warn but don't close yet
+            this.logger.warn(
+              `⚠️ THIN SPREAD WARNING for ${symbol}: ${spreadPercent.toFixed(4)}% ` +
+              `(LONG @ ${(longExchangeRate.currentRate * 100).toFixed(4)}%, ` +
+              `SHORT @ ${(shortExchangeRate.currentRate * 100).toFixed(4)}%) ` +
+              `- Consider closing if it continues`
+            );
+          }
+
+        } catch (error: any) {
+          this.logger.debug(
+            `Could not check spread for ${symbol}: ${error.message}`
+          );
+        }
+      }
+    } catch (error: any) {
+      this.logger.error(`Spread flip check failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Close both legs of a position due to spread flip
+   */
+  private async closeSpreadFlipPosition(
+    symbol: string,
+    longPosition: PerpPosition,
+    shortPosition: PerpPosition,
+  ): Promise<void> {
+    const threadId = this.executionLockService?.generateThreadId() || `spread-flip-${Date.now()}`;
+
+    // Acquire symbol lock
+    if (this.executionLockService) {
+      const lockAcquired = this.executionLockService.tryAcquireSymbolLock(
+        symbol,
+        threadId,
+        'spread-flip-close'
+      );
+      if (!lockAcquired) {
+        this.logger.warn(`Could not acquire lock for spread flip close of ${symbol}`);
+        return;
+      }
+    }
+
+    try {
+      const longAdapter = this.keeperService.getExchangeAdapters().get(longPosition.exchangeType);
+      const shortAdapter = this.keeperService.getExchangeAdapters().get(shortPosition.exchangeType);
+
+      if (!longAdapter || !shortAdapter) {
+        this.logger.error(`Missing adapter for spread flip close of ${symbol}`);
+        return;
+      }
+
+      // Get current mark prices
+      const longMarkPrice = await longAdapter.getMarkPrice(longPosition.symbol).catch(() => longPosition.entryPrice);
+      const shortMarkPrice = await shortAdapter.getMarkPrice(shortPosition.symbol).catch(() => shortPosition.entryPrice);
+
+      // Create close orders (reduceOnly)
+      const closeLongOrder = new PerpOrderRequest(
+        longPosition.symbol,
+        OrderSide.SHORT, // Opposite side to close
+        OrderType.MARKET,
+        longPosition.size,
+        longMarkPrice,
+        TimeInForce.IOC,
+        true, // reduceOnly
+      );
+
+      const closeShortOrder = new PerpOrderRequest(
+        shortPosition.symbol,
+        OrderSide.LONG, // Opposite side to close
+        OrderType.MARKET,
+        shortPosition.size,
+        shortMarkPrice,
+        TimeInForce.IOC,
+        true, // reduceOnly
+      );
+
+      // Execute both closes simultaneously
+      this.logger.log(
+        `📤 Closing spread flip positions for ${symbol}: ` +
+        `LONG ${longPosition.size} on ${longPosition.exchangeType}, ` +
+        `SHORT ${shortPosition.size} on ${shortPosition.exchangeType}`
+      );
+
+      const [longResult, shortResult] = await Promise.allSettled([
+        longAdapter.placeOrder(closeLongOrder),
+        shortAdapter.placeOrder(closeShortOrder),
+      ]);
+
+      // Log results
+      const longSuccess = longResult.status === 'fulfilled' && longResult.value.isSuccess();
+      const shortSuccess = shortResult.status === 'fulfilled' && shortResult.value.isSuccess();
+
+      if (longSuccess && shortSuccess) {
+        this.logger.log(
+          `✅ Successfully closed spread flip positions for ${symbol}`
+        );
+      } else {
+        this.logger.error(
+          `⚠️ Partial close for ${symbol}: ` +
+          `LONG=${longSuccess ? '✓' : '✗'}, SHORT=${shortSuccess ? '✓' : '✗'}`
+        );
+      }
+
+    } finally {
+      // Release lock
+      if (this.executionLockService) {
+        this.executionLockService.releaseSymbolLock(symbol, threadId);
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // LIQUIDATION MONITORING
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2429,6 +2763,9 @@ export class PerpKeeperScheduler implements OnModuleInit {
               `SHORT=${close.shortCloseSuccess ? '✓' : `✗ ${close.shortCloseError}`}`,
           );
         }
+        
+        // Trigger opportunity search after emergency closes - capital is now free!
+        this.scheduleOpportunitySearch('emergency-liquidation-exit');
       }
     } catch (error: any) {
       this.logger.error(`Liquidation check failed: ${error.message}`);

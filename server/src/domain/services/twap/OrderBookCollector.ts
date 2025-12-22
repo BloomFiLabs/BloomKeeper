@@ -306,28 +306,28 @@ export class OrderBookCollector implements OnModuleInit, OnModuleDestroy {
       // But we need to ensure it doesn't fall back to REST if WS is missing.
       const bidAsk = await (adapter as any).getBestBidAsk(symbol, true); // cacheOnly = true
 
-      if (bidAsk && bidAsk.bestBid && bidAsk.bestAsk) {
+        if (bidAsk && bidAsk.bestBid && bidAsk.bestAsk) {
         // If it was fast (< 50ms), it was likely from cache.
         // If it was slow, it might have hit REST. 
         // We'll allow it for now but log a warning if it's consistently slow.
         
-        const spread = bidAsk.bestAsk - bidAsk.bestBid;
-        const midPrice = (bidAsk.bestBid + bidAsk.bestAsk) / 2;
-        const spreadBps = midPrice > 0 ? (spread / midPrice) * 10000 : 10;
-        
-        // Estimate depth from bid/ask prices (rough estimate)
-        const estimatedDepth = midPrice * 100; // Assume ~$100k depth as default
-        
-        return {
-          bidDepth5: estimatedDepth * 0.3,
-          bidDepth10: estimatedDepth * 0.6,
-          bidDepth20: estimatedDepth,
-          askDepth5: estimatedDepth * 0.3,
-          askDepth10: estimatedDepth * 0.6,
-          askDepth20: estimatedDepth,
-          bestBid: bidAsk.bestBid,
-          bestAsk: bidAsk.bestAsk,
-          spreadBps,
+          const spread = bidAsk.bestAsk - bidAsk.bestBid;
+          const midPrice = (bidAsk.bestBid + bidAsk.bestAsk) / 2;
+          const spreadBps = midPrice > 0 ? (spread / midPrice) * 10000 : 10;
+          
+          // Estimate depth from bid/ask prices (rough estimate)
+          const estimatedDepth = midPrice * 100; // Assume ~$100k depth as default
+          
+          return {
+            bidDepth5: estimatedDepth * 0.3,
+            bidDepth10: estimatedDepth * 0.6,
+            bidDepth20: estimatedDepth,
+            askDepth5: estimatedDepth * 0.3,
+            askDepth10: estimatedDepth * 0.6,
+            askDepth20: estimatedDepth,
+            bestBid: bidAsk.bestBid,
+            bestAsk: bidAsk.bestAsk,
+            spreadBps,
         };
       }
       

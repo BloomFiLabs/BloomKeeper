@@ -531,29 +531,29 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
     result.shortEntryPrice = position.shortRisk.entryPrice;
 
     try {
-      // Close both legs in parallel for speed
-      const [longResult, shortResult] = await Promise.allSettled([
+    // Close both legs in parallel for speed
+    const [longResult, shortResult] = await Promise.allSettled([
         this.closePosition(position, 'LONG', threadId, true), // Skip internal locking
         this.closePosition(position, 'SHORT', threadId, true), // Skip internal locking
-      ]);
+    ]);
 
-      // Process long result
-      if (longResult.status === 'fulfilled') {
-        result.longCloseSuccess = longResult.value.success;
-        result.longCloseError = longResult.value.error;
+    // Process long result
+    if (longResult.status === 'fulfilled') {
+      result.longCloseSuccess = longResult.value.success;
+      result.longCloseError = longResult.value.error;
         result.longClosePrice = longResult.value.fillPrice;
-      } else {
-        result.longCloseError = longResult.reason?.message || 'Unknown error';
-      }
+    } else {
+      result.longCloseError = longResult.reason?.message || 'Unknown error';
+    }
 
-      // Process short result
-      if (shortResult.status === 'fulfilled') {
-        result.shortCloseSuccess = shortResult.value.success;
-        result.shortCloseError = shortResult.value.error;
+    // Process short result
+    if (shortResult.status === 'fulfilled') {
+      result.shortCloseSuccess = shortResult.value.success;
+      result.shortCloseError = shortResult.value.error;
         result.shortClosePrice = shortResult.value.fillPrice;
-      } else {
-        result.shortCloseError = shortResult.reason?.message || 'Unknown error';
-      }
+    } else {
+      result.shortCloseError = shortResult.reason?.message || 'Unknown error';
+    }
 
       // Log result with prices
       const longMsg = result.longCloseSuccess 
@@ -564,13 +564,13 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
         ? `SHORT closed @ $${result.shortClosePrice?.toFixed(4)} (entry $${result.shortEntryPrice?.toFixed(4)})`
         : `SHORT failed: ${result.shortCloseError}`;
 
-      if (result.longCloseSuccess && result.shortCloseSuccess) {
+    if (result.longCloseSuccess && result.shortCloseSuccess) {
         this.logger.log(`✅ Emergency close successful for ${position.symbol}: ${longMsg}, ${shortMsg}`);
-      } else {
+    } else {
         this.logger.error(`❌ Emergency close PARTIAL for ${position.symbol}: ${longMsg}, ${shortMsg}`);
-      }
+    }
 
-      return result;
+    return result;
     } finally {
       // Always release symbol lock when done
       if (this.executionLockService) {
@@ -631,11 +631,11 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
           if (!skipLocking) this.executionLockService.releaseSymbolLock(position.symbol, effectiveThreadId);
           return { success: true };
         }
-      }
+    }
 
-      // Retry logic for emergency closes
-      for (let attempt = 1; attempt <= this.config.maxCloseRetries; attempt++) {
-        try {
+    // Retry logic for emergency closes
+    for (let attempt = 1; attempt <= this.config.maxCloseRetries; attempt++) {
+      try {
           // Get current mark price to act as maker
           let markPrice: number | undefined;
           try {
@@ -669,15 +669,15 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
 
           // Create market order to close position immediately (opposite side, reduceOnly)
           // For emergency closes, we use MARKET to ensure execution in fast-moving markets
-          const closeOrder = new PerpOrderRequest(
-            position.symbol,
+        const closeOrder = new PerpOrderRequest(
+          position.symbol,
             closeSide,
-            OrderType.MARKET,
-            risk.positionSize,
+          OrderType.MARKET,
+          risk.positionSize,
             undefined, // Price determined by adapter for MARKET orders
             undefined, // TIF determined by adapter for MARKET orders
-            true, // reduceOnly
-          );
+          true, // reduceOnly
+        );
 
         this.logger.log(
           `📤 Emergency close ${side} ${position.symbol} on ${exchange}: ` +
@@ -691,7 +691,7 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
 
         const response = await adapter.placeOrder(closeOrder);
 
-          if (response.isSuccess() || response.isFilled()) {
+        if (response.isSuccess() || response.isFilled()) {
             if (this.executionLockService) {
               this.executionLockService.updateOrderStatus(
                 exchange,
@@ -707,7 +707,7 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
               success: true, 
               fillPrice: response.averageFillPrice || markPrice 
             };
-          } else {
+        } else {
             if (this.executionLockService) {
               this.executionLockService.updateOrderStatus(
                 exchange,
@@ -716,11 +716,11 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
                 'FAILED'
               );
             }
-            this.logger.warn(
-              `Emergency close attempt ${attempt} failed: ${response.error || 'Unknown'}`,
-            );
-          }
-        } catch (error: any) {
+          this.logger.warn(
+            `Emergency close attempt ${attempt} failed: ${response.error || 'Unknown'}`,
+          );
+        }
+      } catch (error: any) {
           const closeSide = side === 'LONG' ? OrderSide.SHORT : OrderSide.LONG;
           if (this.executionLockService) {
             this.executionLockService.updateOrderStatus(
@@ -730,23 +730,23 @@ export class LiquidationMonitorService implements ILiquidationMonitor {
               'FAILED'
             );
           }
-          this.logger.warn(
-            `Emergency close attempt ${attempt} error: ${error.message}`,
-          );
+        this.logger.warn(
+          `Emergency close attempt ${attempt} error: ${error.message}`,
+        );
 
-          if (attempt < this.config.maxCloseRetries) {
-            // Wait before retry with exponential backoff
-            await new Promise((resolve) =>
-              setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)),
-            );
-          }
+        if (attempt < this.config.maxCloseRetries) {
+          // Wait before retry with exponential backoff
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)),
+          );
         }
       }
+    }
 
-      return {
-        success: false,
-        error: `Failed after ${this.config.maxCloseRetries} attempts`,
-      };
+    return {
+      success: false,
+      error: `Failed after ${this.config.maxCloseRetries} attempts`,
+    };
     } finally {
       // Always release symbol lock when done
       if (this.executionLockService && !skipLocking) {

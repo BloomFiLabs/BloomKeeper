@@ -328,19 +328,19 @@ export class PerpKeeperOrchestrator {
       }
     } else {
       // Fallback to fetching directly if MarketStateService not available
-      for (const [exchangeType, adapter] of this.exchangeAdapters) {
-        try {
-          const positions = await adapter.getPositions();
+    for (const [exchangeType, adapter] of this.exchangeAdapters) {
+      try {
+        const positions = await adapter.getPositions();
           // Filter out positions with very small sizes
-          const validPositions = positions.filter(
-            (p) => Math.abs(p.size) > 0.0001,
-          );
-          allPositions.push(...validPositions);
-          positionsByExchange.set(exchangeType, validPositions);
-        } catch (error) {
-          this.logger.error(
-            `Failed to get positions from ${exchangeType}: ${error.message}`,
-          );
+        const validPositions = positions.filter(
+          (p) => Math.abs(p.size) > 0.0001,
+        );
+        allPositions.push(...validPositions);
+        positionsByExchange.set(exchangeType, validPositions);
+      } catch (error) {
+        this.logger.error(
+          `Failed to get positions from ${exchangeType}: ${error.message}`,
+        );
         }
       }
     }
