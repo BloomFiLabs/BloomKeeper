@@ -140,6 +140,9 @@ export class WithdrawalFulfiller implements OnModuleInit {
   }
 
   async onModuleInit() {
+    this.logger.warn('WithdrawalFulfiller is currently DISABLED (WIP)');
+    return;
+
     if (!this.strategyAddress) {
       this.logger.warn(
         'KEEPER_STRATEGY_ADDRESS not configured, withdrawal fulfiller disabled',
@@ -225,9 +228,11 @@ export class WithdrawalFulfiller implements OnModuleInit {
 
   /**
    * Daily withdrawal processing at 23:30 UTC
+   * DISABLED (WIP) - Re-enable when subgraph integration is ready for prod
    */
-  @Cron('30 23 * * *')
+  // @Cron('30 23 * * *')
   async processDailyWithdrawals(): Promise<void> {
+    return;
     this.logger.log('Starting daily withdrawal processing (23:30 UTC)...');
 
     try {
