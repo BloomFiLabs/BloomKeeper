@@ -117,6 +117,9 @@ export class RewardHarvester implements OnModuleInit {
   }
 
   async onModuleInit() {
+    this.logger.warn('RewardHarvester is currently DISABLED (WIP)');
+    return;
+
     if (!this.strategyAddress) {
       this.logger.warn(
         'KEEPER_STRATEGY_ADDRESS not configured, reward harvester disabled',
@@ -167,8 +170,9 @@ export class RewardHarvester implements OnModuleInit {
 
   /**
    * Daily reward harvest - runs every 24 hours at midnight UTC
+   * DISABLED (WIP) - Re-enable when ready for prod
    */
-  @Cron('0 0 * * *') // Every day at 00:00 UTC
+  // @Cron('0 0 * * *') // Every day at 00:00 UTC
   async harvestRewardsScheduled(): Promise<void> {
     this.logger.log('🌾 Starting scheduled reward harvest...');
 
