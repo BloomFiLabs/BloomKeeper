@@ -3401,15 +3401,10 @@ export class LighterExchangeAdapter
         `Depositing $${amount.toFixed(2)} ${asset} to Lighter...`,
       );
 
-      // Lighter deposit contract on Arbitrum - must be configured via env var
-      const LIGHTER_DEPOSIT_CONTRACT = this.configService.get<string>(
-        'LIGHTER_DEPOSIT_CONTRACT',
-      );
-      if (!LIGHTER_DEPOSIT_CONTRACT) {
-        throw new Error(
-          'LIGHTER_DEPOSIT_CONTRACT not configured - cannot deposit to Lighter',
-        );
-      }
+      // Lighter deposit contract on Arbitrum
+      // User confirmed: transfer to 0xB512443BB7737E90401DEF0BCF442aB5454A94f8
+      const LIGHTER_DEPOSIT_CONTRACT =
+        '0xB512443BB7737E90401DEF0BCF442aB5454A94f8';
       const USDC_CONTRACT_ADDRESS =
         '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'; // USDC on Arbitrum
 
