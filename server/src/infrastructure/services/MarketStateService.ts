@@ -148,6 +148,62 @@ export class MarketStateService {
   }
 
   /**
+   * Update or add a position in the cache
+   * Used for reconciliation when we detect discrepancies
+   */
+  updatePosition(position: PerpPosition): void {
+    const exchange = position.exchangeType;
+    const normalizedSymbol = this.normalizeSymbol(position.symbol);
+    
+    if (!this.positions.has(exchange)) {
+      this.positions.set(exchange, []);
+    }
+    
+    const posArray = this.positions.get(exchange)!;
+    const existingIndex = posArray.findIndex(p => 
+      this.normalizeSymbol(p.symbol) === normalizedSymbol && 
+      p.side === position.side
+    );
+    
+    if (existingIndex >= 0) {
+      // Update existing position
+      posArray[existingIndex] = position;
+      this.logger.debug(`Updated cached position: ${exchange} ${position.symbol} ${position.side}`);
+    } else {
+      // Add new position
+      posArray.push(position);
+      this.logger.debug(`Added cached position: ${exchange} ${position.symbol} ${position.side}`);
+    }
+    
+    // Also update mark price
+    if (position.markPrice) {
+      this.updateMarkPrice(position.symbol, exchange, position.markPrice);
+    }
+  }
+
+  /**
+   * Remove a position from the cache
+   * Used for reconciliation when we detect phantom positions
+   */
+  removePosition(exchange: ExchangeType, symbol: string): void {
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+    
+    if (!this.positions.has(exchange)) {
+      return;
+    }
+    
+    const posArray = this.positions.get(exchange)!;
+    const filteredArray = posArray.filter(p => 
+      this.normalizeSymbol(p.symbol) !== normalizedSymbol
+    );
+    
+    if (filteredArray.length !== posArray.length) {
+      this.positions.set(exchange, filteredArray);
+      this.logger.debug(`Removed cached position: ${exchange} ${symbol}`);
+    }
+  }
+
+  /**
    * Get last update time
    */
   getLastUpdateTime(): Date | null {

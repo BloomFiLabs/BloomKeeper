@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
 import { IPerpExchangeAdapter } from '../../ports/IPerpExchangeAdapter';
 import { ISpotExchangeAdapter } from '../../ports/ISpotExchangeAdapter';
@@ -21,6 +21,7 @@ import {
 import { SpotOrderRequest } from '../../value-objects/SpotOrder';
 import { PerpSpotBalanceManager } from './PerpSpotBalanceManager';
 import { CostCalculator } from './CostCalculator';
+import type { IOptimalLeverageService } from '../../ports/IOptimalLeverageService';
 
 /**
  * Execution plan for perp-spot delta-neutral strategy
@@ -57,6 +58,9 @@ export class PerpSpotExecutionPlanBuilder {
   constructor(
     private readonly balanceManager: PerpSpotBalanceManager,
     private readonly costCalculator: CostCalculator,
+    @Optional()
+    @Inject('IOptimalLeverageService')
+    private readonly leverageService?: IOptimalLeverageService,
   ) {}
 
   /**
@@ -97,8 +101,34 @@ export class PerpSpotExecutionPlanBuilder {
         );
       }
 
-      const leverage = leverageOverride ?? config.leverage;
       const exchange = opportunity.longExchange;
+
+      // Step 0: Calculate OPTIMAL leverage for this perp-spot pair
+      // This determines how we should distribute capital between perp and spot
+      let optimalLeverage = leverageOverride ?? config.leverage;
+      
+      if (!leverageOverride && this.leverageService) {
+        try {
+          const leverageRec = await this.leverageService.calculateOptimalLeverage(
+            opportunity.symbol,
+            exchange,
+          );
+          optimalLeverage = leverageRec.optimalLeverage;
+          this.logger.log(
+            `📊 Perp-Spot optimal leverage for ${opportunity.symbol}: ${optimalLeverage.toFixed(1)}x ` +
+            `(composite score: ${(leverageRec.compositeScore * 100).toFixed(0)}%, ` +
+            `vol: ${(leverageRec.factors.volatilityScore * 100).toFixed(0)}%, ` +
+            `liq: ${(leverageRec.factors.liquidityScore * 100).toFixed(0)}%)`
+          );
+        } catch (error: any) {
+          this.logger.debug(
+            `Could not calculate optimal leverage for ${opportunity.symbol}: ${error.message}. ` +
+            `Using default: ${optimalLeverage}x`
+          );
+        }
+      }
+
+      const leverage = optimalLeverage;
 
       // Get current balances
       const [perpBalance, spotBalance] = await Promise.all([
@@ -122,6 +152,20 @@ export class PerpSpotExecutionPlanBuilder {
         );
       }
 
+      // Log current capital distribution
+      const totalCapital = perpBalance + spotBalance;
+      const currentPerpCapacity = perpBalance * leverage;
+      const currentSpotCapacity = spotBalance;
+      const currentMaxPosition = Math.min(currentPerpCapacity, currentSpotCapacity);
+      
+      this.logger.debug(
+        `💰 Perp-Spot capital for ${opportunity.symbol} (before rebalance):\n` +
+        `   Total: $${totalCapital.toFixed(2)} (perp: $${perpBalance.toFixed(2)}, spot: $${spotBalance.toFixed(2)})\n` +
+        `   Perp capacity @ ${leverage.toFixed(1)}x: $${currentPerpCapacity.toFixed(2)}\n` +
+        `   Spot capacity @ 1x: $${currentSpotCapacity.toFixed(2)}\n` +
+        `   Current max position: $${currentMaxPosition.toFixed(2)} (limited by ${currentPerpCapacity < currentSpotCapacity ? 'perp' : 'spot'})`
+      );
+
       // Calculate target position size (before rebalancing)
       const targetPositionSize = this.calculateTargetPositionSize(
         perpBalance,
@@ -131,7 +175,9 @@ export class PerpSpotExecutionPlanBuilder {
         config,
       );
 
-      // Step 1: Optimize balance distribution
+      // Step 1: Optimize balance distribution to maximize position capacity
+      // The optimal split is: spotBalance = perpBalance * leverage
+      // This ensures both sides can support the same position size
       const rebalanceResult =
         await this.balanceManager.ensureOptimalBalanceDistribution(
           exchange,
@@ -144,6 +190,18 @@ export class PerpSpotExecutionPlanBuilder {
       if (rebalanceResult.isFailure) {
         this.logger.warn(
           `Balance rebalancing failed (continuing with original balances): ${rebalanceResult.error.message}`,
+        );
+      } else if (rebalanceResult.value) {
+        // Rebalancing occurred - calculate improvement
+        const optimalPerpBalance = totalCapital / (1 + leverage);
+        const optimalSpotBalance = totalCapital * leverage / (1 + leverage);
+        const optimalMaxPosition = optimalPerpBalance * leverage; // = optimalSpotBalance
+        const improvement = ((optimalMaxPosition - currentMaxPosition) / currentMaxPosition) * 100;
+        
+        this.logger.log(
+          `✅ Perp-Spot capital rebalanced for ${opportunity.symbol}:\n` +
+          `   Optimal split @ ${leverage.toFixed(1)}x: perp=$${optimalPerpBalance.toFixed(2)}, spot=$${optimalSpotBalance.toFixed(2)}\n` +
+          `   New max position: $${optimalMaxPosition.toFixed(2)} (+${improvement.toFixed(1)}% improvement)`
         );
       }
 

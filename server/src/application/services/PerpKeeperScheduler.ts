@@ -1990,16 +1990,16 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * 2. If filled/cancelled, clear from tracking
    * 3. If still open but very old, log warning for investigation
    * 
-   * Runs every 5 minutes to catch any missed fills.
+   * Runs every 60 seconds to catch missed fills quickly.
    */
-  @Interval(300000) // Every 5 minutes
+  @Interval(60000) // Every 60 seconds (was 5 min - too slow!)
   async verifyTrackedOrders(): Promise<void> {
     if (!this.executionLockService) return;
     if (this.isRunning) return; // Don't interfere with active execution
 
     const STALE_ORDER_AGE_MINUTES = parseFloat(
-      process.env.STALE_ORDER_AGE_MINUTES || '5'
-    );
+      process.env.STALE_ORDER_AGE_MINUTES || '2'
+    ); // Default to 2 minutes for faster cleanup
     const staleAgeMs = STALE_ORDER_AGE_MINUTES * 60 * 1000;
 
     try {
@@ -2267,10 +2267,10 @@ export class PerpKeeperScheduler implements OnModuleInit {
   }
 
   /**
-   * Periodic stale order cleanup - runs every 10 minutes
+   * Periodic stale order cleanup - runs every 2 minutes
    * Cancels limit orders that have been sitting unfilled for too long
    */
-  @Interval(600000) // Every 10 minutes (600000 ms)
+  @Interval(120000) // Every 2 minutes (was 10 min - too slow!)
   async cleanupStaleOrders() {
     const STALE_ORDER_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -2488,9 +2488,9 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * 
    * This check detects imbalances and reduces the larger position to match the smaller one.
    * 
-   * Runs every 60 seconds.
+   * Runs every 30 seconds for faster imbalance detection.
    */
-  @Interval(60000) // Every 60 seconds
+  @Interval(30000) // Every 30 seconds (was 60s)
   async checkPositionSizeBalance() {
     try {
       // Skip if active executions in progress
@@ -2636,6 +2636,135 @@ export class PerpKeeperScheduler implements OnModuleInit {
       }
     } catch (error: any) {
       this.logger.debug(`Error in position size balance check: ${error.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // POSITION RECONCILIATION - Verify expected positions match actual on exchanges
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Verify cached position state matches actual exchange positions
+   * 
+   * CRITICAL: Detects phantom positions (we think we have them but don't) 
+   * and orphan positions (exchange has them but we don't track them).
+   * 
+   * This catches:
+   * 1. Positions we think exist but were closed/liquidated externally
+   * 2. Positions that exist on exchange but aren't in our state
+   * 3. Size mismatches between tracked and actual positions
+   * 
+   * Runs every 45 seconds for fast detection.
+   */
+  @Interval(45000) // Every 45 seconds
+  async verifyPositionStateWithExchanges(): Promise<void> {
+    if (this.isRunning) return;
+    if (this.executionLockService?.isGlobalLockHeld()) return;
+
+    try {
+      const adapters = this.keeperService.getExchangeAdapters();
+      const trackedPositions = this.marketStateService?.getAllPositions() || [];
+
+      // Group tracked positions by exchange
+      const trackedByExchange = new Map<ExchangeType, PerpPosition[]>();
+      for (const pos of trackedPositions) {
+        if (!trackedByExchange.has(pos.exchangeType)) {
+          trackedByExchange.set(pos.exchangeType, []);
+        }
+        trackedByExchange.get(pos.exchangeType)!.push(pos);
+      }
+
+      let discrepanciesFound = 0;
+
+      for (const [exchangeType, adapter] of adapters) {
+        try {
+          // Fetch actual positions from exchange
+          const actualPositions = await adapter.getPositions();
+          const trackedForExchange = trackedByExchange.get(exchangeType) || [];
+
+          // Build lookup maps
+          const actualBySymbol = new Map<string, PerpPosition>();
+          for (const pos of actualPositions) {
+            if (Math.abs(pos.size) > 0.0001) { // Ignore dust
+              const normalizedSymbol = this.normalizeSymbol(pos.symbol);
+              actualBySymbol.set(normalizedSymbol, pos);
+            }
+          }
+
+          const trackedBySymbol = new Map<string, PerpPosition>();
+          for (const pos of trackedForExchange) {
+            if (Math.abs(pos.size) > 0.0001) {
+              const normalizedSymbol = this.normalizeSymbol(pos.symbol);
+              trackedBySymbol.set(normalizedSymbol, pos);
+            }
+          }
+
+          // Check 1: Phantom positions (tracked but don't exist on exchange)
+          for (const [symbol, trackedPos] of trackedBySymbol) {
+            const actualPos = actualBySymbol.get(symbol);
+            if (!actualPos) {
+              discrepanciesFound++;
+              this.logger.error(
+                `🚨 PHANTOM POSITION: ${exchangeType} ${symbol} ` +
+                `tracked as ${trackedPos.side} ${Math.abs(trackedPos.size).toFixed(4)} ` +
+                `but NOT FOUND on exchange! Possible external close/liquidation.`
+              );
+              // Update our state to remove this position
+              this.marketStateService?.removePosition(exchangeType, symbol);
+            }
+          }
+
+          // Check 2: Orphan positions (exist on exchange but not tracked)
+          for (const [symbol, actualPos] of actualBySymbol) {
+            const trackedPos = trackedBySymbol.get(symbol);
+            if (!trackedPos) {
+              discrepanciesFound++;
+              this.logger.error(
+                `🚨 ORPHAN POSITION: ${exchangeType} ${symbol} ` +
+                `found as ${actualPos.side} ${Math.abs(actualPos.size).toFixed(4)} ` +
+                `on exchange but NOT TRACKED! Possible missed fill.`
+              );
+              // Add to our state
+              this.marketStateService?.updatePosition(actualPos);
+            }
+          }
+
+          // Check 3: Size mismatches (both exist but sizes differ significantly)
+          for (const [symbol, trackedPos] of trackedBySymbol) {
+            const actualPos = actualBySymbol.get(symbol);
+            if (actualPos) {
+              const trackedSize = Math.abs(trackedPos.size);
+              const actualSize = Math.abs(actualPos.size);
+              const sizeDiff = Math.abs(trackedSize - actualSize);
+              const avgSize = (trackedSize + actualSize) / 2;
+              const diffPercent = avgSize > 0 ? (sizeDiff / avgSize) * 100 : 0;
+
+              if (diffPercent > 5) { // 5% tolerance
+                discrepanciesFound++;
+                this.logger.warn(
+                  `⚠️ SIZE MISMATCH: ${exchangeType} ${symbol} ` +
+                  `tracked=${trackedSize.toFixed(4)} vs actual=${actualSize.toFixed(4)} ` +
+                  `(${diffPercent.toFixed(1)}% difference). Updating to actual.`
+                );
+                // Update our state to match exchange
+                this.marketStateService?.updatePosition(actualPos);
+              }
+            }
+          }
+        } catch (error: any) {
+          this.logger.debug(
+            `Could not reconcile positions for ${exchangeType}: ${error.message}`
+          );
+        }
+      }
+
+      if (discrepanciesFound > 0) {
+        this.logger.warn(
+          `🔄 Position reconciliation found ${discrepanciesFound} discrepancies - state corrected`
+        );
+      }
+    } catch (error: any) {
+      this.logger.debug(`Error in position reconciliation: ${error.message}`);
     }
   }
 
@@ -3203,7 +3332,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * 
    * Only rotates if the new opportunity reaches break-even faster than staying.
    */
-  @Interval(300000) // Every 5 minutes
+  @Interval(180000) // Every 3 minutes (was 5 min)
   async checkSpreadRotation(): Promise<void> {
     // Skip if main execution is running or missing required services
     if (this.isRunning) return;
