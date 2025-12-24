@@ -221,6 +221,26 @@ export class MakerEfficiencyService implements OnModuleInit {
         }
       } catch (error: any) {
         this.logger.error(`Failed to reposition order for ${symbol}: ${error.message}`);
+        
+        // If the order no longer exists on the exchange, remove it from tracking
+        // This prevents infinite retry loops for filled/cancelled orders
+        if (
+          error.message?.includes('already canceled') ||
+          error.message?.includes('already cancelled') ||
+          error.message?.includes('never placed') ||
+          error.message?.includes('filled') ||
+          error.message?.includes('Order not found') ||
+          error.message?.includes('does not exist')
+        ) {
+          this.logger.warn(
+            `🗑️ Order ${activeOrder.orderId} for ${symbol} no longer exists on ${exchange}, removing from tracking`
+          );
+          this.executionLockService.forceClearOrder(
+            exchange,
+            symbol,
+            activeOrder.side as 'LONG' | 'SHORT'
+          );
+        }
       }
     }
   }
