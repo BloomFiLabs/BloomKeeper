@@ -37,7 +37,10 @@ export class MakerEfficiencyService implements OnModuleInit {
 
     try {
       const activeOrders = this.executionLockService.getAllActiveOrders();
-      const waitingOrders = activeOrders.filter(o => o.status === 'WAITING_FILL');
+      const waitingOrders = activeOrders.filter(o => 
+        o.status === 'WAITING_FILL' && 
+        o.isForceFilling !== true // Skip orders actively managed by PerpKeeperScheduler's aggressive fill logic
+      );
 
       if (waitingOrders.length === 0) {
         this.isRunning = false;

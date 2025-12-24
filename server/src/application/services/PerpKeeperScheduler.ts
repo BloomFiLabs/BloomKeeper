@@ -1510,65 +1510,61 @@ export class PerpKeeperScheduler implements OnModuleInit {
 
   /**
    * Check for single-leg positions and try to open missing side
-   * Runs every 90 seconds - single legs are TOP PRIORITY but we need API budget
-   * Policy: After all retries fail, close the single leg and move to next opportunity
+   * Runs every 90 seconds - single legs are TOP PRIORITY
+   * Safety Policy: Can bypass global lock if the imbalance is severe (>20%)
    */
-  @Interval(90000) // Every 90 seconds (was 60s - balance priority with API budget)
+  @Interval(90000) // Every 90 seconds
   async checkAndRetrySingleLegPositions(): Promise<void> {
-    // Skip if rate limits are stressed (except for critical single legs)
-    // We still run if budget > 20% since single legs are important
+    // Skip if rate limits are stressed
     if (!this.isRateLimitHealthy(0.2, false)) {
       this.logger.debug('⏸️ Skipping single-leg check - rate limit recovery');
       return;
     }
     
+    // Safety Bypass: If global lock is held, check if we have any severe single legs
+    const isLocked = this.executionLockService?.isGlobalLockHeld() || false;
+    
     // Skip if main execution is running (prevents race conditions)
     if (this.isRunning) {
-      this.logger.debug(
-        'Skipping single-leg check - main execution is running',
-      );
       return;
     }
 
-    // Try to acquire global lock to prevent concurrent executions
-    const threadId =
-      this.executionLockService?.generateThreadId() ||
-      `single-leg-${Date.now()}`;
-    if (
-      this.executionLockService &&
-      !this.executionLockService.tryAcquireGlobalLock(
-        threadId,
-        'checkAndRetrySingleLegPositions',
-      )
-    ) {
-      this.logger.debug(
-        'Skipping single-leg check - another execution is in progress',
-      );
-      return;
-    }
-
+    let threadId = `single-leg-${Date.now()}`;
     try {
-      const positionsResult =
-        await this.orchestrator.getAllPositionsWithMetrics();
-      // Filter out positions with very small sizes (likely rounding errors or stale data)
-      const allPositions = positionsResult.positions.filter(
-        (p) => Math.abs(p.size) > 0.0001,
-      );
+      // Get positions to check for single legs
+      const positionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+      const allPositions = positionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
+      
+      const singleLegPositions = this.detectSingleLegPositions(allPositions);
 
-      if (allPositions.length === 0) {
+      if (singleLegPositions.length === 0) {
         return;
       }
 
-      const singleLegPositions = this.detectSingleLegPositions(allPositions);
-      if (singleLegPositions.length > 0) {
-        this.logger.warn(
-          `⚠️ Detected ${singleLegPositions.length} single-leg position(s). Attempting to open missing side...`,
-        );
+      // If global lock is held and we DON'T have critical single legs, respect the lock
+      if (isLocked) {
+        const hasCriticalLeg = singleLegPositions.some(p => Math.abs(p.size) * p.markPrice > 500);
+        if (!hasCriticalLeg) {
+          this.logger.debug('Global lock held, skipping non-critical single-leg check');
+          return;
+        }
+        this.logger.warn('🚨 GLOBAL LOCK BYPASS: Handling critical single-leg positions despite lock');
+      }
 
-        let anyClosed = false;
+      // Acquire lock if not already bypassed
+      threadId = this.executionLockService?.generateThreadId() || threadId;
+      if (!isLocked && this.executionLockService) {
+        if (!this.executionLockService.tryAcquireGlobalLock(threadId, 'checkAndRetrySingleLegPositions')) {
+          return;
+        }
+      }
 
-        // Try to open missing side for each single-leg position
-        for (const position of singleLegPositions) {
+      this.logger.warn(`⚠️ Detected ${singleLegPositions.length} single-leg position(s). Attempting to open missing side...`);
+
+      let anyClosed = false;
+
+      // Try to open missing side for each single-leg position
+      for (const position of singleLegPositions) {
           // Identify missing exchange (for 2-exchange arbitrage)
           // Most trades are Hyperliquid vs {Lighter, Aster}
           let missingExchange: ExchangeType | undefined;
@@ -1618,44 +1614,34 @@ export class PerpKeeperScheduler implements OnModuleInit {
               'CLOSED',
             );
           }
-        }
+      }
 
-        // If any positions were closed, refresh positions and look for new opportunities
-        if (anyClosed) {
-          // Wait for positions to settle
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+      // If any positions were closed, refresh positions and look for new opportunities
+      if (anyClosed) {
+        // Wait for positions to settle
+        await new Promise((resolve) => setTimeout(resolve, 2000));
 
-          // Refresh positions to ensure we have latest state
-          const refreshedPositionsResult =
-            await this.orchestrator.getAllPositionsWithMetrics();
-          const refreshedPositions = refreshedPositionsResult.positions;
+        // Refresh positions to ensure we have latest state
+        const refreshedPositionsResult = await this.orchestrator.getAllPositionsWithMetrics();
+        const refreshedPositions = refreshedPositionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
 
-          // Verify positions are actually closed
-          const stillSingleLeg =
-            this.detectSingleLegPositions(refreshedPositions);
-          if (stillSingleLeg.length === 0) {
-            this.logger.log(
-              `✅ All single-leg positions closed. Looking for new opportunities...`,
-            );
-
-            // Trigger new opportunity search and idle funds management
-            await this.triggerNewOpportunitySearch();
-          } else {
-            this.logger.warn(
-              `⚠️ Still detecting ${stillSingleLeg.length} single-leg position(s) after closing. ` +
-                `This may be stale data - will retry next cycle.`,
-            );
-          }
+        // Verify positions are actually closed
+        const stillSingleLeg = this.detectSingleLegPositions(refreshedPositions);
+        if (stillSingleLeg.length === 0) {
+          this.logger.log(`✅ All single-leg positions closed. Looking for new opportunities...`);
+          await this.triggerNewOpportunitySearch();
+        } else {
+          this.logger.warn(
+            `⚠️ Still detecting ${stillSingleLeg.length} single-leg position(s) after closing. ` +
+              `This may be stale data - will retry next cycle.`,
+          );
         }
       }
     } catch (error: any) {
-      // Silently fail to avoid spam
-      this.logger.debug(
-        `Error in checkAndRetrySingleLegPositions: ${error.message}`,
-      );
+      this.logger.error(`Error in checkAndRetrySingleLegPositions: ${error.message}`);
     } finally {
       // Release global lock
-      if (this.executionLockService) {
+      if (!isLocked && this.executionLockService) {
         this.executionLockService.releaseGlobalLock(threadId);
       }
     }
@@ -2253,6 +2239,11 @@ export class PerpKeeperScheduler implements OnModuleInit {
         this.logger.warn(
           `⚠️ Attempting aggressive price improvement for ${symbol} ${side} after ${orderAgeSec.toFixed(0)}s unfilled`
         );
+
+        // Flag this order as actively managed by aggressive fill logic
+        // This tells MakerEfficiencyService to stop touching it to avoid price-fighting
+        (unfilledOrder as any).isForceFilling = true;
+        this.executionLockService?.updateActiveOrder(unfilledOrder);
 
         const markPrice = await adapter.getMarkPrice(unfilledOrder.symbol);
         // Improve price by 0.5% for faster fill

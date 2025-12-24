@@ -20,6 +20,7 @@ export interface ActiveOrder {
   size?: number;
   price?: number;
   reduceOnly?: boolean;
+  isForceFilling?: boolean; // New flag: tells MakerEfficiencyService to stop managing this order
 }
 
 /**
@@ -494,6 +495,17 @@ export class ExecutionLockService {
     }
 
     return order;
+  }
+
+  /**
+   * Update an existing active order
+   */
+  updateActiveOrder(order: ActiveOrder): void {
+    const key = `${order.exchange}-${order.symbol}-${order.side}`;
+    if (this.activeOrders.has(key)) {
+      this.activeOrders.set(key, { ...order });
+      this.logger.debug(`Updated active order for ${order.symbol} on ${order.exchange}`);
+    }
   }
 
   /**
