@@ -887,6 +887,54 @@ export class PerpKeeperPerformanceLogger
   }
 
   /**
+   * Reset all performance metrics to start "from now"
+   */
+  resetPerformanceMetrics(): void {
+    this.logger.warn('🔄 Resetting all performance metrics. APY calculation will restart from this moment.');
+    
+    this.startTime = new Date();
+    this.realizedFundingPayments = [];
+    this.totalRealizedPnl = 0;
+    this.totalTradingCosts = 0;
+    this.maxDrawdown = 0;
+    this.peakValue = 0;
+    this.totalOrdersPlaced = 0;
+    this.totalOrdersFilled = 0;
+    this.totalOrdersFailed = 0;
+    this.totalTradeVolume = 0;
+    this.arbitrageOpportunitiesFound = 0;
+    this.arbitrageOpportunitiesExecuted = 0;
+    
+    // Reset per-exchange metrics
+    for (const exchangeType of Array.from(this.exchangeMetrics.keys())) {
+      this.exchangeMetrics.set(exchangeType, {
+        exchangeType,
+        totalFundingCaptured: 0,
+        totalFundingPaid: 0,
+        netFundingCaptured: 0,
+        positionsCount: 0,
+        totalPositionValue: 0,
+        totalUnrealizedPnl: 0,
+        ordersExecuted: 0,
+        ordersFilled: 0,
+        ordersFailed: 0,
+        lastUpdateTime: new Date(),
+      });
+    }
+
+    // Force diagnostics update
+    if (this.diagnosticsService) {
+      this.diagnosticsService.updateApyData({
+        estimated: 0,
+        realized: 0,
+        funding: 0,
+        pricePnl: 0,
+        byExchange: {},
+      });
+    }
+  }
+
+  /**
    * Log comprehensive performance metrics
    */
   logPerformanceMetrics(capitalDeployed: number = 0): void {

@@ -5,6 +5,10 @@
   "private": true,
   "scripts": {
     "build": "pnpm -r build",
+    "build:server": "pnpm --filter server build",
+    "build:frontend": "pnpm --filter frontend build",
+    "start:server": "pnpm --filter server start:prod",
+    "start:frontend": "pnpm --filter frontend start",
     "test": "pnpm -r test"
   },
   "devDependencies": {

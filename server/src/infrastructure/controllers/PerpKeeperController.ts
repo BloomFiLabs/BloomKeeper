@@ -296,6 +296,20 @@ export class PerpKeeperController {
   }
 
   /**
+   * Reset performance metrics
+   * POST /keeper/reset-metrics
+   */
+  @Post('reset-metrics')
+  async resetMetrics() {
+    this.performanceLogger.resetPerformanceMetrics();
+    return {
+      success: true,
+      message: 'Performance metrics have been reset',
+      timestamp: new Date(),
+    };
+  }
+
+  /**
    * Get market quality stats and blacklisted markets
    * GET /keeper/market-quality
    *
