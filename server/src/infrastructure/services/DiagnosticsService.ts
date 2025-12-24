@@ -201,6 +201,23 @@ export interface LiquidityFilterEvent {
 }
 
 /**
+ * Position drift event - tracks when exchange position sizes diverge
+ */
+export interface PositionDriftEvent {
+  symbol: string;
+  timestamp: Date;
+  longExchange: ExchangeType;
+  shortExchange: ExchangeType;
+  longSize: number;
+  shortSize: number;
+  driftPercent: number;
+  driftUsd: number;
+  severity: 'warning' | 'alert' | 'critical';
+  resolved: boolean;
+  resolution?: 'reduced' | 'ignored' | 'manual';
+}
+
+/**
  * Connection status event
  */
 export interface ConnectionEvent {
@@ -703,6 +720,13 @@ export class DiagnosticsService {
   // Unfilled orders tracking
   private unfilledOrders: Map<string, UnfilledOrderInfo> = new Map();
 
+  // Position drift tracking (ring buffer, last 100)
+  private readonly MAX_DRIFT_EVENTS = 100;
+  private readonly driftEvents: PositionDriftEvent[] = [];
+  
+  // Current drift state by symbol
+  private readonly currentDriftBySymbol: Map<string, PositionDriftEvent> = new Map();
+
   // Current operation tracking (what is the system doing right now?)
   private currentOperation: {
     description: string;
@@ -808,6 +832,131 @@ export class DiagnosticsService {
       `Recorded error with context: ${type} - ${message} ` +
       `(snapshot: ${JSON.stringify(snapshot).substring(0, 200)}...)`,
     );
+  }
+
+  /**
+   * Record a position drift event
+   * 
+   * @param symbol The trading symbol
+   * @param longExchange Exchange holding the long position
+   * @param shortExchange Exchange holding the short position
+   * @param longSize Size of the long position
+   * @param shortSize Size of the short position
+   * @param markPrice Current mark price for USD calculation
+   */
+  recordPositionDrift(
+    symbol: string,
+    longExchange: ExchangeType,
+    shortExchange: ExchangeType,
+    longSize: number,
+    shortSize: number,
+    markPrice: number = 0,
+  ): void {
+    const avgSize = (longSize + shortSize) / 2;
+    const sizeDiff = Math.abs(longSize - shortSize);
+    const driftPercent = avgSize > 0 ? (sizeDiff / avgSize) * 100 : 0;
+    const driftUsd = sizeDiff * markPrice;
+
+    // Determine severity based on thresholds
+    const WARN_THRESHOLD = parseFloat(process.env.POSITION_DRIFT_WARN_THRESHOLD || '0.03') * 100; // 3%
+    const ALERT_THRESHOLD = parseFloat(process.env.POSITION_DRIFT_ALERT_THRESHOLD || '0.10') * 100; // 10%
+    
+    let severity: 'warning' | 'alert' | 'critical';
+    if (driftPercent >= ALERT_THRESHOLD) {
+      severity = 'critical';
+    } else if (driftPercent >= WARN_THRESHOLD) {
+      severity = 'alert';
+    } else {
+      severity = 'warning';
+    }
+
+    const event: PositionDriftEvent = {
+      symbol,
+      timestamp: new Date(),
+      longExchange,
+      shortExchange,
+      longSize,
+      shortSize,
+      driftPercent,
+      driftUsd,
+      severity,
+      resolved: false,
+    };
+
+    // Update current drift state for this symbol
+    this.currentDriftBySymbol.set(symbol, event);
+
+    // Add to ring buffer
+    this.driftEvents.push(event);
+    if (this.driftEvents.length > this.MAX_DRIFT_EVENTS) {
+      this.driftEvents.shift();
+    }
+
+    // Log based on severity
+    if (severity === 'critical') {
+      this.logger.error(
+        `🚨 CRITICAL position drift for ${symbol}: ${driftPercent.toFixed(1)}% ($${driftUsd.toFixed(2)})\n` +
+        `   LONG: ${longSize.toFixed(4)} on ${longExchange}\n` +
+        `   SHORT: ${shortSize.toFixed(4)} on ${shortExchange}`
+      );
+    } else if (severity === 'alert') {
+      this.logger.warn(
+        `⚠️ Position drift ALERT for ${symbol}: ${driftPercent.toFixed(1)}% ($${driftUsd.toFixed(2)})`
+      );
+    }
+  }
+
+  /**
+   * Mark a position drift as resolved
+   */
+  resolvePositionDrift(symbol: string, resolution: 'reduced' | 'ignored' | 'manual'): void {
+    const currentDrift = this.currentDriftBySymbol.get(symbol);
+    if (currentDrift) {
+      currentDrift.resolved = true;
+      currentDrift.resolution = resolution;
+      this.currentDriftBySymbol.delete(symbol);
+      this.logger.log(`✅ Position drift resolved for ${symbol}: ${resolution}`);
+    }
+  }
+
+  /**
+   * Get current drift events (unresolved)
+   */
+  getCurrentDriftEvents(): PositionDriftEvent[] {
+    return Array.from(this.currentDriftBySymbol.values());
+  }
+
+  /**
+   * Get drift event history
+   */
+  getDriftEventHistory(limit: number = 50): PositionDriftEvent[] {
+    return this.driftEvents.slice(-limit);
+  }
+
+  /**
+   * Get drift statistics
+   */
+  getDriftStatistics(): {
+    totalEvents: number;
+    unresolvedCount: number;
+    criticalCount: number;
+    alertCount: number;
+    warningCount: number;
+    averageDriftPercent: number;
+  } {
+    const unresolved = this.getCurrentDriftEvents();
+    const recent = this.driftEvents.slice(-100);
+    
+    return {
+      totalEvents: this.driftEvents.length,
+      unresolvedCount: unresolved.length,
+      criticalCount: recent.filter(e => e.severity === 'critical').length,
+      alertCount: recent.filter(e => e.severity === 'alert').length,
+      warningCount: recent.filter(e => e.severity === 'warning').length,
+      averageDriftPercent: recent.length > 0
+        ? recent.reduce((sum, e) => sum + e.driftPercent, 0) / recent.length
+        : 0,
+    };
   }
 
   /**
