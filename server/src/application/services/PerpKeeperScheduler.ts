@@ -48,6 +48,7 @@ import { BalanceManager } from '../../domain/services/strategy-rules/BalanceMana
 import { OpportunityEvaluator } from '../../domain/services/strategy-rules/OpportunityEvaluator';
 import { ExecutionPlanBuilder } from '../../domain/services/strategy-rules/ExecutionPlanBuilder';
 import { IPerpExchangeAdapter } from '../../domain/ports/IPerpExchangeAdapter';
+import { RateLimiterService } from '../../infrastructure/services/RateLimiterService';
 
 import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
 
@@ -139,6 +140,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
     private readonly predictionService?: any, // IFundingRatePredictionService
     @Optional() private readonly opportunityEvaluator?: OpportunityEvaluator,
     @Optional() private readonly executionPlanBuilder?: ExecutionPlanBuilder,
+    @Optional() private readonly rateLimiter?: RateLimiterService,
   ) {
     // Initialize orchestrator with exchange adapters
     const adapters = this.keeperService.getExchangeAdapters();
@@ -258,6 +260,46 @@ export class PerpKeeperScheduler implements OnModuleInit {
     );
 
     // Removed configuration log - only execution logs shown
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RATE LIMIT AWARENESS - Skip non-critical operations when API budget is low
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Check if rate limits are healthy enough for non-critical operations
+   * Returns true if ALL exchanges have budget health > threshold
+   * 
+   * @param minHealth Minimum required health (0.0 to 1.0, default 0.3 = 30%)
+   * @param logIfUnhealthy Whether to log when skipping due to low health
+   */
+  private isRateLimitHealthy(minHealth: number = 0.3, logIfUnhealthy: boolean = true): boolean {
+    if (!this.rateLimiter) return true; // No limiter = assume healthy
+
+    const hlUsage = this.rateLimiter.getUsage(ExchangeType.HYPERLIQUID);
+    const lighterUsage = this.rateLimiter.getUsage(ExchangeType.LIGHTER);
+
+    const minBudget = Math.min(hlUsage.budgetHealth, lighterUsage.budgetHealth);
+
+    if (minBudget < minHealth) {
+      if (logIfUnhealthy) {
+        this.logger.debug(
+          `⏸️ Rate limit recovery mode: HL=${(hlUsage.budgetHealth * 100).toFixed(0)}%, ` +
+          `Lighter=${(lighterUsage.budgetHealth * 100).toFixed(0)}% (need ${(minHealth * 100).toFixed(0)}%)`
+        );
+      }
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Check if a specific exchange has healthy rate limit budget
+   */
+  private isExchangeRateLimitHealthy(exchange: ExchangeType, minHealth: number = 0.3): boolean {
+    if (!this.rateLimiter) return true;
+    const usage = this.rateLimiter.getUsage(exchange);
+    return usage.budgetHealth >= minHealth;
   }
 
   /**
@@ -1468,11 +1510,18 @@ export class PerpKeeperScheduler implements OnModuleInit {
 
   /**
    * Check for single-leg positions and try to open missing side
-   * Runs every 60 seconds for FAST detection - single legs are our TOP PRIORITY
+   * Runs every 90 seconds - single legs are TOP PRIORITY but we need API budget
    * Policy: After all retries fail, close the single leg and move to next opportunity
    */
-  @Interval(60000) // Every 60 seconds (was 5 min - single legs are TOP PRIORITY!)
+  @Interval(90000) // Every 90 seconds (was 60s - balance priority with API budget)
   async checkAndRetrySingleLegPositions(): Promise<void> {
+    // Skip if rate limits are stressed (except for critical single legs)
+    // We still run if budget > 20% since single legs are important
+    if (!this.isRateLimitHealthy(0.2, false)) {
+      this.logger.debug('⏸️ Skipping single-leg check - rate limit recovery');
+      return;
+    }
+    
     // Skip if main execution is running (prevents race conditions)
     if (this.isRunning) {
       this.logger.debug(
@@ -1984,25 +2033,27 @@ export class PerpKeeperScheduler implements OnModuleInit {
   /**
    * Verify recent order fills and take corrective action if one leg is unfilled
    * 
-   * This is our FAST response to asymmetric fills - runs every 20 seconds to catch
-   * orders that have had their grace period but still aren't filled.
-   * 
    * Grace period logic:
-   * - Orders < 30 seconds old: Leave alone (give maker time to fill)
-   * - Orders 30-90 seconds old: Check status, try aggressive price improvement
-   * - Orders > 90 seconds old: If paired leg filled, MARKET order to match
+   * - Orders < 45 seconds old: Leave alone (give maker time to fill)
+   * - Orders 45-120 seconds old: Check status, try aggressive price improvement
+   * - Orders > 120 seconds old: If paired leg filled, MARKET order to match
    * 
    * This prevents large position imbalances from building up.
    */
-  @Interval(20000) // Every 20 seconds - FAST response to fill issues
+  @Interval(45000) // Every 45 seconds (was 20s - too aggressive, causes rate limits)
   async verifyRecentExecutionFills(): Promise<void> {
     if (!this.executionLockService) return;
     if (this.isRunning) return; // Don't interfere with active execution
+    
+    // Skip if rate limits are stressed
+    if (!this.isRateLimitHealthy(0.4)) {
+      return;
+    }
 
-    // Grace periods (configurable via env)
-    const MIN_AGE_SECONDS = parseFloat(process.env.FILL_CHECK_MIN_AGE_SECONDS || '30');
-    const AGGRESSIVE_AGE_SECONDS = parseFloat(process.env.FILL_CHECK_AGGRESSIVE_AGE_SECONDS || '60');
-    const MARKET_ORDER_AGE_SECONDS = parseFloat(process.env.FILL_CHECK_MARKET_AGE_SECONDS || '90');
+    // Grace periods (configurable via env) - longer to reduce API pressure
+    const MIN_AGE_SECONDS = parseFloat(process.env.FILL_CHECK_MIN_AGE_SECONDS || '45');
+    const AGGRESSIVE_AGE_SECONDS = parseFloat(process.env.FILL_CHECK_AGGRESSIVE_AGE_SECONDS || '90');
+    const MARKET_ORDER_AGE_SECONDS = parseFloat(process.env.FILL_CHECK_MARKET_AGE_SECONDS || '120');
 
     try {
       const allOrders = this.executionLockService.getAllActiveOrders();
@@ -2267,10 +2318,15 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * 
    * Runs every 60 seconds to catch missed fills quickly.
    */
-  @Interval(60000) // Every 60 seconds (was 5 min - too slow!)
+  @Interval(180000) // Every 3 minutes (was 60s - too fast, causes rate limits)
   async verifyTrackedOrders(): Promise<void> {
     if (!this.executionLockService) return;
     if (this.isRunning) return; // Don't interfere with active execution
+    
+    // Skip if rate limits are stressed
+    if (!this.isRateLimitHealthy(0.4)) {
+      return;
+    }
 
     const STALE_ORDER_AGE_MINUTES = parseFloat(
       process.env.STALE_ORDER_AGE_MINUTES || '2'
@@ -2545,8 +2601,13 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * Periodic stale order cleanup - runs every 2 minutes
    * Cancels limit orders that have been sitting unfilled for too long
    */
-  @Interval(120000) // Every 2 minutes (was 10 min - too slow!)
+  @Interval(300000) // Every 5 minutes (was 2 min - too fast, causes rate limits)
   async cleanupStaleOrders() {
+    // Skip if rate limits are stressed
+    if (!this.isRateLimitHealthy(0.5)) {
+      return;
+    }
+
     const STALE_ORDER_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
     try {
@@ -2763,10 +2824,15 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * 
    * This check detects imbalances and reduces the larger position to match the smaller one.
    * 
-   * Runs every 30 seconds for faster imbalance detection.
+   * Runs every 60 seconds with rate limit awareness.
    */
-  @Interval(30000) // Every 30 seconds (was 60s)
+  @Interval(60000) // Every 60 seconds (was 30s - too aggressive, causes rate limits)
   async checkPositionSizeBalance() {
+    // Skip if rate limits are stressed
+    if (!this.isRateLimitHealthy(0.4)) {
+      return;
+    }
+
     try {
       // Skip if active executions in progress
       if (this.executionLockService) {
@@ -3205,12 +3271,17 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * 2. Positions that exist on exchange but aren't in our state
    * 3. Size mismatches between tracked and actual positions
    * 
-   * Runs every 45 seconds for fast detection.
+   * Runs every 90 seconds with rate limit awareness.
    */
-  @Interval(45000) // Every 45 seconds
+  @Interval(90000) // Every 90 seconds (was 45s - too aggressive)
   async verifyPositionStateWithExchanges(): Promise<void> {
     if (this.isRunning) return;
     if (this.executionLockService?.isGlobalLockHeld()) return;
+    
+    // Skip if rate limits are stressed
+    if (!this.isRateLimitHealthy(0.5)) {
+      return;
+    }
 
     try {
       const adapters = this.keeperService.getExchangeAdapters();
@@ -3341,13 +3412,18 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * - If unrealized profit = 1%, that's 2x expected income → close 100%
    * - If unrealized profit = 0.24%, that's 0.5x expected income → close 50%
    * 
-   * Runs every 30 seconds for quick profit capture.
+   * Runs every 2 minutes with rate limit awareness.
    */
-  @Interval(30000) // Every 30 seconds
+  @Interval(120000) // Every 2 minutes (was 30s - too fast)
   async checkProfitTaking(): Promise<void> {
     // Skip if main execution is running or global lock held
     if (this.isRunning) return;
     if (this.executionLockService?.isGlobalLockHeld()) return;
+    
+    // Skip if rate limits are stressed
+    if (!this.isRateLimitHealthy(0.4)) {
+      return;
+    }
 
     try {
       const positions = this.marketStateService?.getAllPositions() || [];
@@ -3883,8 +3959,13 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * 
    * Only rotates if the new opportunity reaches break-even faster than staying.
    */
-  @Interval(180000) // Every 3 minutes (was 5 min)
+  @Interval(600000) // Every 10 minutes (was 3 min - too fast)
   async checkSpreadRotation(): Promise<void> {
+    // Skip if rate limits are stressed
+    if (!this.isRateLimitHealthy(0.5)) {
+      return;
+    }
+    
     // Skip if main execution is running or missing required services
     if (this.isRunning) return;
     if (!this.opportunityEvaluator || !this.executionPlanBuilder) {
@@ -4965,15 +5046,21 @@ export class PerpKeeperScheduler implements OnModuleInit {
       // CRITICAL: Cancel any pending orders on OTHER exchanges for this symbol first!
       // This prevents zombie orders from being left behind when we close this position
       // ================================================================================
-      const otherExchanges = [ExchangeType.HYPERLIQUID, ExchangeType.LIGHTER, ExchangeType.ASTER]
+      // Only check exchanges that actually have adapters configured
+      const allAdapters = this.keeperService.getExchangeAdapters();
+      const otherExchanges = Array.from(allAdapters.keys())
         .filter(e => e !== position.exchangeType);
 
       for (const otherExchange of otherExchanges) {
-        const otherAdapter = this.keeperService.getExchangeAdapter(otherExchange);
-        if (!otherAdapter || !otherAdapter.getOpenOrders) continue;
+        const otherAdapter = allAdapters.get(otherExchange);
+        if (!otherAdapter) continue;
+        
+        // Check if adapter supports getOpenOrders - cast to any for optional method
+        const adapterAny = otherAdapter as any;
+        if (typeof adapterAny.getOpenOrders !== 'function') continue;
 
         try {
-          const openOrders = await otherAdapter.getOpenOrders();
+          const openOrders = await adapterAny.getOpenOrders();
           if (!openOrders) continue;
           const matchingOrders = openOrders.filter(order => 
             this.normalizeSymbol(order.symbol) === this.normalizeSymbol(position.symbol)

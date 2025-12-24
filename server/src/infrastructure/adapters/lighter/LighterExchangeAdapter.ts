@@ -61,6 +61,9 @@ export class LighterExchangeAdapter
   // Nonce reset lock - blocks new orders during nonce resync
   private nonceResetInProgress = false;
   private nonceResetQueue: Array<() => void> = [];
+  
+  // Track last successful nonce sync
+  private lastNonceSyncTime: number = 0;
   private readonly NONCE_RESET_TIMEOUT_MS = 5000; // 5 second timeout for waiting on current order
 
   // Track consecutive nonce errors for debugging
@@ -213,14 +216,76 @@ export class LighterExchangeAdapter
         privateKey: normalizedKey,
         accountIndex: this.config.accountIndex!,
         apiKeyIndex: this.config.apiKeyIndex!,
-      });
+        enableWebSocket: true, // Enable WS order placement for faster execution and better nonce management
+      } as any);
 
       await this.signerClient.initialize();
       await this.signerClient.ensureWasmClient();
+      
+      // Pre-warm the nonce cache IMMEDIATELY after initialization
+      // This ensures we have the correct nonce from the server before any orders
+      try {
+        await (this.signerClient as any).preWarmNonceCache();
+        this.lastNonceSyncTime = Date.now();
+        this.logger.log('✅ Lighter SignerClient initialized with pre-warmed nonce cache and WebSockets');
+      } catch (e: any) {
+        this.logger.warn(`Could not pre-warm nonce cache: ${e.message}`);
+      }
 
+      // Create ApiClient and OrderApi
       const apiClient = new ApiClient({ host: this.config.baseUrl });
       this.orderApi = new OrderApi(apiClient);
     }
+  }
+
+  /**
+   * Explicitly get a fresh nonce from the SignerClient's internal manager
+   * This is called before every transaction to ensure we're in sync
+   */
+  private async getFreshNonce(): Promise<number | null> {
+    if (!this.signerClient) return null;
+    try {
+      // Access the private getNextNonce method via any
+      const nonce = await (this.signerClient as any).getNextNonce();
+      if (nonce !== null) {
+        this.lastNonceSyncTime = Date.now();
+      }
+      return nonce;
+    } catch (e: any) {
+      this.logger.warn(`Failed to get fresh nonce: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Lightweight nonce refresh - tries to refresh nonce cache without full client recreation
+   * Returns true if refresh succeeded, false if full reset is needed
+   */
+  private async tryLightweightNonceRefresh(): Promise<boolean> {
+    if (!this.signerClient) return false;
+    
+    try {
+      // Method 1: Try to pre-warm the nonce cache via SignerClient
+      await (this.signerClient as any).preWarmNonceCache();
+      this.logger.log('✅ Lightweight nonce refresh succeeded via preWarmNonceCache');
+      this.lastNonceSyncTime = Date.now();
+      return true;
+    } catch (e1: any) {
+      this.logger.debug(`preWarmNonceCache failed: ${e1.message}`);
+    }
+    
+    try {
+      // Method 2: Fetch nonce directly from SignerClient
+      const nonce = await this.getFreshNonce();
+      if (nonce !== null) {
+        this.logger.log(`✅ Lightweight nonce refresh via getNextNonce: nonce=${nonce}`);
+        return true;
+      }
+    } catch (e2: any) {
+      this.logger.debug(`getNextNonce fetch failed: ${e2.message}`);
+    }
+    
+    return false; // Need full reset
   }
 
   /**
@@ -258,6 +323,16 @@ export class LighterExchangeAdapter
     });
 
     return release!;
+  }
+
+  private isNonceError(error: any): boolean {
+    const errorMsg = (error?.message || '').toLowerCase();
+    return (
+      errorMsg.includes('invalid nonce') ||
+      errorMsg.includes('nonce') ||
+      errorMsg.includes('sequence index') ||
+      errorMsg.includes('out of sync')
+    );
   }
 
   /**
@@ -552,6 +627,21 @@ export class LighterExchangeAdapter
     if (request.reduceOnly) {
       await this.validateReduceOnlyOrder(request);
     }
+    
+    // PROACTIVE NONCE SYNC: If it's been > 60 seconds since last sync, refresh nonce cache
+    // This helps prevent nonce errors from stale cache
+    const NONCE_SYNC_INTERVAL_MS = 60000; // 1 minute
+    if (this.lastNonceSyncTime > 0 && Date.now() - this.lastNonceSyncTime > NONCE_SYNC_INTERVAL_MS) {
+      this.logger.debug(`⏰ Proactive nonce sync (last sync ${Math.round((Date.now() - this.lastNonceSyncTime) / 1000)}s ago)`);
+      try {
+        if (this.signerClient) {
+          await (this.signerClient as any).preWarmNonceCache();
+          this.lastNonceSyncTime = Date.now();
+        }
+      } catch (e: any) {
+        this.logger.debug(`Proactive nonce sync failed (non-critical): ${e.message}`);
+      }
+    }
 
     // Acquire mutex to prevent concurrent order placements
     // Lighter uses sequential nonces - concurrent orders cause "invalid nonce" errors
@@ -702,6 +792,10 @@ export class LighterExchangeAdapter
           `Initializing Lighter adapter for order placement (attempt ${attempt + 1})...`,
         );
         await this.ensureInitialized();
+        
+        // Fetch a fresh nonce explicitly before each order attempt
+        const nonce = await this.getFreshNonce();
+        this.logger.debug(`Using fresh nonce for ${request.symbol}: ${nonce}`);
 
         this.logger.debug(`Getting market index for ${request.symbol}...`);
         const marketIndex = await this.getMarketIndex(request.symbol);
@@ -999,7 +1093,11 @@ export class LighterExchangeAdapter
         );
 
         await this.rateLimiter.acquire(ExchangeType.LIGHTER, this.WEIGHT_TX);
-        const result = await this.signerClient!.createUnifiedOrder(orderParams);
+        // Cast to any because the type definition might missing the nonce parameter
+        const result = await (this.signerClient as any).createUnifiedOrder({
+          ...orderParams,
+          nonce: nonce || undefined
+        });
 
         if (!result.success) {
           const errorMsg = result.mainOrder.error || 'Order creation failed';
@@ -1173,14 +1271,23 @@ export class LighterExchangeAdapter
               lastSuccessfulOrder: timeSinceLastSuccess,
             });
 
-            // Fully recreate the SignerClient to get a fresh nonce from the server
-            await this.resetSignerClient();
+            // IMPROVED: Try lightweight refresh first (faster, less disruptive)
+            // Only do full reset if lightweight refresh fails or after 3+ consecutive errors
+            let refreshed = false;
+            if (this.consecutiveNonceErrors < 3) {
+              refreshed = await this.tryLightweightNonceRefresh();
+            }
+            
+            if (!refreshed) {
+              // Fall back to full SignerClient recreation
+              await this.resetSignerClient();
+            }
 
-            // Progressive backoff for nonce errors with exponential increase
-            // 1s, 2s, 4s, 8s... capped at 10s
+            // Progressive backoff for nonce errors - reduced for faster recovery
+            // 500ms, 1s, 2s, 4s... capped at 5s
             const nonceBackoff = Math.min(
-              1000 * Math.pow(2, this.consecutiveNonceErrors - 1),
-              10000,
+              500 * Math.pow(2, this.consecutiveNonceErrors - 1),
+              5000,
             );
             this.logger.debug(
               `Waiting ${nonceBackoff}ms before retry after nonce error`,
@@ -1589,22 +1696,31 @@ export class LighterExchangeAdapter
     const price = market.priceToUnits(request.price || 0);
     const triggerPrice = BigInt(0); // No trigger price for non-conditional orders
 
-    // Retry loop with nonce error handling
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        this.logger.debug(
-          `🔄 Modifying order ${orderIndex} on Lighter: ${request.symbol} @ ${request.price} (attempt ${attempt + 1}/${maxRetries})`,
-        );
+    // Acquire mutex to prevent concurrent nonce conflicts with other operations
+    const releaseMutex = await this.acquireOrderMutex();
 
-        // Use positional arguments matching modify_order.ts example
-        // Pass RateLimitPriority.HIGH to callApi for maker repositioning
-        const result = await this.callApi(this.WEIGHT_TX, () => (this.signerClient as any).modifyOrder(
-          marketIndex,
-          orderIndex,
-          amount,
-          price,
-          triggerPrice,
-        ), RateLimitPriority.HIGH) as [any, string, string | null];
+    try {
+      // Retry loop with nonce error handling
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          // Fetch a fresh nonce explicitly before each modify attempt
+          const nonce = await this.getFreshNonce();
+          
+          this.logger.debug(
+            `🔄 Modifying order ${orderIndex} on Lighter: ${request.symbol} @ ${request.price} ` +
+            `(nonce: ${nonce}, attempt ${attempt + 1}/${maxRetries})`,
+          );
+
+          // Use positional arguments matching modify_order.ts example
+          // Pass RateLimitPriority.HIGH to callApi for maker repositioning
+          const result = await this.callApi(this.WEIGHT_TX, () => (this.signerClient as any).modifyOrder(
+            marketIndex,
+            orderIndex,
+            amount,
+            price,
+            triggerPrice,
+            nonce || undefined // Pass the fresh nonce!
+          ), RateLimitPriority.HIGH) as [any, string, string | null];
         
         const [tx, txHash, error] = result;
 
@@ -1639,9 +1755,7 @@ export class LighterExchangeAdapter
         const errorMsg = error.message || String(error);
         
         // Check if this is a nonce error
-        const isNonceError =
-          errorMsg.toLowerCase().includes('invalid nonce') ||
-          errorMsg.toLowerCase().includes('nonce');
+        const isNonceError = this.isNonceError(error);
 
         if (isNonceError && attempt < maxRetries - 1) {
           this.consecutiveNonceErrors++;
@@ -1651,11 +1765,19 @@ export class LighterExchangeAdapter
             `Re-syncing nonce and retrying (attempt ${attempt + 1}/${maxRetries})...`,
           );
 
-          // Fully recreate the SignerClient to get a fresh nonce from the server
-          await this.resetSignerClient();
+          // IMPROVED: Try lightweight refresh first
+          let refreshed = false;
+          if (this.consecutiveNonceErrors < 3) {
+            refreshed = await this.tryLightweightNonceRefresh();
+          }
+          
+          if (!refreshed) {
+            // Fall back to full SignerClient recreation
+            await this.resetSignerClient();
+          }
 
-          // Progressive backoff for nonce errors
-          const nonceBackoff = Math.min(1000 * Math.pow(2, attempt), 5000);
+          // Progressive backoff - reduced for faster recovery
+          const nonceBackoff = Math.min(500 * Math.pow(2, attempt), 3000);
           this.logger.debug(`Waiting ${nonceBackoff}ms before retry after nonce error`);
           await new Promise((resolve) => setTimeout(resolve, nonceBackoff));
           continue;
@@ -1677,11 +1799,19 @@ export class LighterExchangeAdapter
       `Failed to modify order after ${maxRetries} attempts`,
       ExchangeType.LIGHTER,
     );
+    } finally {
+      // Always release the mutex when done
+      releaseMutex();
+    }
   }
 
   async cancelOrder(orderId: string, symbol?: string): Promise<boolean> {
+    const releaseMutex = await this.acquireOrderMutex();
     try {
       await this.ensureInitialized();
+
+      // Fetch a fresh nonce
+      const nonce = await this.getFreshNonce();
 
       // CRITICAL FIX: Lighter's cancelOrder requires { marketIndex, orderIndex }
       // NOT the transaction hash! We need to find the actual order from open orders.
@@ -1761,12 +1891,13 @@ export class LighterExchangeAdapter
             this.logger.debug(
               `Cancelling order ${orderIndex} for market ${marketIndex}...`,
             );
-            // SDK types are incorrect - it actually accepts { marketIndex, orderIndex } object
+            // SDK types are incorrect - it actually accepts { marketIndex, orderIndex, nonce } object
             const [tx, txHash, error] = await (
               this.signerClient as any
             ).cancelOrder({
               marketIndex,
               orderIndex,
+              nonce: nonce || undefined
             });
 
             if (error) {
@@ -1833,12 +1964,13 @@ export class LighterExchangeAdapter
           `🗑️ Cancelling Lighter order ${orderIndex} for market ${marketIndex}...`,
         );
 
-        // SDK types are incorrect - it actually accepts { marketIndex, orderIndex } object
+        // SDK types are incorrect - it actually accepts { marketIndex, orderIndex, nonce } object
         const result = await this.callApi(this.WEIGHT_TX, () => (
           this.signerClient as any
         ).cancelOrder({
           marketIndex,
           orderIndex,
+          nonce: nonce || undefined
         })) as [any, string, string | null];
         const [tx, txHash, error] = result;
 
@@ -1876,8 +2008,12 @@ export class LighterExchangeAdapter
   }
 
   async cancelAllOrders(symbol: string): Promise<number> {
+    const releaseMutex = await this.acquireOrderMutex();
     try {
       await this.ensureInitialized();
+
+      // Fetch a fresh nonce
+      const nonce = await this.getFreshNonce();
 
       const marketIndex = await this.getMarketIndex(symbol);
 
@@ -1918,12 +2054,13 @@ export class LighterExchangeAdapter
         if (orderIndex <= 0) continue;
 
         try {
-          // SDK types are incorrect - it actually accepts { marketIndex, orderIndex } object
+          // SDK types are incorrect - it actually accepts { marketIndex, orderIndex, nonce } object
           const [tx, txHash, error] = await (
             this.signerClient as any
           ).cancelOrder({
             marketIndex,
             orderIndex,
+            nonce: nonce || undefined
           });
 
           if (error) {
@@ -1962,6 +2099,9 @@ export class LighterExchangeAdapter
         undefined,
         error,
       );
+    } finally {
+      // Always release the mutex
+      releaseMutex();
     }
   }
 

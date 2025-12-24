@@ -27,10 +27,10 @@ export class MakerEfficiencyService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    this.logger.log('MakerEfficiencyService initialized - HIGH PRIORITY ORDER REPRICING');
+    this.logger.log('MakerEfficiencyService initialized - rate-limit aware order repricing');
   }
 
-  @Interval(1000) // Run every 1s - order repricing is TOP PRIORITY for fill success
+  @Interval(5000) // Run every 5s (was 1s - too aggressive, causes rate limits)
   async manageMakerEfficiency() {
     if (this.isRunning) return;
     this.isRunning = true;
@@ -79,20 +79,22 @@ export class MakerEfficiencyService implements OnModuleInit {
     // 1. Get current budget health (1.0 = full, 0.0 = empty)
     const { budgetHealth } = this.rateLimiter.getUsage(exchange);
     
-    // 2. Calculate base optimal interval - MUCH FASTER than before
-    let baseIntervalMs = 3000; // Default 3s
+    // 2. Calculate base optimal interval based on exchange limits
+    let baseIntervalMs = 10000; // Default 10s - conservative
     
     if (exchange === ExchangeType.HYPERLIQUID) {
-      // Hyperliquid: Very permissive rate limits
-      baseIntervalMs = 2000; // 2 seconds
+      // Hyperliquid: Very permissive rate limits (1200/min)
+      baseIntervalMs = 5000; // 5 seconds per order check
     } else if (exchange === ExchangeType.LIGHTER) {
-      // Lighter: More conservative but still faster
-      baseIntervalMs = 3000; // 3 seconds (was 6s * orders!)
+      // Lighter: VERY strict limits (60/min = 1/sec)
+      // Each modifyOrder = multiple API calls, so be very conservative
+      baseIntervalMs = 15000; // 15 seconds per order check
     }
 
-    // 3. For OLD orders (>30s), ALWAYS check regardless of health
+    // 3. For OLD orders (>60s), ALWAYS check regardless of health
     // Old orders are at risk of causing imbalances - TOP PRIORITY
-    const urgentOrders = orders.filter(o => now - o.placedAt.getTime() > 30000);
+    // Increased from 30s to 60s to reduce API pressure
+    const urgentOrders = orders.filter(o => now - o.placedAt.getTime() > 60000);
     const normalOrders = orders.filter(o => now - o.placedAt.getTime() <= 30000);
 
     // 4. Process urgent orders IMMEDIATELY (no rate limit delay for orders >30s old)
