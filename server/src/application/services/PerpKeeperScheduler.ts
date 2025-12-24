@@ -45,6 +45,9 @@ import { LiquidationMonitorService } from '../../domain/services/LiquidationMoni
 import { MarketStateService } from '../../infrastructure/services/MarketStateService';
 import { OrderBookCollector } from '../../domain/services/twap/OrderBookCollector';
 import { BalanceManager } from '../../domain/services/strategy-rules/BalanceManager';
+import { OpportunityEvaluator } from '../../domain/services/strategy-rules/OpportunityEvaluator';
+import { ExecutionPlanBuilder } from '../../domain/services/strategy-rules/ExecutionPlanBuilder';
+import { IPerpExchangeAdapter } from '../../domain/ports/IPerpExchangeAdapter';
 
 import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
 
@@ -134,6 +137,8 @@ export class PerpKeeperScheduler implements OnModuleInit {
     @Optional()
     @Inject('IFundingRatePredictionService')
     private readonly predictionService?: any, // IFundingRatePredictionService
+    @Optional() private readonly opportunityEvaluator?: OpportunityEvaluator,
+    @Optional() private readonly executionPlanBuilder?: ExecutionPlanBuilder,
   ) {
     // Initialize orchestrator with exchange adapters
     const adapters = this.keeperService.getExchangeAdapters();
@@ -3178,6 +3183,329 @@ export class PerpKeeperScheduler implements OnModuleInit {
       // Release lock
       if (this.executionLockService) {
         this.executionLockService.releaseSymbolLock(symbol, threadId);
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SPREAD ROTATION - Rotate to better opportunities when spread thins out
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Periodic spread rotation check - runs every 5 minutes
+   * 
+   * When current position's spread is thinning out and there are better opportunities
+   * available, this check evaluates if rotating to the new opportunity would reduce
+   * the time to break-even, factoring in:
+   * - Current position's remaining break-even time
+   * - Carry-forward costs (sunk costs from current position)
+   * - New position's entry/exit fees + slippage
+   * 
+   * Only rotates if the new opportunity reaches break-even faster than staying.
+   */
+  @Interval(300000) // Every 5 minutes
+  async checkSpreadRotation(): Promise<void> {
+    // Skip if main execution is running or missing required services
+    if (this.isRunning) return;
+    if (!this.opportunityEvaluator || !this.executionPlanBuilder) {
+      this.logger.debug('Spread rotation check skipped: missing OpportunityEvaluator or ExecutionPlanBuilder');
+      return;
+    }
+
+    try {
+      const allPositions = await this.keeperService.getAllPositions();
+      const positions = allPositions.filter((p) => Math.abs(p.size) > 0.0001);
+
+      if (positions.length === 0) return;
+
+      // Group positions by normalized symbol to find hedged pairs
+      const positionsBySymbol = new Map<string, PerpPosition[]>();
+      for (const position of positions) {
+        const normalizedSymbol = this.normalizeSymbol(position.symbol);
+        if (!positionsBySymbol.has(normalizedSymbol)) {
+          positionsBySymbol.set(normalizedSymbol, []);
+        }
+        positionsBySymbol.get(normalizedSymbol)!.push(position);
+      }
+
+      // Find all available opportunities
+      const opportunities = await this.orchestrator.findArbitrageOpportunities(
+        this.symbols.length > 0 ? this.symbols : Array.from(positionsBySymbol.keys()),
+        this.minSpread * 0.5, // Look at opportunities with at least half the min spread
+        false, // No progress bar
+      );
+
+      if (opportunities.length === 0) {
+        this.logger.debug('No alternative opportunities found for spread rotation');
+        return;
+      }
+
+      // Get exchange balances
+      const adapters = this.keeperService.getExchangeAdapters();
+      const exchangeBalances = new Map<ExchangeType, number>();
+      for (const [exchange, adapter] of adapters) {
+        try {
+          const balance = await adapter.getBalance();
+          exchangeBalances.set(exchange, balance);
+        } catch {
+          exchangeBalances.set(exchange, 0);
+        }
+      }
+
+      // For each current position pair, check if there's a better opportunity
+      for (const [currentSymbol, symbolPositions] of positionsBySymbol) {
+        const longPos = symbolPositions.find(p => p.side === OrderSide.LONG);
+        const shortPos = symbolPositions.find(p => p.side === OrderSide.SHORT);
+
+        // Only evaluate hedged pairs
+        if (!longPos || !shortPos) continue;
+
+        // Skip if position is in profit-take cooldown
+        const longMarkPrice = longPos.markPrice || longPos.entryPrice;
+        const shortMarkPrice = shortPos.markPrice || shortPos.entryPrice;
+        const cooldownCheck = this.isInProfitTakeCooldown(currentSymbol, longMarkPrice, shortMarkPrice);
+        if (cooldownCheck.inCooldown) continue;
+
+        // Find best alternative opportunity (different from current)
+        const betterOpportunities = opportunities.filter(opp => {
+          const oppSymbol = this.normalizeSymbol(opp.symbol);
+          // Must be a different symbol
+          if (oppSymbol === currentSymbol) return false;
+          // Must be perp-perp (has short exchange)
+          if (!opp.shortExchange) return false;
+          return true;
+        });
+
+        // Sort by expected return
+        betterOpportunities.sort((a, b) => 
+          (b.expectedReturn?.toDecimal() || 0) - (a.expectedReturn?.toDecimal() || 0)
+        );
+
+        // Evaluate top 3 alternatives
+        for (const newOpp of betterOpportunities.slice(0, 3)) {
+          const rotationDecision = await this.evaluateSpreadRotation(
+            longPos,
+            shortPos,
+            newOpp,
+            adapters,
+            exchangeBalances,
+          );
+
+          if (rotationDecision.shouldRotate) {
+            this.logger.warn(
+              `🔄 SPREAD ROTATION OPPORTUNITY: ${currentSymbol} → ${newOpp.symbol}\n` +
+              `   Current remaining break-even: ${rotationDecision.currentBreakEvenHours?.toFixed(1) || '∞'}h\n` +
+              `   New position break-even: ${rotationDecision.newBreakEvenHours?.toFixed(1) || '∞'}h\n` +
+              `   Time saved: ${rotationDecision.hoursSaved?.toFixed(1) || 0}h\n` +
+              `   Reason: ${rotationDecision.reason}`
+            );
+
+            // Execute rotation: close current, open new
+            await this.executeSpreadRotation(
+              longPos,
+              shortPos,
+              newOpp,
+              rotationDecision.reason,
+            );
+
+            // Only rotate one position per check cycle
+            return;
+          }
+        }
+      }
+
+      this.logger.debug('No profitable spread rotation opportunities found');
+    } catch (error: any) {
+      this.logger.warn(`Error during spread rotation check: ${error.message}`);
+    }
+  }
+
+  /**
+   * Evaluate if rotating from current position to a new opportunity is profitable
+   */
+  private async evaluateSpreadRotation(
+    currentLongPos: PerpPosition,
+    currentShortPos: PerpPosition,
+    newOpportunity: ArbitrageOpportunity,
+    adapters: Map<ExchangeType, IPerpExchangeAdapter>,
+    exchangeBalances: Map<ExchangeType, number>,
+  ): Promise<{
+    shouldRotate: boolean;
+    reason: string;
+    currentBreakEvenHours: number | null;
+    newBreakEvenHours: number | null;
+    hoursSaved: number | null;
+  }> {
+    try {
+      if (!this.opportunityEvaluator || !this.executionPlanBuilder) {
+        return { shouldRotate: false, reason: 'Missing services', currentBreakEvenHours: null, newBreakEvenHours: null, hoursSaved: null };
+      }
+
+      // Get leverage for new opportunity
+      let leverage = 1;
+      if (this.optimalLeverageService) {
+        try {
+          const leverageRec = await this.optimalLeverageService.calculateOptimalLeverage(
+            newOpportunity.symbol,
+            newOpportunity.longExchange,
+          );
+          leverage = leverageRec.optimalLeverage || 1;
+        } catch {
+          leverage = 1;
+        }
+      }
+
+      // Get balances for the new opportunity's exchanges
+      const longBalance = exchangeBalances.get(newOpportunity.longExchange) || 0;
+      const shortBalance = exchangeBalances.get(newOpportunity.shortExchange!) || 0;
+
+      // Create execution plan for the new opportunity
+      const planResult = await this.executionPlanBuilder.buildPlan(
+        newOpportunity,
+        adapters,
+        { longBalance, shortBalance },
+        this.strategyConfig,
+        newOpportunity.longMarkPrice,
+        newOpportunity.shortMarkPrice,
+        this.maxPositionSizeUsd,
+        leverage,
+      );
+
+      if (planResult.isFailure) {
+        return { shouldRotate: false, reason: `Failed to create plan: ${planResult.error.message}`, currentBreakEvenHours: null, newBreakEvenHours: null, hoursSaved: null };
+      }
+
+      const newPlan = planResult.value;
+
+      // Use the shouldRebalance logic to evaluate
+      const rebalanceResult = await this.opportunityEvaluator.shouldRebalance(
+        currentLongPos, // Use long position as the "current position" for evaluation
+        newOpportunity,
+        newPlan,
+        0, // cumulativeLoss - we'll use the break-even calculation instead
+        adapters,
+      );
+
+      if (rebalanceResult.isFailure) {
+        return { shouldRotate: false, reason: `Evaluation failed: ${rebalanceResult.error.message}`, currentBreakEvenHours: null, newBreakEvenHours: null, hoursSaved: null };
+      }
+
+      const { shouldRebalance, reason, currentBreakEvenHours, newBreakEvenHours } = rebalanceResult.value;
+
+      // Calculate hours saved
+      let hoursSaved: number | null = null;
+      if (currentBreakEvenHours !== null && newBreakEvenHours !== null) {
+        hoursSaved = currentBreakEvenHours - newBreakEvenHours;
+      }
+
+      // Add extra validation: only rotate if we save at least 2 hours
+      const MIN_HOURS_SAVED = parseFloat(
+        this.configService.get<string>('ROTATION_MIN_HOURS_SAVED') || '2'
+      );
+
+      if (shouldRebalance && (hoursSaved === null || hoursSaved < MIN_HOURS_SAVED)) {
+        return {
+          shouldRotate: false,
+          reason: `Time saved (${hoursSaved?.toFixed(1) || 0}h) < minimum (${MIN_HOURS_SAVED}h)`,
+          currentBreakEvenHours,
+          newBreakEvenHours,
+          hoursSaved,
+        };
+      }
+
+      return {
+        shouldRotate: shouldRebalance,
+        reason,
+        currentBreakEvenHours,
+        newBreakEvenHours,
+        hoursSaved,
+      };
+    } catch (error: any) {
+      return { 
+        shouldRotate: false, 
+        reason: `Error: ${error.message}`, 
+        currentBreakEvenHours: null, 
+        newBreakEvenHours: null, 
+        hoursSaved: null 
+      };
+    }
+  }
+
+  /**
+   * Execute a spread rotation: close current position, open new position
+   */
+  private async executeSpreadRotation(
+    currentLongPos: PerpPosition,
+    currentShortPos: PerpPosition,
+    newOpportunity: ArbitrageOpportunity,
+    reason: string,
+  ): Promise<void> {
+    const currentSymbol = this.normalizeSymbol(currentLongPos.symbol);
+    const newSymbol = this.normalizeSymbol(newOpportunity.symbol);
+    
+    // Acquire locks for both symbols
+    const threadId = this.executionLockService?.generateThreadId() || `rotation-${Date.now()}`;
+    
+    if (this.executionLockService) {
+      const currentLocked = this.executionLockService.tryAcquireSymbolLock(currentSymbol, threadId, 'spreadRotationClose');
+      const newLocked = this.executionLockService.tryAcquireSymbolLock(newSymbol, threadId, 'spreadRotationOpen');
+      
+      if (!currentLocked || !newLocked) {
+        this.logger.warn(`Could not acquire locks for spread rotation ${currentSymbol} → ${newSymbol}`);
+        // Release any acquired lock
+        if (currentLocked) this.executionLockService.releaseSymbolLock(currentSymbol, threadId);
+        if (newLocked) this.executionLockService.releaseSymbolLock(newSymbol, threadId);
+        return;
+      }
+    }
+
+    try {
+      this.logger.log(
+        `🔄 Executing spread rotation: ${currentSymbol} → ${newSymbol}\n` +
+        `   Reason: ${reason}`
+      );
+
+      // Step 1: Close current position
+      this.logger.log(`📤 Step 1: Closing current position ${currentSymbol}...`);
+      await this.orchestrator.executeHedgedPartialClose(
+        currentLongPos,
+        currentShortPos,
+        1.0, // Close 100%
+        `Spread Rotation to ${newSymbol}`,
+      );
+
+      // Small delay to let closes settle
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Step 2: Open new position by triggering normal execution
+      this.logger.log(`📥 Step 2: Opening new position ${newSymbol}...`);
+      
+      // Execute strategy for just the new symbol
+      const result = await this.orchestrator.executeArbitrageStrategy(
+        [newOpportunity.symbol],
+        this.minSpread,
+        this.maxPositionSizeUsd,
+      );
+
+      if (result.opportunitiesExecuted > 0) {
+        this.logger.log(
+          `✅ Spread rotation complete: ${currentSymbol} → ${newSymbol}\n` +
+          `   Executed ${result.opportunitiesExecuted} new position(s)`
+        );
+      } else {
+        this.logger.warn(
+          `⚠️ Spread rotation partial: Closed ${currentSymbol} but failed to open ${newSymbol}\n` +
+          `   Errors: ${result.errors?.join(', ') || 'unknown'}`
+        );
+      }
+
+    } catch (error: any) {
+      this.logger.error(`❌ Spread rotation failed: ${error.message}`);
+    } finally {
+      // Release locks
+      if (this.executionLockService) {
+        this.executionLockService.releaseSymbolLock(currentSymbol, threadId);
+        this.executionLockService.releaseSymbolLock(newSymbol, threadId);
       }
     }
   }
