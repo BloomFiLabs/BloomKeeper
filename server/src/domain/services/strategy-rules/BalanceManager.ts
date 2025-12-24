@@ -131,8 +131,8 @@ export class BalanceManager implements IBalanceManager {
         this.configService.get<string>('CENTRAL_WALLET_ADDRESS');
 
       if (!privateKey && !walletAddress) {
-        this.logger.debug(
-          'No PRIVATE_KEY or WALLET_ADDRESS configured, skipping wallet balance check',
+        this.logger.warn(
+          '⚠️ No PRIVATE_KEY or WALLET_ADDRESS configured, skipping wallet balance check',
         );
         return Result.success(0);
       }
@@ -182,8 +182,8 @@ export class BalanceManager implements IBalanceManager {
 
       return Result.success(balanceUsd);
     } catch (error: any) {
-      this.logger.debug(
-        `Failed to get wallet USDC balance on Arbitrum: ${error.message}`,
+      this.logger.warn(
+        `⚠️ Failed to get wallet USDC balance on Arbitrum: ${error.message}`,
       );
       return Result.failure(
         new DomainException(
@@ -196,11 +196,15 @@ export class BalanceManager implements IBalanceManager {
   }
 
   async checkAndDepositWalletFunds(
-    adapters: Map<ExchangeType, IPerpExchangeAdapter>,
-    uniqueExchanges: Set<ExchangeType>,
+    _adapters: Map<ExchangeType, IPerpExchangeAdapter>,
+    _uniqueExchanges: Set<ExchangeType>,
   ): Promise<Result<void, DomainException>> {
+    // AUTO DEPOSITS DISABLED FOR PRODUCTION SAFETY
+    this.logger.warn('🚫 Auto deposits are currently DISABLED');
+    return Result.success(undefined);
+    /* ORIGINAL CODE - uncomment to re-enable:
     if (this.isDepositing) {
-      this.logger.debug('Deposit already in progress, skipping');
+      this.logger.log('⏳ Deposit already in progress, skipping');
       return Result.success(undefined);
     }
 
@@ -208,14 +212,14 @@ export class BalanceManager implements IBalanceManager {
     try {
       const walletBalanceResult = await this.getWalletUsdcBalance();
       if (walletBalanceResult.isFailure) {
-        this.logger.debug(
-          `Failed to get wallet balance: ${walletBalanceResult.error.message}`,
+        this.logger.warn(
+          `⚠️ Failed to get wallet balance: ${walletBalanceResult.error.message}`,
         );
         return Result.failure(walletBalanceResult.error);
       }
       const walletBalance = walletBalanceResult.value;
       if (walletBalance <= 0) {
-        this.logger.debug('No USDC in wallet, skipping deposit');
+        this.logger.log('💰 No USDC in wallet, skipping deposit');
         return Result.success(undefined);
       }
 
@@ -252,7 +256,7 @@ export class BalanceManager implements IBalanceManager {
       // Distribute wallet funds equally to all exchanges (scalable approach)
       const exchangesToDeposit = Array.from(uniqueExchanges);
       if (exchangesToDeposit.length === 0) {
-        this.logger.debug('No exchanges available for deposit');
+        this.logger.warn('⚠️ No exchanges available for deposit');
         return Result.success(undefined);
       }
 
@@ -279,8 +283,8 @@ export class BalanceManager implements IBalanceManager {
         );
         if (depositAmount < 5) {
           // Minimum deposit is usually $5
-          this.logger.debug(
-            `Skipping deposit to ${exchange}: amount too small ($${depositAmount.toFixed(2)})`,
+          this.logger.log(
+            `⏭️ Skipping deposit to ${exchange}: amount too small ($${depositAmount.toFixed(2)})`,
           );
           continue;
         }
@@ -333,6 +337,7 @@ export class BalanceManager implements IBalanceManager {
 
     // Return success even if some deposits failed (errors are logged)
     return Result.success(undefined);
+    */
   }
 
   async attemptRebalanceForOpportunity(

@@ -1198,11 +1198,15 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * Rebalance exchange balances if needed based on opportunities
    */
   private async rebalanceIfNeeded(
-    opportunities: ArbitrageOpportunity[],
+    _opportunities: ArbitrageOpportunity[],
   ): Promise<void> {
+    // REBALANCING DISABLED FOR PRODUCTION SAFETY
+    this.logger.warn('🚫 Exchange rebalancing is currently DISABLED');
+    return;
+    /* ORIGINAL CODE - uncomment to re-enable:
     try {
       const rebalanceResult =
-        await this.keeperService.rebalanceExchangeBalances(opportunities);
+        await this.keeperService.rebalanceExchangeBalances(_opportunities);
       if (rebalanceResult.transfersExecuted > 0) {
         this.logger.log(
           `✅ Rebalanced ${rebalanceResult.transfersExecuted} transfers, $${rebalanceResult.totalTransferred.toFixed(2)} total`,
@@ -1215,6 +1219,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
       );
       // Don't fail the entire execution if rebalancing fails
     }
+    */
   }
 
   /**

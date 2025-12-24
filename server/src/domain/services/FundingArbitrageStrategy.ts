@@ -1064,6 +1064,9 @@ export class FundingArbitrageStrategy {
             }
 
             if (needsRebalancing) {
+              // REBALANCING DISABLED FOR PRODUCTION SAFETY
+              this.logger.warn('🚫 Exchange rebalancing is currently DISABLED');
+              /* ORIGINAL CODE - uncomment to re-enable:
               this.logger.log(
                 `📊 Rebalancing: Total capital $${totalCapital.toFixed(2)}, ` +
                   `Target per exchange: $${targetBalancePerExchange.toFixed(2)}, ` +
@@ -1131,6 +1134,7 @@ export class FundingArbitrageStrategy {
                   `Rebalancing completed with issues: ${rebalanceResult.errors.length} error(s)`,
                 );
               }
+              */
             } else {
               this.logger.debug(
                 'No rebalancing needed - all exchanges have sufficient balance',
