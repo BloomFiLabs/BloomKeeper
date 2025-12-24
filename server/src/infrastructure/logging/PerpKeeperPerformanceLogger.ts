@@ -118,6 +118,9 @@ export class PerpKeeperPerformanceLogger
     exchange: ExchangeType;
   }> = [];
   private totalRealizedPnl: number = 0;
+  private pnlAtReset: number = 0; // New: PnL snapshot at time of reset
+  private totalTradingCosts: number = 0;
+  private costsAtReset: number = 0; // New: Costs snapshot at time of reset
   private maxDrawdown: number = 0;
   private peakValue: number = 0;
 
@@ -131,7 +134,6 @@ export class PerpKeeperPerformanceLogger
 
   // Real funding data (from exchange APIs)
   private realFundingSummary: CombinedFundingSummary | null = null;
-  private totalTradingCosts: number = 0;
 
   constructor(
     @Optional()
@@ -203,9 +205,9 @@ export class PerpKeeperPerformanceLogger
       // Also sync trading costs
       const totalCosts = this.realFundingService.getTotalTradingCosts();
       if (totalCosts > 0) {
-        // If reset was recent, ignore older costs
-        if (this.lastResetTime && (new Date().getTime() - this.lastResetTime.getTime() < 60000)) {
-          this.totalTradingCosts = 0;
+        // If we have a reset time, calculate costs relative to the snapshot
+        if (this.lastResetTime) {
+          this.totalTradingCosts = totalCosts - this.costsAtReset;
         } else {
           this.totalTradingCosts = totalCosts;
         }
@@ -904,11 +906,20 @@ export class PerpKeeperPerformanceLogger
     );
 
     this.startTime = new Date();
-    this.lastResetTime = new Date(); // Update reset time
+    this.lastResetTime = new Date();
+    
+    // Snapshot the current totals so we can subtract them from future reports
+    this.pnlAtReset = this.totalRealizedPnl;
+    this.costsAtReset = this.totalTradingCosts;
+    
+    // For per-exchange metrics, we need to snapshot those too
+    for (const metrics of this.exchangeMetrics.values()) {
+      (metrics as any).fundingAtReset = metrics.totalFundingCaptured;
+      (metrics as any).paidAtReset = metrics.totalFundingPaid;
+    }
+
     this.realizedFundingPayments = [];
     this.fundingSnapshots = [];
-    this.totalRealizedPnl = 0;
-    this.totalTradingCosts = 0;
     this.maxDrawdown = 0;
     this.peakValue = 0;
     this.totalOrdersPlaced = 0;
@@ -917,23 +928,16 @@ export class PerpKeeperPerformanceLogger
     this.totalTradeVolume = 0;
     this.arbitrageOpportunitiesFound = 0;
     this.arbitrageOpportunitiesExecuted = 0;
-    this.realFundingSummary = null; // Clear exchange cache
+    this.realFundingSummary = null;
 
-    // Reset per-exchange metrics
-    for (const exchangeType of Array.from(this.exchangeMetrics.keys())) {
-      this.exchangeMetrics.set(exchangeType, {
-        exchangeType,
-        totalFundingCaptured: 0,
-        totalFundingPaid: 0,
-        netFundingCaptured: 0,
-        positionsCount: 0,
-        totalPositionValue: 0,
-        totalUnrealizedPnl: 0,
-        ordersExecuted: 0,
-        ordersFilled: 0,
-        ordersFailed: 0,
-        lastUpdateTime: new Date(),
-      });
+    // Reset current displayed metrics
+    for (const metrics of this.exchangeMetrics.values()) {
+      metrics.totalFundingCaptured = 0;
+      metrics.totalFundingPaid = 0;
+      metrics.netFundingCaptured = 0;
+      metrics.ordersExecuted = 0;
+      metrics.ordersFilled = 0;
+      metrics.ordersFailed = 0;
     }
 
     // Force diagnostics update
