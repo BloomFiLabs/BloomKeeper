@@ -165,6 +165,29 @@ const ORDER_ACTIVITY = {
   modifiesPerHour: 30, // Estimated order modifications per hour
 };
 
+// ==================== MAKER EFFICIENCY SERVICE CONFIG ====================
+// Based on server/src/domain/services/strategy-rules/MakerEfficiencyService.ts
+
+const MAKER_EFFICIENCY = {
+  checkIntervalMs: 5000, // @Interval(5000) - runs every 5s
+  
+  // Per-exchange intervals for repricing (from processExchangeEfficiency)
+  hyperliquidBaseIntervalMs: 5000, // 5s between order checks
+  lighterBaseIntervalMs: 15000,     // 15s between order checks
+  
+  // How many orders typically waiting fill at any time
+  avgWaitingOrdersPerExchange: 2, // Usually have 1-2 orders waiting on each side
+  
+  // What % of order checks actually result in a reprice?
+  repriceRate: 0.3, // 30% of checks find price needs updating
+  
+  // API calls per reprice
+  // modifyOrder: 1 call (if supported)
+  // cancel+place: 2 calls (fallback)
+  // Order book check: 0 calls (uses WebSocket!)
+  callsPerReprice: 1, // modifyOrder is used
+};
+
 // ==================== SIMULATION ENGINE ====================
 
 interface SimulationResult {
@@ -265,6 +288,45 @@ function simulateRateLimits(
       const timestamp = (i / modifiesInPeriod) * durationMs;
       hlCalls.push({ task: 'orderModify', operation: 'modifyOrder', weight: WEIGHTS.HYPERLIQUID.EXCHANGE, timestamp });
       lighterCalls.push({ task: 'orderModify', operation: 'modifyOrder', weight: WEIGHTS.LIGHTER.SEND_TX, timestamp });
+    }
+    
+    // ==================== MAKER EFFICIENCY SERVICE SIMULATION ====================
+    // This service reprices orders to stay best on the book
+    // Key insight: Order book checks use WebSocket (0 API cost!)
+    // Only the actual modifyOrder() calls consume API weight
+    
+    // Calculate how many reprices would happen
+    // Hyperliquid: checks every 5s, 2 orders avg, 30% actually reprice
+    const hlCheckIntervalMs = MAKER_EFFICIENCY.hyperliquidBaseIntervalMs;
+    const hlChecksPerOrder = Math.floor(durationMs / hlCheckIntervalMs);
+    const hlTotalChecks = hlChecksPerOrder * MAKER_EFFICIENCY.avgWaitingOrdersPerExchange;
+    const hlReprices = Math.floor(hlTotalChecks * MAKER_EFFICIENCY.repriceRate);
+    
+    // Lighter: checks every 15s, 2 orders avg, 30% actually reprice
+    const lighterCheckIntervalMs = MAKER_EFFICIENCY.lighterBaseIntervalMs;
+    const lighterChecksPerOrder = Math.floor(durationMs / lighterCheckIntervalMs);
+    const lighterTotalChecks = lighterChecksPerOrder * MAKER_EFFICIENCY.avgWaitingOrdersPerExchange;
+    const lighterReprices = Math.floor(lighterTotalChecks * MAKER_EFFICIENCY.repriceRate);
+    
+    // Add the reprice calls
+    for (let i = 0; i < hlReprices; i++) {
+      const timestamp = (i / hlReprices) * durationMs;
+      hlCalls.push({ 
+        task: 'MakerEfficiencyService', 
+        operation: 'modifyOrder (reprice)', 
+        weight: WEIGHTS.HYPERLIQUID.EXCHANGE, 
+        timestamp 
+      });
+    }
+    
+    for (let i = 0; i < lighterReprices; i++) {
+      const timestamp = (i / lighterReprices) * durationMs;
+      lighterCalls.push({ 
+        task: 'MakerEfficiencyService', 
+        operation: 'modifyOrder (reprice)', 
+        weight: WEIGHTS.LIGHTER.SEND_TX, 
+        timestamp 
+      });
     }
   }
   
@@ -369,6 +431,23 @@ function runSimulation() {
   const heavyTrading = simulateRateLimits(60, true, true, true);
   printResult(heavyTrading.hyperliquid);
   printResult(heavyTrading.lighter);
+  
+  // Test 5: AGGRESSIVE MAKER REPRICING scenario
+  // Simulates having 4 orders waiting and 50% reprice rate (volatile market)
+  console.log('\n📊 SCENARIO 5: AGGRESSIVE Maker Repricing (Stress Test)');
+  console.log('-'.repeat(60));
+  ORDER_ACTIVITY.ordersPerHour = 20;
+  ORDER_ACTIVITY.cancelsPerHour = 10;
+  ORDER_ACTIVITY.modifiesPerHour = 30;
+  MAKER_EFFICIENCY.avgWaitingOrdersPerExchange = 4; // 4 orders per side
+  MAKER_EFFICIENCY.repriceRate = 0.5; // 50% of checks reprice
+  const aggressiveReprice = simulateRateLimits(60, true, true, true);
+  printResult(aggressiveReprice.hyperliquid);
+  printResult(aggressiveReprice.lighter);
+  
+  // Reset to defaults
+  MAKER_EFFICIENCY.avgWaitingOrdersPerExchange = 2;
+  MAKER_EFFICIENCY.repriceRate = 0.3;
   
   // Summary
   console.log('\n' + '='.repeat(80));
