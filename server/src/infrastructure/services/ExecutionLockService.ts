@@ -68,11 +68,29 @@ export class ExecutionLockService {
   // Timeout for stale locks (2 minutes - reduced from 5 to prevent long blocking)
   private readonly LOCK_TIMEOUT_MS = 2 * 60 * 1000;
 
+  // Shorter timeout for symbol locks (30 seconds - individual trades should be fast)
+  private readonly SYMBOL_LOCK_TIMEOUT_MS = 30 * 1000;
+
   // Timeout for stale orders (10 minutes)
   private readonly ORDER_TIMEOUT_MS = 10 * 60 * 1000;
 
   // Counter for generating unique thread IDs
   private threadCounter = 0;
+
+  // Priority levels for operations (higher = more important)
+  private readonly PRIORITY_SAFETY = 100;
+  private readonly PRIORITY_REBALANCE = 50;
+  private readonly PRIORITY_NORMAL = 10;
+  
+  // Queue for operations waiting for global lock (priority queue)
+  private readonly lockQueue: Array<{
+    threadId: string;
+    priority: number;
+    operation: string;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+  }> = [];
 
   /**
    * Generate a unique thread ID for tracking
@@ -135,6 +153,215 @@ export class ExecutionLockService {
    */
   isGlobalLockHeld(): boolean {
     return this.globalExecutionLock;
+  }
+
+  /**
+   * Get global lock info for diagnostics
+   */
+  getGlobalLockInfo(): {
+    held: boolean;
+    holder: string | null;
+    durationMs: number | null;
+    queueLength: number;
+  } {
+    return {
+      held: this.globalExecutionLock,
+      holder: this.globalLockHolder,
+      durationMs: this.globalLockStartedAt 
+        ? Date.now() - this.globalLockStartedAt.getTime() 
+        : null,
+      queueLength: this.lockQueue.length,
+    };
+  }
+
+  /**
+   * Acquire global lock with priority queue and timeout
+   * Use this for operations that MUST have global exclusivity (e.g., portfolio rebalancing)
+   * 
+   * @param threadId Unique thread identifier
+   * @param operation Description of operation
+   * @param priority Priority level (higher = more important, gets lock first)
+   * @param timeoutMs Maximum time to wait for lock
+   * @returns Promise that resolves when lock is acquired, or rejects on timeout
+   */
+  async acquireGlobalLockWithPriority(
+    threadId: string,
+    operation: string,
+    priority: number = this.PRIORITY_NORMAL,
+    timeoutMs: number = 30000,
+  ): Promise<void> {
+    // Check for stale lock first
+    this.checkAndReleaseStaleGlobalLock();
+
+    // Try immediate acquisition
+    if (!this.globalExecutionLock) {
+      this.globalExecutionLock = true;
+      this.globalLockHolder = threadId;
+      this.globalLockStartedAt = new Date();
+      this.logger.debug(
+        `🔒 Global lock acquired immediately by ${threadId} for ${operation} (priority: ${priority})`
+      );
+      return;
+    }
+
+    // Queue the request
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        // Remove from queue on timeout
+        const idx = this.lockQueue.findIndex(q => q.threadId === threadId);
+        if (idx !== -1) {
+          this.lockQueue.splice(idx, 1);
+        }
+        reject(new Error(`Timeout waiting for global lock (${timeoutMs}ms) for ${operation}`));
+      }, timeoutMs);
+
+      this.lockQueue.push({
+        threadId,
+        priority,
+        operation,
+        resolve: () => {
+          clearTimeout(timeout);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+        timeout,
+      });
+
+      // Sort by priority (highest first)
+      this.lockQueue.sort((a, b) => b.priority - a.priority);
+
+      this.logger.debug(
+        `⏳ ${threadId} queued for global lock (priority: ${priority}, position: ${
+          this.lockQueue.findIndex(q => q.threadId === threadId) + 1
+        }/${this.lockQueue.length})`
+      );
+    });
+  }
+
+  /**
+   * Release global lock and grant to next in queue
+   */
+  releaseGlobalLockAndGrantNext(threadId: string): void {
+    if (this.globalLockHolder !== threadId) {
+      this.logger.warn(
+        `⚠️ Thread ${threadId} tried to release global lock held by ${this.globalLockHolder}`
+      );
+      return;
+    }
+
+    // Release current lock
+    this.globalExecutionLock = false;
+    this.globalLockHolder = null;
+    this.globalLockStartedAt = null;
+
+    // Grant to next in queue
+    if (this.lockQueue.length > 0) {
+      const next = this.lockQueue.shift()!;
+      this.globalExecutionLock = true;
+      this.globalLockHolder = next.threadId;
+      this.globalLockStartedAt = new Date();
+      
+      this.logger.debug(
+        `🔒 Global lock transferred to ${next.threadId} for ${next.operation} ` +
+        `(priority: ${next.priority}, ${this.lockQueue.length} still waiting)`
+      );
+      
+      next.resolve();
+    } else {
+      this.logger.debug(`🔓 Global lock released by ${threadId} (no queue)`);
+    }
+  }
+
+  /**
+   * Check and release stale global lock
+   */
+  private checkAndReleaseStaleGlobalLock(): void {
+    if (this.globalExecutionLock && this.globalLockStartedAt) {
+      const lockAge = Date.now() - this.globalLockStartedAt.getTime();
+      if (lockAge > this.LOCK_TIMEOUT_MS) {
+        this.logger.warn(
+          `🔓 Force-releasing stale global lock held by ${this.globalLockHolder} for ${Math.round(lockAge / 1000)}s`
+        );
+        this.releaseGlobalLockAndGrantNext(this.globalLockHolder!);
+      }
+    }
+  }
+
+  /**
+   * Try to acquire ONLY symbol-level lock (no global lock required)
+   * Use this for individual trades that don't need global exclusivity
+   * 
+   * @param symbol Trading symbol
+   * @param threadId Thread identifier
+   * @param operation Operation description
+   * @returns true if acquired, false if symbol already locked
+   */
+  tryAcquireSymbolOnlyLock(
+    symbol: string,
+    threadId: string,
+    operation: string,
+  ): boolean {
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+
+    // Check for stale symbol lock (using shorter timeout)
+    const existingLock = this.executingSymbols.get(normalizedSymbol);
+    if (existingLock) {
+      const lockAge = Date.now() - existingLock.startedAt.getTime();
+      if (lockAge > this.SYMBOL_LOCK_TIMEOUT_MS) {
+        this.logger.warn(
+          `🔓 Releasing stale symbol lock for ${normalizedSymbol} held by ${existingLock.threadId} ` +
+          `for ${Math.round(lockAge / 1000)}s (> ${this.SYMBOL_LOCK_TIMEOUT_MS / 1000}s threshold)`
+        );
+        this.executingSymbols.delete(normalizedSymbol);
+      } else {
+        return false; // Symbol is locked
+      }
+    }
+
+    // Acquire symbol lock
+    this.executingSymbols.set(normalizedSymbol, {
+      startedAt: new Date(),
+      threadId,
+      operation,
+    });
+
+    this.logger.debug(
+      `🔒 Symbol-only lock acquired for ${normalizedSymbol} by ${threadId} (${operation})`
+    );
+    return true;
+  }
+
+  /**
+   * Execute a function with automatic symbol lock management
+   * This is the RECOMMENDED way to execute symbol-specific operations
+   */
+  async withSymbolLock<T>(
+    symbol: string,
+    operation: string,
+    fn: () => Promise<T>,
+    timeoutMs: number = 30000,
+  ): Promise<T> {
+    const threadId = this.generateThreadId();
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+
+    // Try to acquire lock with retry
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      if (this.tryAcquireSymbolOnlyLock(normalizedSymbol, threadId, operation)) {
+        try {
+          return await fn();
+        } finally {
+          this.releaseSymbolLock(normalizedSymbol, threadId);
+        }
+      }
+      // Wait a bit before retry
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    throw new Error(`Timeout acquiring symbol lock for ${normalizedSymbol} (${timeoutMs}ms)`);
   }
 
   /**

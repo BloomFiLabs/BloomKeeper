@@ -189,7 +189,7 @@ export class PerpKeeperPerformanceLogger
         if (this.lastResetTime) {
           this.totalTradingCosts = totalCosts - this.costsAtReset;
         } else {
-          this.totalTradingCosts = totalCosts;
+        this.totalTradingCosts = totalCosts;
         }
       }
 
@@ -812,7 +812,7 @@ export class PerpKeeperPerformanceLogger
       const positionReturn = snapshot.positionValue * rateToUse;
       expectedEarningsNextPeriod += positionReturn;
     }
-
+    
     // Calculate split APYs (Funding vs Price PnL)
     let fundingAPY = 0;
     let pricePnlAPY = 0;
