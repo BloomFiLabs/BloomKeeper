@@ -6,6 +6,7 @@ export enum ExchangeType {
   LIGHTER = 'LIGHTER',
   HYPERLIQUID = 'HYPERLIQUID',
   EXTENDED = 'EXTENDED',
+  MOCK = 'MOCK',
 }
 
 /**

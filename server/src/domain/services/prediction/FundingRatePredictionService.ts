@@ -287,10 +287,19 @@ export class FundingRatePredictionService
   ): HistoricalRatePoint[] {
     const data = this.historicalService.getHistoricalData(symbol, exchange);
 
+    // Get optimal lookback window if calibrated
+    const lookbackHours = this.ensemblePredictor.getLookbackHours(
+      symbol,
+      String(exchange),
+    );
+
+    // Filter by lookback window
+    const cutoffTime = Date.now() - lookbackHours * 60 * 60 * 1000;
+
     // Sort by timestamp descending (most recent first)
     // Filter out any NaN or invalid rates to prevent NaN propagation in predictions
     return data
-      .filter((d) => isFinite(d.rate)) // Remove NaN, Infinity, -Infinity
+      .filter((d) => isFinite(d.rate) && d.timestamp.getTime() >= cutoffTime)
       .map((d) => ({
         rate: d.rate,
         timestamp: d.timestamp,

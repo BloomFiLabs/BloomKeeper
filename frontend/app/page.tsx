@@ -132,7 +132,7 @@ export default function Dashboard() {
         </header>
 
         {/* Top Metrics */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <MetricCard 
             title="Realized APY" 
             value={`${apy.realized.toFixed(2)}%`}
@@ -150,7 +150,7 @@ export default function Dashboard() {
             value={`$${(apy.expectedEarningsNextPeriod || 0).toFixed(4)}`}
             subValue="Predicted from active positions"
             trend={apy.expectedEarningsNextPeriod >= 0 ? 'up' : 'down'}
-            icon={<Coins className="w-4 h-4 text-indigo-400" />}
+            icon={<Coins className="w-4 h-4 text-amber-400" />}
           />
           <MetricCard 
             title="Net Funding" 
@@ -159,9 +159,6 @@ export default function Dashboard() {
             trend={apy.netFunding >= 0 ? 'up' : 'down'}
             icon={<Coins className="w-4 h-4 text-emerald-400" />}
           />
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <MetricCard 
             title="Realized PnL" 
             value={`$${(apy.realizedPnl || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
@@ -179,6 +176,19 @@ export default function Dashboard() {
             value={`$${rewards.accruedProfits.toFixed(2)}`}
             subValue={`Total Harvested: $${rewards.totalHarvested.toFixed(2)}`}
             icon={<Coins className="w-4 h-4 text-amber-400" />}
+          />
+          <MetricCard 
+            title="Total Volume" 
+            value={`$${(apy.totalVolume || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            subValue="Cumulative trade volume"
+            icon={<History className="w-4 h-4 text-indigo-400" />}
+          />
+          <MetricCard 
+            title="Max Drawdown" 
+            value={`${(apy.maxDrawdown || 0).toFixed(2)}%`}
+            subValue="Peak-to-trough decline"
+            trend="down"
+            icon={<ShieldAlert className="w-4 h-4 text-red-400" />}
           />
         </div>
 
@@ -389,10 +399,9 @@ function EarningsChart({ data }: { data: any[] }) {
       {
         label: 'Expected Earnings',
         data: data.map(d => d.expected),
-        borderColor: '#6366f1', // indigo-500
+        borderColor: '#f59e0b', // amber-500 (yellow)
         backgroundColor: 'transparent',
         borderWidth: 2,
-        borderDash: [5, 5],
         tension: 0.4,
         fill: false,
         pointRadius: 0,

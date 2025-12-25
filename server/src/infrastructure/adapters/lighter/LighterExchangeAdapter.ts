@@ -239,20 +239,67 @@ export class LighterExchangeAdapter
   }
 
   /**
-   * Explicitly get a fresh nonce from the SignerClient's internal manager
-   * This is called before every transaction to ensure we're in sync
+   * Explicitly get a fresh nonce from the Lighter API
+   * This is called before every transaction to ensure we're in sync with the sequencer
    */
   private async getFreshNonce(): Promise<number | null> {
-    if (!this.signerClient) return null;
     try {
-      // Access the private getNextNonce method via any
-      const nonce = await (this.signerClient as any).getNextNonce();
-      if (nonce !== null) {
-        this.lastNonceSyncTime = Date.now();
+      const response = await this.callApi(this.WEIGHT_INFO, () => axios.get(
+        `${this.config.baseUrl}/api/v1/nextNonce`,
+        {
+          params: {
+            account_index: this.config.accountIndex,
+            api_key_index: this.config.apiKeyIndex,
+          },
+          timeout: 10000,
+        },
+      ));
+
+      let nonce: number | null = null;
+      if (response.data && typeof response.data === 'object') {
+        if (response.data.nonce !== undefined) {
+          nonce = Number(response.data.nonce);
+        }
+      } else if (typeof response.data === 'number') {
+        nonce = response.data;
       }
-      return nonce;
+
+      if (nonce !== null && !isNaN(nonce)) {
+        this.lastNonceSyncTime = Date.now();
+        this.logger.debug(`📡 Fetched fresh nonce from API: ${nonce}`);
+        
+        // Also try to update the SDK's internal counter if possible to keep it in sync
+        if (this.signerClient) {
+          try {
+            // Some versions of the SDK allow syncing the nonce manager
+            if ((this.signerClient as any).nonceManager?.setNonce) {
+              (this.signerClient as any).nonceManager.setNonce(nonce);
+            }
+          } catch (e) {
+            // Non-critical
+          }
+        }
+        
+        return nonce;
+      }
+      
+      // Fallback to SDK method if API fails
+      if (this.signerClient) {
+        const sdkNonce = await (this.signerClient as any).getNextNonce();
+        return (typeof sdkNonce === 'object' && sdkNonce !== null) ? sdkNonce.nonce : sdkNonce;
+      }
+      
+      return null;
     } catch (e: any) {
-      this.logger.warn(`Failed to get fresh nonce: ${e.message}`);
+      this.logger.warn(`Failed to get fresh nonce from API: ${e.message}. Falling back to SDK.`);
+      if (this.signerClient) {
+        try {
+          const sdkNonce = await (this.signerClient as any).getNextNonce();
+          return (typeof sdkNonce === 'object' && sdkNonce !== null) ? sdkNonce.nonce : sdkNonce;
+        } catch (sdkError) {
+          return null;
+        }
+      }
       return null;
     }
   }
@@ -327,11 +374,18 @@ export class LighterExchangeAdapter
 
   private isNonceError(error: any): boolean {
     const errorMsg = (error?.message || '').toLowerCase();
+    const errorResponse = error?.response?.data;
+    const responseMsg = (typeof errorResponse === 'string' ? errorResponse : JSON.stringify(errorResponse || '')).toLowerCase();
+    
     return (
       errorMsg.includes('invalid nonce') ||
       errorMsg.includes('nonce') ||
       errorMsg.includes('sequence index') ||
-      errorMsg.includes('out of sync')
+      errorMsg.includes('out of sync') ||
+      responseMsg.includes('invalid nonce') ||
+      responseMsg.includes('nonce') ||
+      responseMsg.includes('sequence index') ||
+      responseMsg.includes('out of sync')
     );
   }
 
@@ -1805,13 +1859,21 @@ export class LighterExchangeAdapter
     }
   }
 
-  async cancelOrder(orderId: string, symbol?: string): Promise<boolean> {
+  async cancelOrder(orderId: string, symbol?: string, maxRetries: number = 3): Promise<boolean> {
     const releaseMutex = await this.acquireOrderMutex();
     try {
       await this.ensureInitialized();
 
-      // Fetch a fresh nonce
-      const nonce = await this.getFreshNonce();
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          if (attempt > 0) {
+            const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+            this.logger.warn(`Retrying cancelOrder for ${symbol} after ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+
+          // Fetch a fresh nonce
+          const nonce = await this.getFreshNonce();
 
       // CRITICAL FIX: Lighter's cancelOrder requires { marketIndex, orderIndex }
       // NOT the transaction hash! We need to find the actual order from open orders.
@@ -1997,20 +2059,49 @@ export class LighterExchangeAdapter
         return true;
       }
     } catch (error: any) {
-      this.logger.error(`Failed to cancel order: ${error.message}`);
-      throw new ExchangeError(
-        `Failed to cancel order: ${error.message}`,
-        ExchangeType.LIGHTER,
-        undefined,
-        error,
-      );
+      if (this.isNonceError(error) && attempt < maxRetries - 1) {
+        this.consecutiveNonceErrors++;
+        this.logger.warn(`⚠️ Nonce error cancelling order: ${error.message}. Retrying...`);
+        
+        let refreshed = false;
+        if (this.consecutiveNonceErrors < 3) {
+          refreshed = await this.tryLightweightNonceRefresh();
+        }
+        if (!refreshed) {
+          await this.resetSignerClient();
+        }
+        continue;
+      }
+      throw error;
     }
   }
+  return false;
+} catch (error: any) {
+  this.logger.error(`Failed to cancel order: ${error.message}`);
+  throw new ExchangeError(
+    `Failed to cancel order: ${error.message}`,
+    ExchangeType.LIGHTER,
+    undefined,
+    error,
+  );
+} finally {
+  // Always release the mutex when done
+  releaseMutex();
+}
+}
 
-  async cancelAllOrders(symbol: string): Promise<number> {
-    const releaseMutex = await this.acquireOrderMutex();
+async cancelAllOrders(symbol: string, maxRetries: number = 3): Promise<number> {
+const releaseMutex = await this.acquireOrderMutex();
+try {
+  await this.ensureInitialized();
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      await this.ensureInitialized();
+      if (attempt > 0) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+        this.logger.warn(`Retrying cancelAllOrders for ${symbol} after ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
 
       // Fetch a fresh nonce
       const nonce = await this.getFreshNonce();
@@ -2092,18 +2183,36 @@ export class LighterExchangeAdapter
 
       return cancelledCount;
     } catch (error: any) {
-      this.logger.error(`Failed to cancel all orders: ${error.message}`);
-      throw new ExchangeError(
-        `Failed to cancel all orders: ${error.message}`,
-        ExchangeType.LIGHTER,
-        undefined,
-        error,
-      );
-    } finally {
-      // Always release the mutex
-      releaseMutex();
+      if (this.isNonceError(error) && attempt < maxRetries - 1) {
+        this.consecutiveNonceErrors++;
+        this.logger.warn(`⚠️ Nonce error cancelling all orders for ${symbol}: ${error.message}. Retrying...`);
+        
+        let refreshed = false;
+        if (this.consecutiveNonceErrors < 3) {
+          refreshed = await this.tryLightweightNonceRefresh();
+        }
+        if (!refreshed) {
+          await this.resetSignerClient();
+        }
+        continue;
+      }
+      throw error;
     }
   }
+  return 0;
+} catch (error: any) {
+  this.logger.error(`Failed to cancel all orders: ${error.message}`);
+  throw new ExchangeError(
+    `Failed to cancel all orders: ${error.message}`,
+    ExchangeType.LIGHTER,
+    undefined,
+    error,
+  );
+} finally {
+  // Always release the mutex
+  releaseMutex();
+}
+}
 
   /**
    * Get all open orders for this account

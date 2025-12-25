@@ -874,6 +874,7 @@ export class PerpKeeperPerformanceLogger
       totalOrdersPlaced: this.totalOrdersPlaced,
       totalOrdersFilled: this.totalOrdersFilled,
       totalOrdersFailed: this.totalOrdersFailed,
+      totalTradeVolume: this.totalTradeVolume,
       arbitrageOpportunitiesFound: this.arbitrageOpportunitiesFound,
       arbitrageOpportunitiesExecuted: this.arbitrageOpportunitiesExecuted,
       estimatedAPY,

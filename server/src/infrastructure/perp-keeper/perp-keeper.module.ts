@@ -94,6 +94,7 @@ import { OpenInterestPredictor } from '../../domain/services/prediction/predicto
 import { KalmanFilterEstimator } from '../../domain/services/prediction/filters/KalmanFilterEstimator';
 import { RegimeDetector } from '../../domain/services/prediction/filters/RegimeDetector';
 import { PredictionBacktester } from '../../domain/services/prediction/PredictionBacktester';
+import { PredictionAutoCalibrator } from '../../domain/services/prediction/PredictionAutoCalibrator';
 
 /**
  * PerpKeeperModule - Module for perpetual keeper functionality
@@ -654,6 +655,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     // Application services
     PerpKeeperService,
     PerpKeeperScheduler,
+    PredictionAutoCalibrator,
 
     // Real funding payments service
     RealFundingPaymentsService,
@@ -843,6 +845,7 @@ import { PredictionBacktester } from '../../domain/services/prediction/Predictio
     KalmanFilterEstimator,
     RegimeDetector,
     PredictionBacktester,
+    PredictionAutoCalibrator,
     // TWAP services
     TWAPEngine,
     TWAPOptimizer,

@@ -16,3 +16,4 @@ export { RegimeDetector } from './filters/RegimeDetector';
 // Backtesting
 export { PredictionBacktester } from './PredictionBacktester';
 export type { BacktestResults } from './PredictionBacktester';
+export { PredictionAutoCalibrator } from './PredictionAutoCalibrator';

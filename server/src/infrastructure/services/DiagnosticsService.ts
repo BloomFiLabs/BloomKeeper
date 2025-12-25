@@ -299,6 +299,8 @@ export interface DiagnosticsResponse {
     pricePnl?: number;
     realizedPnl?: number; // NEW: Actual USD PnL
     netFunding?: number; // NEW: Actual USD Funding captured
+    totalVolume?: number; // NEW: Total trade volume
+    maxDrawdown?: number; // NEW: Maximum drawdown
     expectedEarningsNextPeriod?: number; // NEW: Predicted earnings for next 1h
     historicalEarnings?: Array<{
       timestamp: Date;
@@ -1257,6 +1259,8 @@ export class DiagnosticsService {
     pricePnl?: number;
     realizedPnl?: number;
     netFunding?: number;
+    totalVolume?: number;
+    maxDrawdown?: number;
     expectedEarningsNextPeriod?: number;
     historicalEarnings?: Array<{
       timestamp: Date;

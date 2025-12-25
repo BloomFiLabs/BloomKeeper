@@ -76,7 +76,13 @@ export class EnsemblePredictor {
   private readonly predictors: IFundingRatePredictor[];
 
   /** Weight configuration */
-  private readonly weightConfig: EnsembleWeightConfig;
+  private weightConfig: EnsembleWeightConfig;
+
+  /** Optimal lookback hours per symbol-exchange (default: 168) */
+  private readonly lookbackOverrides: Map<string, number> = new Map();
+
+  /** Individual predictor weights per symbol-exchange (if calibrated) */
+  private readonly weightOverrides: Map<string, Record<string, number>> = new Map();
 
   /** Error tracking by symbol-exchange-predictor key */
   private readonly errorStates: Map<string, PredictorErrorState> = new Map();
@@ -93,6 +99,37 @@ export class EnsemblePredictor {
       this.openInterestPredictor,
     ];
     this.weightConfig = DEFAULT_WEIGHT_CONFIG;
+  }
+
+  /**
+   * Set optimal lookback hours for a specific symbol/exchange
+   */
+  setLookbackOverride(symbol: string, exchange: string, hours: number): void {
+    const key = `${symbol}_${exchange}`;
+    this.lookbackOverrides.set(key, hours);
+    this.logger.debug(`Set lookback override for ${key}: ${hours}h`);
+  }
+
+  /**
+   * Get lookback hours for a specific symbol/exchange
+   */
+  getLookbackHours(symbol: string, exchange: string): number {
+    return this.lookbackOverrides.get(`${symbol}_${exchange}`) ?? 168;
+  }
+
+  /**
+   * Set optimal weights for a specific symbol/exchange
+   */
+  setWeightOverride(
+    symbol: string,
+    exchange: string,
+    weights: Record<string, number>,
+  ): void {
+    const key = `${symbol}_${exchange}`;
+    this.weightOverrides.set(key, weights);
+    this.logger.debug(
+      `Set weight overrides for ${key}: ${JSON.stringify(weights)}`,
+    );
   }
 
   /**
@@ -192,14 +229,22 @@ export class EnsemblePredictor {
     const weights: number[] = [];
     let totalWeight = 0;
 
-    for (const { predictor, prediction } of predictions) {
-      // Start with base weight
-      let weight = this.weightConfig.baseWeights[predictor.name] ?? 0.33;
+    const key = `${context.symbol}_${context.exchange}`;
+    const overrides = this.weightOverrides.get(key);
 
-      // Apply regime adjustment
-      const regimeAdj =
-        this.weightConfig.regimeAdjustments[regime]?.[predictor.name] ?? 0;
-      weight += regimeAdj;
+    for (const { predictor, prediction } of predictions) {
+      // Start with base weight or override
+      let weight =
+        overrides?.[predictor.name] ??
+        this.weightConfig.baseWeights[predictor.name] ??
+        0.33;
+
+      // Apply regime adjustment only if not using specific weight overrides
+      if (!overrides) {
+        const regimeAdj =
+          this.weightConfig.regimeAdjustments[regime]?.[predictor.name] ?? 0;
+        weight += regimeAdj;
+      }
 
       // Apply confidence scaling
       weight *= prediction.confidence;

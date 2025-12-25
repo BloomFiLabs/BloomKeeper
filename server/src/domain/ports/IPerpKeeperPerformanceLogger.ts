@@ -42,6 +42,7 @@ export interface StrategyPerformanceMetrics {
   totalOrdersPlaced: number;
   totalOrdersFilled: number;
   totalOrdersFailed: number;
+  totalTradeVolume: number; // Total trade volume in USD
   arbitrageOpportunitiesFound: number;
   arbitrageOpportunitiesExecuted: number;
 
