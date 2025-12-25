@@ -1354,17 +1354,37 @@ export class LighterExchangeAdapter
         // Margin mode errors are not retryable - account configuration issue
         if (isMarginModeError) {
           this.logger.error(
-            `❌ Lighter margin mode error for ${request.symbol}: ${errorMsg}. ` +
-              `This indicates the account may need margin mode configured. ` +
+            `❌ MARGIN MODE ERROR on ${request.symbol}: ${errorMsg}. ` +
+              `Order details: ${request.side} ${request.size} @ ${request.price} (type: ${request.type}). ` +
+              `This indicates the account may need margin mode configured for this market. ` +
               `Please check your Lighter account settings or contact support.`,
           );
           this.recordError(
             'LIGHTER_MARGIN_MODE_ERROR',
-            errorMsg,
+            `${request.symbol}: ${errorMsg}`,
             request.symbol,
+            {
+              orderSide: request.side,
+              orderSize: request.size,
+              orderPrice: request.price,
+              orderType: request.type,
+              reduceOnly: request.reduceOnly,
+              rawError: errorMsg,
+              timestamp: new Date().toISOString(),
+            },
           );
+          
+          // Track this symbol as having margin mode issues
+          if (this.diagnosticsService) {
+            this.diagnosticsService.recordMarginModeError?.(
+              request.symbol,
+              ExchangeType.LIGHTER,
+              errorMsg,
+            );
+          }
+          
           throw new ExchangeError(
-            `Invalid margin mode: Account may need margin mode configured. ${errorMsg}`,
+            `Invalid margin mode for ${request.symbol}: Account may need margin mode configured. ${errorMsg}`,
             ExchangeType.LIGHTER,
             undefined,
             error,

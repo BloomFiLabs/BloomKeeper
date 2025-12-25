@@ -633,6 +633,16 @@ export interface DiagnosticsResponse {
       status: 'healthy' | 'degraded' | 'blacklisted';
     }>;
   };
+
+  /** Symbols with margin mode configuration issues */
+  marginModeIssues?: Array<{
+    symbol: string;
+    exchange: string;
+    errorCount: number;
+    firstSeen: string;
+    lastSeen: string;
+    lastError: string;
+  }>;
 }
 
 /**
@@ -658,6 +668,16 @@ export class DiagnosticsService {
   // Recent errors ring buffer (last 20)
   private readonly MAX_RECENT_ERRORS = 20;
   private readonly recentErrors: ErrorEvent[] = [];
+  
+  // Margin mode errors by symbol (tracks which symbols have margin issues)
+  private readonly marginModeErrors: Map<string, {
+    symbol: string;
+    exchange: ExchangeType;
+    count: number;
+    firstSeen: Date;
+    lastSeen: Date;
+    lastError: string;
+  }> = new Map();
   
   // APY data (set externally by PerformanceLogger)
   private apyData: {
@@ -870,6 +890,72 @@ export class DiagnosticsService {
       `Recorded error with context: ${type} - ${message} ` +
       `(snapshot: ${JSON.stringify(snapshot).substring(0, 200)}...)`,
     );
+  }
+
+  /**
+   * Record a margin mode error for a specific symbol
+   * This tracks which symbols consistently fail with margin mode issues
+   */
+  recordMarginModeError(
+    symbol: string,
+    exchange: ExchangeType,
+    errorMessage: string,
+  ): void {
+    const key = `${exchange}-${symbol}`;
+    const existing = this.marginModeErrors.get(key);
+    
+    if (existing) {
+      existing.count++;
+      existing.lastSeen = new Date();
+      existing.lastError = errorMessage;
+    } else {
+      this.marginModeErrors.set(key, {
+        symbol,
+        exchange,
+        count: 1,
+        firstSeen: new Date(),
+        lastSeen: new Date(),
+        lastError: errorMessage,
+      });
+    }
+    
+    this.logger.warn(
+      `📋 MARGIN MODE ERROR tracked for ${symbol} on ${exchange} ` +
+      `(${existing ? existing.count + 1 : 1} occurrences). ` +
+      `This symbol may need margin mode configured on ${exchange}.`
+    );
+  }
+
+  /**
+   * Get all symbols with margin mode errors
+   */
+  getMarginModeErrorSymbols(): Array<{
+    symbol: string;
+    exchange: ExchangeType;
+    count: number;
+    firstSeen: Date;
+    lastSeen: Date;
+    lastError: string;
+  }> {
+    return Array.from(this.marginModeErrors.values())
+      .sort((a, b) => b.count - a.count); // Most frequent first
+  }
+
+  /**
+   * Check if a symbol has margin mode issues
+   */
+  hasMarginModeIssue(symbol: string, exchange: ExchangeType): boolean {
+    const key = `${exchange}-${symbol}`;
+    return this.marginModeErrors.has(key);
+  }
+
+  /**
+   * Clear margin mode errors for a symbol (e.g., after fixing configuration)
+   */
+  clearMarginModeError(symbol: string, exchange: ExchangeType): void {
+    const key = `${exchange}-${symbol}`;
+    this.marginModeErrors.delete(key);
+    this.logger.log(`Cleared margin mode error tracking for ${symbol} on ${exchange}`);
   }
 
   /**
@@ -1983,6 +2069,15 @@ export class DiagnosticsService {
       currentOperation: this.getCurrentOperationDiagnostics(),
       predictions: this.getPredictionDiagnostics(),
       marketQuality: this.getMarketQualityDiagnostics(),
+      // Symbols with margin mode configuration issues
+      marginModeIssues: this.getMarginModeErrorSymbols().map(e => ({
+        symbol: e.symbol,
+        exchange: e.exchange,
+        errorCount: e.count,
+        firstSeen: e.firstSeen.toISOString(),
+        lastSeen: e.lastSeen.toISOString(),
+        lastError: e.lastError.substring(0, 100),
+      })),
     };
   }
 
