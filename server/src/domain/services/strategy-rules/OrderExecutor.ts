@@ -538,145 +538,166 @@ export class OrderExecutor implements IOrderExecutor {
 
     try {
       if (requiresSequential) {
+        // CRITICAL: Always place Lighter leg FIRST (it's the flakier exchange)
+        // If Lighter fails, we haven't committed anything - no rollback needed!
+        const lighterIsLong = longExchange === ExchangeType.LIGHTER;
+        const lighterIsShort = shortExchange === ExchangeType.LIGHTER;
+        
+        // Determine execution order: Lighter first, then the reliable exchange
+        const firstAdapter = lighterIsLong ? longAdapter : (lighterIsShort ? shortAdapter : longAdapter);
+        const secondAdapter = lighterIsLong ? shortAdapter : (lighterIsShort ? longAdapter : shortAdapter);
+        const firstOrder = lighterIsLong ? longOrder : (lighterIsShort ? shortOrder : longOrder);
+        const secondOrder = lighterIsLong ? shortOrder : (lighterIsShort ? longOrder : shortOrder);
+        const firstExchange = lighterIsLong ? longExchange : (lighterIsShort ? shortExchange : longExchange);
+        const secondExchange = lighterIsLong ? shortExchange : (lighterIsShort ? longExchange : shortExchange);
+        const firstSide: 'LONG' | 'SHORT' = lighterIsLong ? 'LONG' : (lighterIsShort ? 'SHORT' : 'LONG');
+        const secondSide: 'LONG' | 'SHORT' = lighterIsLong ? 'SHORT' : (lighterIsShort ? 'LONG' : 'SHORT');
+        
         this.logger.debug(
           `📋 Sequential order placement for ${longOrder.symbol}: ` +
-            `${longExchange} -> ${shortExchange} (Lighter or same exchange)`,
+            `${firstExchange} (${firstSide}) -> ${secondExchange} (${secondSide}) ` +
+            `(Lighter-first strategy: ${lighterIsLong || lighterIsShort ? 'Lighter is ' + firstSide : 'same exchange'})`,
         );
 
-        let longResponse: PerpOrderResponse | undefined;
-        let shortResponse: PerpOrderResponse | undefined;
-        let longAttempts = 0;
-        let shortAttempts = 0;
+        let firstResponse: PerpOrderResponse | undefined;
+        let secondResponse: PerpOrderResponse | undefined;
+        let firstAttempts = 0;
+        let secondAttempts = 0;
 
         try {
-          // 1. Place LONG leg
-          longResponse = await this.executeWithRetry(
-          async () => {
-            longAttempts++;
-            return longAdapter.placeOrder(longOrder);
-          },
-          'Place LONG order',
-          longExchange,
-          longOrder.symbol,
-        );
+          // 1. Place FIRST leg (Lighter if involved, otherwise LONG)
+          firstResponse = await this.executeWithRetry(
+            async () => {
+              firstAttempts++;
+              return firstAdapter.placeOrder(firstOrder);
+            },
+            `Place ${firstSide} order`,
+            firstExchange,
+            firstOrder.symbol,
+          );
 
           // Update registry
-        if (this.executionLockService) {
-          this.executionLockService.updateOrderStatus(
-            longExchange,
-            longOrder.symbol,
-            'LONG',
-            longResponse.isSuccess() ? 'PLACED' : 'FAILED',
-            longResponse.orderId,
-              longOrder.price,
-              longOrder.reduceOnly
+          if (this.executionLockService) {
+            this.executionLockService.updateOrderStatus(
+              firstExchange,
+              firstOrder.symbol,
+              firstSide,
+              firstResponse.isSuccess() ? 'PLACED' : 'FAILED',
+              firstResponse.orderId,
+              firstOrder.price,
+              firstOrder.reduceOnly
+            );
+          }
+
+          const firstFillTime = Date.now() - startTime;
+          this.recordOrderMetrics(
+            firstOrder.symbol,
+            firstExchange,
+            firstSide,
+            firstOrder.size,
+            firstResponse.filledSize || firstOrder.size,
+            firstOrder.price || 0,
+            firstResponse.averageFillPrice || firstOrder.price || 0,
+            firstFillTime,
+            firstAttempts,
+            firstResponse.isSuccess(),
           );
-        }
 
-        const longFillTime = Date.now() - startTime;
-        this.recordOrderMetrics(
-          longOrder.symbol,
-          longExchange,
-          'LONG',
-          longOrder.size,
-          longResponse.filledSize || longOrder.size,
-          longOrder.price || 0,
-          longResponse.averageFillPrice || longOrder.price || 0,
-          longFillTime,
-          longAttempts,
-          longResponse.isSuccess(),
-        );
+          this.recordOrderToDiagnostics(
+            firstResponse.orderId || 'unknown',
+            firstOrder.symbol,
+            firstExchange,
+            firstSide,
+            firstResponse.isSuccess() ? (firstResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+            firstFillTime,
+            firstResponse.error,
+          );
 
-        this.recordOrderToDiagnostics(
-          longResponse.orderId || 'unknown',
-          longOrder.symbol,
-          longExchange,
-          'LONG',
-            longResponse.isSuccess() ? (longResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
-          longFillTime,
-          longResponse.error,
-        );
-
-          // 2. Place SHORT leg
-        const shortStartTime = Date.now();
-          shortResponse = await this.executeWithRetry(
-          async () => {
-            shortAttempts++;
-            return shortAdapter.placeOrder(shortOrder);
-          },
-          'Place SHORT order',
-          shortExchange,
-          shortOrder.symbol,
-        );
+          // 2. Place SECOND leg (reliable exchange)
+          const secondStartTime = Date.now();
+          secondResponse = await this.executeWithRetry(
+            async () => {
+              secondAttempts++;
+              return secondAdapter.placeOrder(secondOrder);
+            },
+            `Place ${secondSide} order`,
+            secondExchange,
+            secondOrder.symbol,
+          );
 
           // Update registry
-        if (this.executionLockService) {
-          this.executionLockService.updateOrderStatus(
-            shortExchange,
-            shortOrder.symbol,
-            'SHORT',
-            shortResponse.isSuccess() ? 'PLACED' : 'FAILED',
-            shortResponse.orderId,
-              shortOrder.price,
-              shortOrder.reduceOnly
+          if (this.executionLockService) {
+            this.executionLockService.updateOrderStatus(
+              secondExchange,
+              secondOrder.symbol,
+              secondSide,
+              secondResponse.isSuccess() ? 'PLACED' : 'FAILED',
+              secondResponse.orderId,
+              secondOrder.price,
+              secondOrder.reduceOnly
+            );
+          }
+
+          const secondFillTime = Date.now() - secondStartTime;
+          this.recordOrderMetrics(
+            secondOrder.symbol,
+            secondExchange,
+            secondSide,
+            secondOrder.size,
+            secondResponse.filledSize || secondOrder.size,
+            secondOrder.price || 0,
+            secondResponse.averageFillPrice || secondOrder.price || 0,
+            secondFillTime,
+            secondAttempts,
+            secondResponse.isSuccess(),
           );
-        }
 
-        const shortFillTime = Date.now() - shortStartTime;
-        this.recordOrderMetrics(
-          shortOrder.symbol,
-          shortExchange,
-          'SHORT',
-          shortOrder.size,
-          shortResponse.filledSize || shortOrder.size,
-          shortOrder.price || 0,
-          shortResponse.averageFillPrice || shortOrder.price || 0,
-          shortFillTime,
-          shortAttempts,
-          shortResponse.isSuccess(),
-        );
+          this.recordOrderToDiagnostics(
+            secondResponse.orderId || 'unknown',
+            secondOrder.symbol,
+            secondExchange,
+            secondSide,
+            secondResponse.isSuccess() ? (secondResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
+            secondFillTime,
+            secondResponse.error,
+          );
 
-        this.recordOrderToDiagnostics(
-          shortResponse.orderId || 'unknown',
-          shortOrder.symbol,
-          shortExchange,
-          'SHORT',
-            shortResponse.isSuccess() ? (shortResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
-          shortFillTime,
-          shortResponse.error,
-        );
-
-        return [longResponse, shortResponse];
+          // Return in [longResponse, shortResponse] order regardless of execution order
+          const longResponse = firstSide === 'LONG' ? firstResponse : secondResponse;
+          const shortResponse = firstSide === 'SHORT' ? firstResponse : secondResponse;
+          return [longResponse, shortResponse];
 
         } catch (error: any) {
           // SEQUENTIAL ROLLBACK: If second leg fails, rollback the first
-          if (longResponse && longResponse.isSuccess()) {
+          if (firstResponse && firstResponse.isSuccess()) {
             this.logger.error(
-              `🚨 SEQUENTIAL PARTIAL FAILURE: ${longOrder.symbol} - ` +
-              `LONG succeeded but SHORT failed. Attempting ROLLBACK of LONG leg...`
+              `🚨 SEQUENTIAL PARTIAL FAILURE: ${firstOrder.symbol} - ` +
+              `${firstSide} on ${firstExchange} succeeded but ${secondSide} on ${secondExchange} failed. ` +
+              `Attempting ROLLBACK of ${firstSide} leg...`
             );
 
             try {
-              if (longResponse.orderId && !longResponse.isFilled()) {
-                await longAdapter.cancelOrder(longResponse.orderId, longOrder.symbol);
-                this.logger.log(`✅ Rolled back LONG order ${longResponse.orderId} (cancelled)`);
+              if (firstResponse.orderId && !firstResponse.isFilled()) {
+                await firstAdapter.cancelOrder(firstResponse.orderId, firstOrder.symbol);
+                this.logger.log(`✅ Rolled back ${firstSide} order ${firstResponse.orderId} (cancelled)`);
               } else {
                 // Order filled - place counter order
-                const markPrice = await longAdapter.getMarkPrice(longOrder.symbol).catch(() => longOrder.price);
+                const markPrice = await firstAdapter.getMarkPrice(firstOrder.symbol).catch(() => firstOrder.price);
+                const closeSide = firstSide === 'LONG' ? OrderSide.SHORT : OrderSide.LONG;
                 const closeOrder = new PerpOrderRequest(
-                  longOrder.symbol,
-                  OrderSide.SHORT,
+                  firstOrder.symbol,
+                  closeSide,
                   OrderType.LIMIT,
-                  longResponse.filledSize || longOrder.size,
+                  firstResponse.filledSize || firstOrder.size,
                   markPrice,
                   TimeInForce.GTC,
                   true // reduceOnly
                 );
-                await longAdapter.placeOrder(closeOrder);
-                this.logger.log(`✅ Rolled back LONG position (placed counter-order)`);
+                await firstAdapter.placeOrder(closeOrder);
+                this.logger.log(`✅ Rolled back ${firstSide} position (placed counter-order)`);
               }
             } catch (rollbackError: any) {
-              this.logger.error(`🚨 ROLLBACK FAILED for ${longExchange}: ${rollbackError.message}`);
+              this.logger.error(`🚨 ROLLBACK FAILED for ${firstExchange}: ${rollbackError.message}`);
             }
           }
 
