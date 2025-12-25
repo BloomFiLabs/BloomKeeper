@@ -48,15 +48,33 @@ import {
   RetryConfig,
   DEFAULT_RETRY_CONFIG,
 } from './ExecutionAnalytics';
+import { SlicedExecutionService, SlicedExecutionConfig } from '../execution/SlicedExecutionService';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Order executor for funding arbitrage strategy
  * Handles order placement, waiting for fills, and managing multiple positions
+ * 
+ * NEW: Supports sliced execution to minimize single-leg exposure!
  */
 @Injectable()
 export class OrderExecutor implements IOrderExecutor {
   private readonly logger = new Logger(OrderExecutor.name);
   private executionAnalytics?: ExecutionAnalytics;
+  
+  // Sliced execution service for safer hedged trades
+  private slicedExecutionService?: SlicedExecutionService;
+  
+  // Whether to use sliced execution (can be configured via env)
+  private useSlicedExecution: boolean = true;
+  private slicedExecutionConfig: Partial<SlicedExecutionConfig> = {
+    dynamicSlicing: true,
+    minSlices: 2,
+    maxSlices: 10,
+    sliceFillTimeoutMs: 20000, // 20 seconds per slice
+    maxImbalancePercent: 5, // Abort if > 5% imbalance
+    fundingBufferMs: 3 * 60 * 1000, // 3 minute buffer before funding
+  };
 
   // Retry configuration for transient failures
   private readonly retryConfig: RetryConfig = {
@@ -96,9 +114,24 @@ export class OrderExecutor implements IOrderExecutor {
     private readonly executionLockService?: ExecutionLockService,
     @Optional()
     private readonly twapEngine?: TWAPEngine,
+    @Optional()
+    private readonly configService?: ConfigService,
   ) {
     // Initialize execution analytics
     this.executionAnalytics = new ExecutionAnalytics();
+    
+    // Initialize sliced execution service
+    this.slicedExecutionService = new SlicedExecutionService();
+    
+    // Check if sliced execution is disabled via env
+    const disableSliced = this.configService?.get('DISABLE_SLICED_EXECUTION');
+    this.useSlicedExecution = disableSliced !== 'true';
+    
+    if (this.useSlicedExecution) {
+      this.logger.log('🍕 Sliced execution ENABLED - orders will be split for safety');
+    } else {
+      this.logger.warn('⚠️ Sliced execution DISABLED - orders placed all-at-once');
+    }
   }
 
   /**
@@ -567,18 +600,18 @@ export class OrderExecutor implements IOrderExecutor {
         try {
           // 1. Place FIRST leg (Lighter if involved, otherwise LONG)
           firstResponse = await this.executeWithRetry(
-            async () => {
+          async () => {
               firstAttempts++;
               return firstAdapter.placeOrder(firstOrder);
-            },
+          },
             `Place ${firstSide} order`,
             firstExchange,
             firstOrder.symbol,
-          );
+        );
 
           // Update registry
-          if (this.executionLockService) {
-            this.executionLockService.updateOrderStatus(
+        if (this.executionLockService) {
+          this.executionLockService.updateOrderStatus(
               firstExchange,
               firstOrder.symbol,
               firstSide,
@@ -586,11 +619,11 @@ export class OrderExecutor implements IOrderExecutor {
               firstResponse.orderId,
               firstOrder.price,
               firstOrder.reduceOnly
-            );
-          }
+          );
+        }
 
           const firstFillTime = Date.now() - startTime;
-          this.recordOrderMetrics(
+        this.recordOrderMetrics(
             firstOrder.symbol,
             firstExchange,
             firstSide,
@@ -601,9 +634,9 @@ export class OrderExecutor implements IOrderExecutor {
             firstFillTime,
             firstAttempts,
             firstResponse.isSuccess(),
-          );
+        );
 
-          this.recordOrderToDiagnostics(
+        this.recordOrderToDiagnostics(
             firstResponse.orderId || 'unknown',
             firstOrder.symbol,
             firstExchange,
@@ -611,23 +644,23 @@ export class OrderExecutor implements IOrderExecutor {
             firstResponse.isSuccess() ? (firstResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
             firstFillTime,
             firstResponse.error,
-          );
+        );
 
           // 2. Place SECOND leg (reliable exchange)
           const secondStartTime = Date.now();
           secondResponse = await this.executeWithRetry(
-            async () => {
+          async () => {
               secondAttempts++;
               return secondAdapter.placeOrder(secondOrder);
-            },
+          },
             `Place ${secondSide} order`,
             secondExchange,
             secondOrder.symbol,
-          );
+        );
 
           // Update registry
-          if (this.executionLockService) {
-            this.executionLockService.updateOrderStatus(
+        if (this.executionLockService) {
+          this.executionLockService.updateOrderStatus(
               secondExchange,
               secondOrder.symbol,
               secondSide,
@@ -635,11 +668,11 @@ export class OrderExecutor implements IOrderExecutor {
               secondResponse.orderId,
               secondOrder.price,
               secondOrder.reduceOnly
-            );
-          }
+          );
+        }
 
           const secondFillTime = Date.now() - secondStartTime;
-          this.recordOrderMetrics(
+        this.recordOrderMetrics(
             secondOrder.symbol,
             secondExchange,
             secondSide,
@@ -650,9 +683,9 @@ export class OrderExecutor implements IOrderExecutor {
             secondFillTime,
             secondAttempts,
             secondResponse.isSuccess(),
-          );
+        );
 
-          this.recordOrderToDiagnostics(
+        this.recordOrderToDiagnostics(
             secondResponse.orderId || 'unknown',
             secondOrder.symbol,
             secondExchange,
@@ -660,12 +693,12 @@ export class OrderExecutor implements IOrderExecutor {
             secondResponse.isSuccess() ? (secondResponse.isFilled() ? 'FILLED' : 'PLACED') : 'FAILED',
             secondFillTime,
             secondResponse.error,
-          );
+        );
 
           // Return in [longResponse, shortResponse] order regardless of execution order
           const longResponse = firstSide === 'LONG' ? firstResponse : secondResponse;
           const shortResponse = firstSide === 'SHORT' ? firstResponse : secondResponse;
-          return [longResponse, shortResponse];
+        return [longResponse, shortResponse];
 
         } catch (error: any) {
           // SEQUENTIAL ROLLBACK: If second leg fails, rollback the first
@@ -681,23 +714,80 @@ export class OrderExecutor implements IOrderExecutor {
                 await firstAdapter.cancelOrder(firstResponse.orderId, firstOrder.symbol);
                 this.logger.log(`✅ Rolled back ${firstSide} order ${firstResponse.orderId} (cancelled)`);
               } else {
-                // Order filled - place counter order
-                const markPrice = await firstAdapter.getMarkPrice(firstOrder.symbol).catch(() => firstOrder.price);
+                // Order filled - MUST close with MARKET order to guarantee exit!
+                // Using LIMIT here is dangerous - it might not fill!
                 const closeSide = firstSide === 'LONG' ? OrderSide.SHORT : OrderSide.LONG;
                 const closeOrder = new PerpOrderRequest(
                   firstOrder.symbol,
                   closeSide,
-                  OrderType.LIMIT,
+                  OrderType.MARKET,  // CRITICAL: Use MARKET to guarantee fill!
                   firstResponse.filledSize || firstOrder.size,
-                  markPrice,
-                  TimeInForce.GTC,
+                  undefined,  // No price for market orders
+                  TimeInForce.IOC,  // Immediate-or-cancel for safety
                   true // reduceOnly
                 );
-                await firstAdapter.placeOrder(closeOrder);
-                this.logger.log(`✅ Rolled back ${firstSide} position (placed counter-order)`);
+                
+                this.logger.warn(
+                  `🚨 ROLLBACK: Placing MARKET ${closeSide} to close filled ${firstSide} position ` +
+                  `(${firstResponse.filledSize || firstOrder.size} ${firstOrder.symbol})`
+                );
+                
+                const rollbackResponse = await firstAdapter.placeOrder(closeOrder);
+                
+                if (rollbackResponse.isSuccess()) {
+                  this.logger.log(
+                    `✅ Rolled back ${firstSide} position with MARKET order (filled: ${rollbackResponse.filledSize || 'pending'})`
+                  );
+                } else {
+                  // CRITICAL: Market order failed - this is very bad!
+                  this.logger.error(
+                    `🚨🚨 CRITICAL: MARKET rollback failed for ${firstOrder.symbol}! ` +
+                    `Position may be UNHEDGED! Error: ${rollbackResponse.error}`
+                  );
+                  
+                  // Record this critical failure for immediate attention
+                  if (this.diagnosticsService) {
+                    this.diagnosticsService.recordErrorWithContext(
+                      'ROLLBACK_MARKET_FAILED',
+                      `Market order rollback failed - position may be unhedged!`,
+                      {
+                        order: {
+                          symbol: firstOrder.symbol,
+                          exchange: firstExchange,
+                          side: firstSide,
+                          size: firstResponse.filledSize || firstOrder.size,
+                          price: 0,
+                          orderType: 'MARKET',
+                        },
+                      },
+                      firstExchange,
+                      firstOrder.symbol,
+                    );
+                  }
+                }
               }
             } catch (rollbackError: any) {
               this.logger.error(`🚨 ROLLBACK FAILED for ${firstExchange}: ${rollbackError.message}`);
+              
+              // Record critical rollback failure
+              if (this.diagnosticsService) {
+                this.diagnosticsService.recordErrorWithContext(
+                  'ROLLBACK_EXCEPTION',
+                  `Rollback threw exception - position may be unhedged! Error: ${rollbackError.message}`,
+                  {
+                    order: {
+                      symbol: firstOrder.symbol,
+                      exchange: firstExchange,
+                      side: firstSide,
+                      size: firstOrder.size,
+                      price: firstOrder.price || 0,
+                      orderType: 'ROLLBACK',
+                    },
+                  },
+                  firstExchange,
+                  firstOrder.symbol,
+                );
+              }
             }
           }
 
@@ -778,36 +868,75 @@ export class OrderExecutor implements IOrderExecutor {
                 `✅ Cancelled LONG order ${longResponse.orderId} for rollback`,
               );
             } else if (longResponse.isFilled()) {
-              // Order already filled - need to place a closing order
+              // Order already filled - MUST use MARKET order to guarantee exit!
               this.logger.warn(
-                `⚠️ LONG order ${longResponse.orderId} already filled - placing closing order for rollback`,
+                `🚨 LONG order ${longResponse.orderId} already filled - using MARKET order for guaranteed rollback`,
               );
-
-              // Get current mark price for rollback maker order
-              let markPrice: number | undefined;
-              try {
-                markPrice = await longAdapter.getMarkPrice(longOrder.symbol);
-              } catch (priceError: any) {
-                markPrice = longOrder.price;
-              }
 
               const closeOrder = new PerpOrderRequest(
                 longOrder.symbol,
                 OrderSide.SHORT, // Opposite side to close
-                OrderType.LIMIT,
+                OrderType.MARKET, // CRITICAL: MARKET for guaranteed fill!
                 longResponse.filledSize || longOrder.size,
-                markPrice,
-                TimeInForce.GTC,
+                undefined, // No price for market orders
+                TimeInForce.IOC,
                 true, // reduceOnly
               );
-              await longAdapter.placeOrder(closeOrder);
-              this.logger.log(`✅ Placed rollback LIMIT order @ mark price for LONG position`);
+              
+              const rollbackResponse = await longAdapter.placeOrder(closeOrder);
+              
+              if (rollbackResponse.isSuccess()) {
+                this.logger.log(`✅ Rolled back LONG with MARKET order (filled: ${rollbackResponse.filledSize || 'pending'})`);
+              } else {
+                this.logger.error(
+                  `🚨🚨 CRITICAL: MARKET rollback failed for ${longOrder.symbol}! ` +
+                  `LONG position may be UNHEDGED! Error: ${rollbackResponse.error}`
+                );
+                
+                if (this.diagnosticsService) {
+                  this.diagnosticsService.recordErrorWithContext(
+                    'ROLLBACK_MARKET_FAILED',
+                    `Market order rollback failed - LONG position may be unhedged!`,
+                    {
+                      order: {
+                        symbol: longOrder.symbol,
+                        exchange: longExchange,
+                        side: 'LONG' as const,
+                        size: longResponse.filledSize || longOrder.size,
+                        price: 0,
+                        orderType: 'MARKET',
+                      },
+                    },
+                    longExchange,
+                    longOrder.symbol,
+                  );
+                }
+              }
             }
           } catch (rollbackError: any) {
             this.logger.error(
               `🚨 ROLLBACK FAILED for LONG on ${longExchange}: ${rollbackError.message}. ` +
                 `MANUAL INTERVENTION REQUIRED for single-leg position!`,
             );
+            
+            if (this.diagnosticsService) {
+              this.diagnosticsService.recordErrorWithContext(
+                'ROLLBACK_EXCEPTION',
+                `Rollback threw exception - LONG position may be unhedged! Error: ${rollbackError.message}`,
+                {
+                  order: {
+                    symbol: longOrder.symbol,
+                    exchange: longExchange,
+                    side: 'LONG' as const,
+                    size: longOrder.size,
+                    price: longOrder.price || 0,
+                    orderType: 'ROLLBACK',
+                  },
+                },
+                longExchange,
+                longOrder.symbol,
+              );
+            }
           }
 
           // Clean up registries
@@ -856,36 +985,75 @@ export class OrderExecutor implements IOrderExecutor {
                 `✅ Cancelled SHORT order ${shortResponse.orderId} for rollback`,
               );
             } else if (shortResponse.isFilled()) {
-              // Order already filled - need to place a closing order
+              // Order already filled - MUST use MARKET order to guarantee exit!
               this.logger.warn(
-                `⚠️ SHORT order ${shortResponse.orderId} already filled - placing closing order for rollback`,
+                `🚨 SHORT order ${shortResponse.orderId} already filled - using MARKET order for guaranteed rollback`,
               );
-
-              // Get current mark price for rollback maker order
-              let markPrice: number | undefined;
-              try {
-                markPrice = await shortAdapter.getMarkPrice(shortOrder.symbol);
-              } catch (priceError: any) {
-                markPrice = shortOrder.price;
-              }
 
               const closeOrder = new PerpOrderRequest(
                 shortOrder.symbol,
                 OrderSide.LONG, // Opposite side to close
-                OrderType.LIMIT,
+                OrderType.MARKET, // CRITICAL: MARKET for guaranteed fill!
                 shortResponse.filledSize || shortOrder.size,
-                markPrice,
-                TimeInForce.GTC,
+                undefined, // No price for market orders
+                TimeInForce.IOC,
                 true, // reduceOnly
               );
-              await shortAdapter.placeOrder(closeOrder);
-              this.logger.log(`✅ Placed rollback LIMIT order @ mark price for SHORT position`);
+              
+              const rollbackResponse = await shortAdapter.placeOrder(closeOrder);
+              
+              if (rollbackResponse.isSuccess()) {
+                this.logger.log(`✅ Rolled back SHORT with MARKET order (filled: ${rollbackResponse.filledSize || 'pending'})`);
+              } else {
+                this.logger.error(
+                  `🚨🚨 CRITICAL: MARKET rollback failed for ${shortOrder.symbol}! ` +
+                  `SHORT position may be UNHEDGED! Error: ${rollbackResponse.error}`
+                );
+                
+                if (this.diagnosticsService) {
+                  this.diagnosticsService.recordErrorWithContext(
+                    'ROLLBACK_MARKET_FAILED',
+                    `Market order rollback failed - SHORT position may be unhedged!`,
+                    {
+                      order: {
+                        symbol: shortOrder.symbol,
+                        exchange: shortExchange,
+                        side: 'SHORT' as const,
+                        size: shortResponse.filledSize || shortOrder.size,
+                        price: 0,
+                        orderType: 'MARKET',
+                      },
+                    },
+                    shortExchange,
+                    shortOrder.symbol,
+                  );
+                }
+              }
             }
           } catch (rollbackError: any) {
             this.logger.error(
               `🚨 ROLLBACK FAILED for SHORT on ${shortExchange}: ${rollbackError.message}. ` +
                 `MANUAL INTERVENTION REQUIRED for single-leg position!`,
             );
+            
+            if (this.diagnosticsService) {
+              this.diagnosticsService.recordErrorWithContext(
+                'ROLLBACK_EXCEPTION',
+                `Rollback threw exception - SHORT position may be unhedged! Error: ${rollbackError.message}`,
+                {
+                  order: {
+                    symbol: shortOrder.symbol,
+                    exchange: shortExchange,
+                    side: 'SHORT' as const,
+                    size: shortOrder.size,
+                    price: shortOrder.price || 0,
+                    orderType: 'ROLLBACK',
+                  },
+                },
+                shortExchange,
+                shortOrder.symbol,
+              );
+            }
           }
 
           // Clean up registries
@@ -1662,6 +1830,112 @@ export class OrderExecutor implements IOrderExecutor {
           return Result.failure(twapExecResult.error);
         }
       }
+
+      // ========================================================
+      // SLICED EXECUTION - Safer approach that limits single-leg exposure
+      // ========================================================
+      if (this.useSlicedExecution && this.slicedExecutionService) {
+        this.logger.log(`🍕 Using SLICED execution for ${opportunity.symbol}`);
+        
+        const slicedResult = await this.slicedExecutionService.executeSlicedHedge(
+          longAdapter,
+          shortAdapter,
+          opportunity.symbol,
+          longOrder.size, // Total size
+          longOrder.price || 0,
+          shortOrder.price || 0,
+          opportunity.longExchange,
+          opportunity.shortExchange!,
+          this.slicedExecutionConfig,
+        );
+        
+        if (slicedResult.success) {
+          // Success! Both sides filled across all slices
+          result.opportunitiesExecuted = 1;
+          result.ordersPlaced = slicedResult.totalSlices * 2;
+          result.totalExpectedReturn = plan.expectedNetReturn;
+          
+          this.logger.log(
+            `✅ Sliced execution SUCCESS for ${opportunity.symbol}: ` +
+            `${slicedResult.completedSlices}/${slicedResult.totalSlices} slices, ` +
+            `LONG: ${slicedResult.totalLongFilled.toFixed(4)}, SHORT: ${slicedResult.totalShortFilled.toFixed(4)}`
+          );
+          
+          return Result.success(result);
+        } else {
+          // Sliced execution failed or partial - handle based on what happened
+          const imbalance = Math.abs(slicedResult.totalLongFilled - slicedResult.totalShortFilled);
+          const imbalanceUsd = imbalance * avgPrice;
+          
+          if (imbalanceUsd > 10) { // More than $10 imbalance
+            this.logger.error(
+              `🚨 Sliced execution FAILED with imbalance for ${opportunity.symbol}: ` +
+              `LONG: ${slicedResult.totalLongFilled.toFixed(4)}, SHORT: ${slicedResult.totalShortFilled.toFixed(4)} ` +
+              `(imbalance: $${imbalanceUsd.toFixed(2)}). Reason: ${slicedResult.abortReason}`
+            );
+            
+            // Record the single-leg failure
+            if (this.diagnosticsService) {
+              const longIsLarger = slicedResult.totalLongFilled > slicedResult.totalShortFilled;
+              this.diagnosticsService.recordSingleLegFailure({
+                id: `sliced-${opportunity.symbol}-${Date.now()}`,
+                symbol: opportunity.symbol,
+                timestamp: new Date(),
+                failedLeg: longIsLarger ? 'short' : 'long',
+                failedExchange: longIsLarger ? opportunity.shortExchange! : opportunity.longExchange,
+                successfulExchange: longIsLarger ? opportunity.longExchange : opportunity.shortExchange!,
+                failureReason: 'exchange_error',
+                failureMessage: slicedResult.abortReason || 'Sliced execution imbalance',
+                timeBetweenLegsMs: 0,
+                attemptedSize: longOrder.size,
+                filledSize: Math.min(slicedResult.totalLongFilled, slicedResult.totalShortFilled),
+              });
+            }
+            
+            result.errors.push(`Sliced execution failed: ${slicedResult.abortReason}`);
+            return Result.failure(
+              new OrderExecutionException(
+                `Sliced execution failed with imbalance: ${slicedResult.abortReason}`,
+                `sliced-${opportunity.symbol}`,
+                opportunity.longExchange,
+                { symbol: opportunity.symbol, imbalanceUsd },
+              ),
+            );
+          } else if (slicedResult.completedSlices > 0) {
+            // Partial success - some slices completed
+            result.opportunitiesExecuted = 1;
+            result.ordersPlaced = slicedResult.completedSlices * 2;
+            result.totalExpectedReturn = plan.expectedNetReturn * (slicedResult.completedSlices / slicedResult.totalSlices);
+            
+            this.logger.warn(
+              `⚠️ Sliced execution PARTIAL for ${opportunity.symbol}: ` +
+              `${slicedResult.completedSlices}/${slicedResult.totalSlices} slices completed. ` +
+              `Reason: ${slicedResult.abortReason}`
+            );
+            
+            return Result.success(result);
+          } else {
+            // Complete failure - nothing filled
+            this.logger.error(
+              `❌ Sliced execution COMPLETE FAILURE for ${opportunity.symbol}: ${slicedResult.abortReason}`
+            );
+            result.errors.push(`Sliced execution failed: ${slicedResult.abortReason}`);
+            return Result.failure(
+              new OrderExecutionException(
+                `Sliced execution failed: ${slicedResult.abortReason}`,
+                `sliced-${opportunity.symbol}`,
+                opportunity.longExchange,
+                { symbol: opportunity.symbol },
+              ),
+            );
+          }
+        }
+      }
+      
+      // ========================================================
+      // FALLBACK: Original all-at-once execution (if sliced disabled)
+      // ========================================================
+      this.logger.warn(`⚠️ Using ALL-AT-ONCE execution for ${opportunity.symbol} (sliced disabled)`);
 
       try {
         // Use placeOrderPair which handles sequential vs parallel execution

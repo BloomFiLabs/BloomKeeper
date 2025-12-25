@@ -230,7 +230,7 @@ export class LighterExchangeAdapter
 
       await this.signerClient.initialize();
       await this.signerClient.ensureWasmClient();
-      
+
       // Pre-warm the nonce cache IMMEDIATELY after initialization
       // This ensures we have the correct nonce from the server before any orders
       try {
@@ -1349,7 +1349,7 @@ export class LighterExchangeAdapter
             
             if (!refreshed) {
               // Fall back to full SignerClient recreation
-              await this.resetSignerClient();
+            await this.resetSignerClient();
             }
 
             // Progressive backoff for nonce errors - reduced for faster recovery
@@ -1785,41 +1785,41 @@ export class LighterExchangeAdapter
     request: PerpOrderRequest,
     maxRetries: number = 3,
   ): Promise<PerpOrderResponse> {
-    await this.ensureInitialized();
+      await this.ensureInitialized();
 
-    const marketIndex = await this.getMarketIndex(request.symbol);
-    const market = await this.getMarketHelper(marketIndex);
+      const marketIndex = await this.getMarketIndex(request.symbol);
+      const market = await this.getMarketHelper(marketIndex);
 
-    // CRITICAL FIX: Lighter's modifyOrder requires numeric orderIndex
-    // If we have a transaction hash (orderId), we must find the corresponding orderIndex first
-    let orderIndex = parseInt(orderId, 10);
-    
-    const isTransactionHash = orderId.length > 20 && /^[0-9a-f]+$/i.test(orderId);
-    if (isTransactionHash || isNaN(orderIndex) || orderIndex === 0) {
-      this.logger.debug(`Searching for orderIndex for ${request.symbol} ${request.side} (tx: ${orderId.substring(0, 8)}...)`);
+      // CRITICAL FIX: Lighter's modifyOrder requires numeric orderIndex
+      // If we have a transaction hash (orderId), we must find the corresponding orderIndex first
+      let orderIndex = parseInt(orderId, 10);
       
-      // Find order index from active orders
-      const activeOrders = await this.getOpenOrders();
-      const matchingOrder = activeOrders.find(o => 
-        o.symbol === request.symbol && 
-        o.side.toLowerCase() === request.side.toLowerCase()
-      );
+      const isTransactionHash = orderId.length > 20 && /^[0-9a-f]+$/i.test(orderId);
+      if (isTransactionHash || isNaN(orderIndex) || orderIndex === 0) {
+        this.logger.debug(`Searching for orderIndex for ${request.symbol} ${request.side} (tx: ${orderId.substring(0, 8)}...)`);
+        
+        // Find order index from active orders
+        const activeOrders = await this.getOpenOrders();
+        const matchingOrder = activeOrders.find(o => 
+          o.symbol === request.symbol && 
+          o.side.toLowerCase() === request.side.toLowerCase()
+        );
 
-      if (!matchingOrder) {
+        if (!matchingOrder) {
         throw new ExchangeError(
           `Could not find active order index for ${request.symbol} ${request.side}`,
           ExchangeType.LIGHTER,
         );
+        }
+
+        orderIndex = Math.floor(parseFloat(matchingOrder.orderId));
+        this.logger.debug(`Found orderIndex ${orderIndex} for ${request.symbol}`);
       }
 
-      orderIndex = Math.floor(parseFloat(matchingOrder.orderId));
-      this.logger.debug(`Found orderIndex ${orderIndex} for ${request.symbol}`);
-    }
-
-    // Format parameters using market helper units
-    const amount = market.amountToUnits(request.size);
-    const price = market.priceToUnits(request.price || 0);
-    const triggerPrice = BigInt(0); // No trigger price for non-conditional orders
+      // Format parameters using market helper units
+      const amount = market.amountToUnits(request.size);
+      const price = market.priceToUnits(request.price || 0);
+      const triggerPrice = BigInt(0); // No trigger price for non-conditional orders
 
     // Acquire mutex to prevent concurrent nonce conflicts with other operations
     const releaseMutex = await this.acquireOrderMutex();
@@ -1836,47 +1836,47 @@ export class LighterExchangeAdapter
             `(nonce: ${nonce}, attempt ${attempt + 1}/${maxRetries})`,
           );
 
-          // Use positional arguments matching modify_order.ts example
-          // Pass RateLimitPriority.HIGH to callApi for maker repositioning
-          const result = await this.callApi(this.WEIGHT_TX, () => (this.signerClient as any).modifyOrder(
-            marketIndex,
-            orderIndex,
-            amount,
-            price,
-            triggerPrice,
+      // Use positional arguments matching modify_order.ts example
+      // Pass RateLimitPriority.HIGH to callApi for maker repositioning
+      const result = await this.callApi(this.WEIGHT_TX, () => (this.signerClient as any).modifyOrder(
+        marketIndex,
+        orderIndex,
+        amount,
+        price,
+        triggerPrice,
             nonce || undefined // Pass the fresh nonce!
-          ), RateLimitPriority.HIGH) as [any, string, string | null];
-        
-        const [tx, txHash, error] = result;
+      ), RateLimitPriority.HIGH) as [any, string, string | null];
+      
+      const [tx, txHash, error] = result;
 
-        if (error) {
-          throw new Error(error);
-        }
+      if (error) {
+        throw new Error(error);
+      }
 
         // Reset consecutive nonce errors on success
         this.consecutiveNonceErrors = 0;
 
-        this.logger.log(`✅ Order ${orderIndex} modified successfully: ${txHash}`);
+      this.logger.log(`✅ Order ${orderIndex} modified successfully: ${txHash}`);
 
         // Wait for transaction (non-blocking timeout)
-        try {
-          await this.signerClient!.waitForTransaction(txHash, 30000, 2000);
-        } catch (waitError: any) {
-          this.logger.debug(`Update wait timeout: ${waitError.message}`);
-        }
+      try {
+        await this.signerClient!.waitForTransaction(txHash, 30000, 2000);
+      } catch (waitError: any) {
+        this.logger.debug(`Update wait timeout: ${waitError.message}`);
+      }
 
-        return new PerpOrderResponse(
-          orderIndex.toString(),
-          OrderStatus.SUBMITTED,
-          request.symbol,
-          request.side,
-          request.clientOrderId,
-          undefined,
-          undefined,
-          undefined,
-          new Date(),
-        );
-      } catch (error: any) {
+      return new PerpOrderResponse(
+        orderIndex.toString(),
+        OrderStatus.SUBMITTED,
+        request.symbol,
+        request.side,
+        request.clientOrderId,
+        undefined,
+        undefined,
+        undefined,
+        new Date(),
+      );
+    } catch (error: any) {
         const errorMsg = error.message || String(error);
         
         // Check if this is a nonce error
@@ -1910,14 +1910,14 @@ export class LighterExchangeAdapter
 
         // Not a nonce error or last attempt - throw
         this.logger.error(`Failed to modify order ${orderId}: ${errorMsg}`);
-        throw new ExchangeError(
+      throw new ExchangeError(
           `Failed to modify order: ${errorMsg}`,
-          ExchangeType.LIGHTER,
-          undefined,
-          error,
-        );
-      }
+        ExchangeType.LIGHTER,
+        undefined,
+        error,
+      );
     }
+  }
 
     // Should not reach here, but just in case
     throw new ExchangeError(
@@ -2147,24 +2147,24 @@ export class LighterExchangeAdapter
     }
   }
   return false;
-} catch (error: any) {
-  this.logger.error(`Failed to cancel order: ${error.message}`);
-  throw new ExchangeError(
-    `Failed to cancel order: ${error.message}`,
-    ExchangeType.LIGHTER,
-    undefined,
-    error,
-  );
+    } catch (error: any) {
+      this.logger.error(`Failed to cancel order: ${error.message}`);
+      throw new ExchangeError(
+        `Failed to cancel order: ${error.message}`,
+        ExchangeType.LIGHTER,
+        undefined,
+        error,
+      );
 } finally {
   // Always release the mutex when done
   releaseMutex();
-}
-}
+    }
+  }
 
 async cancelAllOrders(symbol: string, maxRetries: number = 3): Promise<number> {
 const releaseMutex = await this.acquireOrderMutex();
-try {
-  await this.ensureInitialized();
+    try {
+      await this.ensureInitialized();
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -2271,19 +2271,19 @@ try {
     }
   }
   return 0;
-} catch (error: any) {
-  this.logger.error(`Failed to cancel all orders: ${error.message}`);
-  throw new ExchangeError(
-    `Failed to cancel all orders: ${error.message}`,
-    ExchangeType.LIGHTER,
-    undefined,
-    error,
-  );
+    } catch (error: any) {
+      this.logger.error(`Failed to cancel all orders: ${error.message}`);
+      throw new ExchangeError(
+        `Failed to cancel all orders: ${error.message}`,
+        ExchangeType.LIGHTER,
+        undefined,
+        error,
+      );
 } finally {
   // Always release the mutex
   releaseMutex();
-}
-}
+    }
+  }
 
   /**
    * Get all open orders for this account

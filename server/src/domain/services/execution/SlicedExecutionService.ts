@@ -587,27 +587,44 @@ export class SlicedExecutionService {
   }
 
   /**
-   * Rollback a filled leg by placing opposite order
+   * Rollback a filled leg by placing opposite MARKET order
+   * CRITICAL: Use MARKET order to guarantee the rollback actually closes!
    */
   private async rollbackLeg(
     adapter: IPerpExchangeAdapter,
     symbol: string,
     size: number,
     originalSide: OrderSide,
-    price: number,
+    _price: number, // Unused for market orders
   ): Promise<void> {
     try {
+      // CRITICAL FIX: Use MARKET order for guaranteed rollback!
+      // LIMIT orders can sit unfilled and leave you with single-leg exposure
       const rollbackOrder = new PerpOrderRequest(
         symbol,
         originalSide === OrderSide.LONG ? OrderSide.SHORT : OrderSide.LONG,
-        OrderType.LIMIT,
+        OrderType.MARKET, // MARKET guarantees fill!
         size,
-        price,
-        TimeInForce.GTC,
+        undefined, // No price for market orders
+        TimeInForce.IOC, // Immediate-or-cancel
         true, // reduceOnly
       );
-      await adapter.placeOrder(rollbackOrder);
-      this.logger.log(`✅ Rolled back ${originalSide} position of ${size.toFixed(4)} ${symbol}`);
+      
+      this.logger.warn(
+        `🚨 ROLLBACK: Placing MARKET ${originalSide === OrderSide.LONG ? 'SHORT' : 'LONG'} ` +
+        `to close ${size.toFixed(4)} ${symbol}`
+      );
+      
+      const response = await adapter.placeOrder(rollbackOrder);
+      
+      if (response.isSuccess()) {
+        this.logger.log(`✅ Rolled back ${originalSide} position of ${size.toFixed(4)} ${symbol} with MARKET order`);
+      } else {
+        this.logger.error(
+          `🚨🚨 CRITICAL: MARKET rollback failed for ${symbol}! ` +
+          `Position may be UNHEDGED! Error: ${response.error}`
+        );
+      }
     } catch (error: any) {
       this.logger.error(`🚨 Failed to rollback ${originalSide} leg: ${error.message}`);
     }
