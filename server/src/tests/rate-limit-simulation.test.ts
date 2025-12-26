@@ -165,10 +165,10 @@ const ORDER_ACTIVITY = {
   modifiesPerHour: 30, // Estimated order modifications per hour
 };
 
-// ==================== SLICED EXECUTION CONFIG ====================
-// Based on server/src/domain/services/execution/SlicedExecutionService.ts
-const SLICED_EXECUTION = {
-  enabled: true, // NEW: Sliced execution is now wired in!
+// ==================== UNIFIED EXECUTION CONFIG ====================
+// Based on server/src/domain/services/execution/UnifiedExecutionService.ts
+const UNIFIED_EXECUTION = {
+  enabled: true, // NEW: Unified execution is now wired in!
   avgSlicesPerPosition: 5, // Dynamic 2-10, assume 5 average
   fillCheckIntervalMs: 2000, // Check order status every 2s
   sliceFillTimeoutMs: 20000, // Wait up to 20s per slice
@@ -307,13 +307,13 @@ function simulateRateLimits(
     const positionsPerHour = ORDER_ACTIVITY.ordersPerHour / 2; // Orders are paired
     const positionsInPeriod = Math.floor((positionsPerHour / 60) * durationMinutes);
     
-    if (SLICED_EXECUTION.enabled) {
+    if (UNIFIED_EXECUTION.enabled) {
       // SLICED EXECUTION: Many more calls per position
       for (let p = 0; p < positionsInPeriod; p++) {
         const baseTimestamp = (p / positionsInPeriod) * durationMs;
         
-        for (let slice = 0; slice < SLICED_EXECUTION.avgSlicesPerPosition; slice++) {
-          const sliceTimestamp = baseTimestamp + (slice * SLICED_EXECUTION.sliceFillTimeoutMs);
+        for (let slice = 0; slice < UNIFIED_EXECUTION.avgSlicesPerPosition; slice++) {
+          const sliceTimestamp = baseTimestamp + (slice * UNIFIED_EXECUTION.sliceFillTimeoutMs);
           
           // 1. Mark price refresh (2 calls per slice - both exchanges)
           hlCalls.push({ 
@@ -344,9 +344,9 @@ function simulateRateLimits(
           });
           
           // 3. Order status checks while waiting for fill
-          const statusChecks = Math.ceil(SLICED_EXECUTION.sliceFillTimeoutMs / SLICED_EXECUTION.fillCheckIntervalMs);
+          const statusChecks = Math.ceil(UNIFIED_EXECUTION.sliceFillTimeoutMs / UNIFIED_EXECUTION.fillCheckIntervalMs);
           for (let check = 0; check < statusChecks; check++) {
-            const checkTimestamp = sliceTimestamp + (check * SLICED_EXECUTION.fillCheckIntervalMs);
+            const checkTimestamp = sliceTimestamp + (check * UNIFIED_EXECUTION.fillCheckIntervalMs);
             hlCalls.push({ 
               task: 'SlicedExecution', 
               operation: 'getOrderStatus', 
@@ -367,13 +367,13 @@ function simulateRateLimits(
               task: 'SlicedExecution', 
               operation: 'cancelOrder', 
               weight: WEIGHTS.HYPERLIQUID.EXCHANGE, 
-              timestamp: sliceTimestamp + SLICED_EXECUTION.sliceFillTimeoutMs 
+              timestamp: sliceTimestamp + UNIFIED_EXECUTION.sliceFillTimeoutMs 
             });
             lighterCalls.push({ 
               task: 'SlicedExecution', 
               operation: 'cancelOrder', 
               weight: WEIGHTS.LIGHTER.CANCEL, // 0 weight for Lighter!
-              timestamp: sliceTimestamp + SLICED_EXECUTION.sliceFillTimeoutMs 
+              timestamp: sliceTimestamp + UNIFIED_EXECUTION.sliceFillTimeoutMs 
             });
           }
         }
@@ -568,21 +568,21 @@ function runSimulation() {
   console.log('-'.repeat(60));
   
   // 6a: With sliced execution (current default)
-  SLICED_EXECUTION.enabled = true;
+  UNIFIED_EXECUTION.enabled = true;
   const withSliced = simulateRateLimits(60, true, true, true);
   console.log('\n🍕 WITH SLICED EXECUTION (5 slices average):');
   printResult(withSliced.hyperliquid);
   printResult(withSliced.lighter);
   
   // 6b: Without sliced execution (old behavior)
-  SLICED_EXECUTION.enabled = false;
+  UNIFIED_EXECUTION.enabled = false;
   const withoutSliced = simulateRateLimits(60, true, true, true);
   console.log('\n⚡ WITHOUT SLICED EXECUTION (all-at-once):');
   printResult(withoutSliced.hyperliquid);
   printResult(withoutSliced.lighter);
   
   // Reset sliced to enabled (new default)
-  SLICED_EXECUTION.enabled = true;
+  UNIFIED_EXECUTION.enabled = true;
   
   // Summary
   console.log('\n' + '='.repeat(80));
@@ -637,12 +637,12 @@ function runSimulation() {
   
   console.log(`\n📊 API CALLS PER POSITION:`);
   console.log(`   Old (all-at-once): 2 order placements`);
-  console.log(`   New (sliced, ${SLICED_EXECUTION.avgSlicesPerPosition} slices):`);
-  console.log(`     - ${SLICED_EXECUTION.avgSlicesPerPosition * 2} markPrice calls`);
-  console.log(`     - ${SLICED_EXECUTION.avgSlicesPerPosition * 2} placeOrder calls`);
-  console.log(`     - ~${SLICED_EXECUTION.avgSlicesPerPosition * 10 * 2} getOrderStatus calls (waiting for fills)`);
-  console.log(`     - ~${Math.floor(SLICED_EXECUTION.avgSlicesPerPosition * 0.3 * 2)} cancelOrder calls (partial fills)`);
-  const totalNewCalls = SLICED_EXECUTION.avgSlicesPerPosition * (2 + 2 + 20 + 0.6);
+  console.log(`   New (sliced, ${UNIFIED_EXECUTION.avgSlicesPerPosition} slices):`);
+  console.log(`     - ${UNIFIED_EXECUTION.avgSlicesPerPosition * 2} markPrice calls`);
+  console.log(`     - ${UNIFIED_EXECUTION.avgSlicesPerPosition * 2} placeOrder calls`);
+  console.log(`     - ~${UNIFIED_EXECUTION.avgSlicesPerPosition * 10 * 2} getOrderStatus calls (waiting for fills)`);
+  console.log(`     - ~${Math.floor(UNIFIED_EXECUTION.avgSlicesPerPosition * 0.3 * 2)} cancelOrder calls (partial fills)`);
+  const totalNewCalls = UNIFIED_EXECUTION.avgSlicesPerPosition * (2 + 2 + 20 + 0.6);
   console.log(`   TOTAL: ~${Math.round(totalNewCalls)} calls vs 2 calls = ${Math.round(totalNewCalls / 2)}x increase`);
   
   console.log(`\n⚠️ SLICED EXECUTION TRADEOFFS:`);
@@ -664,7 +664,7 @@ function runSimulation() {
   
   if (hlSlicedUtil > 70 || lighterSlicedUtil > 70) {
     console.log(`\n🚨 RECOMMENDATION: Consider reducing:`);
-    console.log(`   - SLICED_EXECUTION.avgSlicesPerPosition from 5 to 3`);
+    console.log(`   - UNIFIED_EXECUTION.avgSlicesPerPosition from 5 to 3`);
     console.log(`   - ORDER_ACTIVITY.ordersPerHour if above 20`);
     console.log(`   - Or increase fillCheckIntervalMs from 2s to 3s`);
   } else {

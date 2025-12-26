@@ -41,14 +41,12 @@ import {
   CircuitState,
 } from '../../../infrastructure/services/CircuitBreakerService';
 import { ExecutionLockService } from '../../../infrastructure/services/ExecutionLockService';
-import { TWAPEngine } from '../../services/TWAPEngine';
-import {
-  ExecutionAnalytics,
+import { ExecutionAnalytics,
   OrderExecutionMetrics,
   RetryConfig,
   DEFAULT_RETRY_CONFIG,
 } from './ExecutionAnalytics';
-import { SlicedExecutionService, SlicedExecutionConfig } from '../execution/SlicedExecutionService';
+import { UnifiedExecutionService, UnifiedExecutionConfig } from '../execution/UnifiedExecutionService';
 import { ConfigService } from '@nestjs/config';
 
 /**
@@ -62,18 +60,19 @@ export class OrderExecutor implements IOrderExecutor {
   private readonly logger = new Logger(OrderExecutor.name);
   private executionAnalytics?: ExecutionAnalytics;
   
-  // Sliced execution service for safer hedged trades
-  private slicedExecutionService?: SlicedExecutionService;
+  // Unified execution service for safer hedged trades (The "Beautiful Architecture" engine)
+  private unifiedExecutionService?: UnifiedExecutionService;
   
   // Whether to use sliced execution (can be configured via env)
   private useSlicedExecution: boolean = true;
-  private slicedExecutionConfig: Partial<SlicedExecutionConfig> = {
-    dynamicSlicing: true,
+  private unifiedExecutionConfig: Partial<UnifiedExecutionConfig> = {
     minSlices: 2,
     maxSlices: 10,
     sliceFillTimeoutMs: 20000, // 20 seconds per slice
     maxImbalancePercent: 5, // Abort if > 5% imbalance
     fundingBufferMs: 3 * 60 * 1000, // 3 minute buffer before funding
+    maxPortfolioPctPerSlice: 0.05, // 5% of portfolio max
+    maxUsdPerSlice: 2500, // $2.5k max per slice
   };
 
   // Retry configuration for transient failures
@@ -113,15 +112,13 @@ export class OrderExecutor implements IOrderExecutor {
     @Optional()
     private readonly executionLockService?: ExecutionLockService,
     @Optional()
-    private readonly twapEngine?: TWAPEngine,
-    @Optional()
     private readonly configService?: ConfigService,
   ) {
     // Initialize execution analytics
     this.executionAnalytics = new ExecutionAnalytics();
     
-    // Initialize sliced execution service
-    this.slicedExecutionService = new SlicedExecutionService();
+    // Initialize unified execution service
+    this.unifiedExecutionService = new UnifiedExecutionService();
     
     // Check if sliced execution is disabled via env
     const disableSliced = this.configService?.get('DISABLE_SLICED_EXECUTION');
@@ -1779,65 +1776,13 @@ export class OrderExecutor implements IOrderExecutor {
         );
       }
 
-      // Determine if TWAP execution is needed
-      let useTWAP = false;
-      let twapStrategy: any = null;
-
-      if (this.twapEngine) {
-        // ALWAYS evaluate TWAP strategy statistically
-        const twapResult = await this.twapEngine.calculateOptimalStrategy(
-          opportunity.symbol,
-          actualPositionUsd,
-          opportunity.longExchange,
-          opportunity.shortExchange,
-          longAdapter,
-          shortAdapter
-        );
-
-        if (twapResult.isSuccess && twapResult.value.sliceCount > 1) {
-          useTWAP = true;
-          twapStrategy = twapResult.value;
-          this.logger.log(`✅ Statistical TWAP triggered: ${twapStrategy.sliceCount} slices (reason: ${twapStrategy.reasoning})`);
-        }
-      }
-
-      // Place orders
-      let longResponse: PerpOrderResponse;
-      let shortResponse: PerpOrderResponse;
-      let longError: any = null;
-      let shortError: any = null;
-
-      if (useTWAP && this.twapEngine) {
-        this.logger.log(`🚀 Executing via TWAP Engine for ${opportunity.symbol}`);
-        const twapExecResult = await this.twapEngine.startExecution(
-          twapStrategy,
-          longAdapter,
-          shortAdapter,
-          leverage
-        );
-
-        if (twapExecResult.isSuccess) {
-          // TWAP started successfully - we count this as a success for the cycle
-          // even though it will continue in the background
-          result.opportunitiesExecuted = 1;
-          result.ordersPlaced = 2; // Initial slices
-          result.totalExpectedReturn = plan.expectedNetReturn;
-
-          this.logger.log(`✅ TWAP execution initiated for ${opportunity.symbol}`);
-          return Result.success(result);
-        } else {
-          this.logger.error(`❌ TWAP execution failed to start: ${twapExecResult.error.message}`);
-          return Result.failure(twapExecResult.error);
-        }
-      }
-
       // ========================================================
-      // SLICED EXECUTION - Safer approach that limits single-leg exposure
+      // UNIFIED INTELLIGENT EXECUTION
       // ========================================================
-      if (this.useSlicedExecution && this.slicedExecutionService) {
-        this.logger.log(`🍕 Using SLICED execution for ${opportunity.symbol}`);
+      if (this.useSlicedExecution && this.unifiedExecutionService) {
+        this.logger.log(`🧠 Using UNIFIED INTELLIGENT execution for ${opportunity.symbol}`);
         
-        const slicedResult = await this.slicedExecutionService.executeSlicedHedge(
+        const unifiedResult = await this.unifiedExecutionService.executeSmartHedge(
           longAdapter,
           shortAdapter,
           opportunity.symbol,
@@ -1846,84 +1791,84 @@ export class OrderExecutor implements IOrderExecutor {
           shortOrder.price || 0,
           opportunity.longExchange,
           opportunity.shortExchange!,
-          this.slicedExecutionConfig,
+          this.unifiedExecutionConfig,
         );
         
-        if (slicedResult.success) {
+        if (unifiedResult.success) {
           // Success! Both sides filled across all slices
           result.opportunitiesExecuted = 1;
-          result.ordersPlaced = slicedResult.totalSlices * 2;
+          result.ordersPlaced = unifiedResult.completedSlices * 2;
           result.totalExpectedReturn = plan.expectedNetReturn;
           
           this.logger.log(
-            `✅ Sliced execution SUCCESS for ${opportunity.symbol}: ` +
-            `${slicedResult.completedSlices}/${slicedResult.totalSlices} slices, ` +
-            `LONG: ${slicedResult.totalLongFilled.toFixed(4)}, SHORT: ${slicedResult.totalShortFilled.toFixed(4)}`
+            `✅ Unified execution SUCCESS for ${opportunity.symbol}: ` +
+            `${unifiedResult.completedSlices}/${unifiedResult.totalSlices} slices, ` +
+            `LONG: ${unifiedResult.totalLongFilled.toFixed(4)}, SHORT: ${unifiedResult.totalShortFilled.toFixed(4)}`
           );
           
           return Result.success(result);
         } else {
-          // Sliced execution failed or partial - handle based on what happened
-          const imbalance = Math.abs(slicedResult.totalLongFilled - slicedResult.totalShortFilled);
+          // Execution failed or partial - handle based on what happened
+          const imbalance = Math.abs(unifiedResult.totalLongFilled - unifiedResult.totalShortFilled);
           const imbalanceUsd = imbalance * avgPrice;
           
           if (imbalanceUsd > 10) { // More than $10 imbalance
             this.logger.error(
-              `🚨 Sliced execution FAILED with imbalance for ${opportunity.symbol}: ` +
-              `LONG: ${slicedResult.totalLongFilled.toFixed(4)}, SHORT: ${slicedResult.totalShortFilled.toFixed(4)} ` +
-              `(imbalance: $${imbalanceUsd.toFixed(2)}). Reason: ${slicedResult.abortReason}`
+              `🚨 Unified execution FAILED with imbalance for ${opportunity.symbol}: ` +
+              `LONG: ${unifiedResult.totalLongFilled.toFixed(4)}, SHORT: ${unifiedResult.totalShortFilled.toFixed(4)} ` +
+              `(imbalance: $${imbalanceUsd.toFixed(2)}). Reason: ${unifiedResult.abortReason}`
             );
             
             // Record the single-leg failure
             if (this.diagnosticsService) {
-              const longIsLarger = slicedResult.totalLongFilled > slicedResult.totalShortFilled;
+              const longIsLarger = unifiedResult.totalLongFilled > unifiedResult.totalShortFilled;
               this.diagnosticsService.recordSingleLegFailure({
-                id: `sliced-${opportunity.symbol}-${Date.now()}`,
+                id: `unified-${opportunity.symbol}-${Date.now()}`,
                 symbol: opportunity.symbol,
                 timestamp: new Date(),
                 failedLeg: longIsLarger ? 'short' : 'long',
                 failedExchange: longIsLarger ? opportunity.shortExchange! : opportunity.longExchange,
                 successfulExchange: longIsLarger ? opportunity.longExchange : opportunity.shortExchange!,
                 failureReason: 'exchange_error',
-                failureMessage: slicedResult.abortReason || 'Sliced execution imbalance',
+                failureMessage: unifiedResult.abortReason || 'Unified execution imbalance',
                 timeBetweenLegsMs: 0,
                 attemptedSize: longOrder.size,
-                filledSize: Math.min(slicedResult.totalLongFilled, slicedResult.totalShortFilled),
+                filledSize: Math.min(unifiedResult.totalLongFilled, unifiedResult.totalShortFilled),
               });
             }
             
-            result.errors.push(`Sliced execution failed: ${slicedResult.abortReason}`);
+            result.errors.push(`Unified execution failed: ${unifiedResult.abortReason}`);
             return Result.failure(
               new OrderExecutionException(
-                `Sliced execution failed with imbalance: ${slicedResult.abortReason}`,
-                `sliced-${opportunity.symbol}`,
+                `Unified execution failed with imbalance: ${unifiedResult.abortReason}`,
+                `unified-${opportunity.symbol}`,
                 opportunity.longExchange,
                 { symbol: opportunity.symbol, imbalanceUsd },
               ),
             );
-          } else if (slicedResult.completedSlices > 0) {
+          } else if (unifiedResult.completedSlices > 0) {
             // Partial success - some slices completed
             result.opportunitiesExecuted = 1;
-            result.ordersPlaced = slicedResult.completedSlices * 2;
-            result.totalExpectedReturn = plan.expectedNetReturn * (slicedResult.completedSlices / slicedResult.totalSlices);
+            result.ordersPlaced = unifiedResult.completedSlices * 2;
+            result.totalExpectedReturn = plan.expectedNetReturn * (unifiedResult.completedSlices / unifiedResult.totalSlices);
             
             this.logger.warn(
-              `⚠️ Sliced execution PARTIAL for ${opportunity.symbol}: ` +
-              `${slicedResult.completedSlices}/${slicedResult.totalSlices} slices completed. ` +
-              `Reason: ${slicedResult.abortReason}`
+              `⚠️ Unified execution PARTIAL for ${opportunity.symbol}: ` +
+              `${unifiedResult.completedSlices}/${unifiedResult.totalSlices} slices completed. ` +
+              `Reason: ${unifiedResult.abortReason}`
             );
             
             return Result.success(result);
           } else {
             // Complete failure - nothing filled
             this.logger.error(
-              `❌ Sliced execution COMPLETE FAILURE for ${opportunity.symbol}: ${slicedResult.abortReason}`
+              `❌ Unified execution COMPLETE FAILURE for ${opportunity.symbol}: ${unifiedResult.abortReason}`
             );
-            result.errors.push(`Sliced execution failed: ${slicedResult.abortReason}`);
+            result.errors.push(`Unified execution failed: ${unifiedResult.abortReason}`);
             return Result.failure(
               new OrderExecutionException(
-                `Sliced execution failed: ${slicedResult.abortReason}`,
-                `sliced-${opportunity.symbol}`,
+                `Unified execution failed: ${unifiedResult.abortReason}`,
+                `unified-${opportunity.symbol}`,
                 opportunity.longExchange,
                 { symbol: opportunity.symbol },
               ),

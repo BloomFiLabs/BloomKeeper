@@ -72,7 +72,7 @@ import { PredictedBreakEvenCalculator } from '../../domain/services/strategy-rul
 import { StrategyConfig } from '../../domain/value-objects/StrategyConfig';
 import { MakerEfficiencyService } from '../../domain/services/strategy-rules/MakerEfficiencyService';
 import { SimpleEventBus } from '../events/SimpleEventBus';
-import { TWAPEngine } from '../../domain/services/TWAPEngine';
+import { UnifiedExecutionService } from '../../domain/services/execution/UnifiedExecutionService';
 import {
   TWAPOptimizer,
   OrderBookCollector,
@@ -525,7 +525,7 @@ import { PredictionAutoCalibrator } from '../../domain/services/prediction/Predi
     ReplenishmentRateAnalyzer,
     SlippageModelCalibrator,
     TWAPOptimizer,
-    TWAPEngine,
+    UnifiedExecutionService,
 
     // Domain services
     FundingRateAggregator,
@@ -846,8 +846,8 @@ import { PredictionAutoCalibrator } from '../../domain/services/prediction/Predi
     RegimeDetector,
     PredictionBacktester,
     PredictionAutoCalibrator,
-    // TWAP services
-    TWAPEngine,
+    // Unified execution service
+    UnifiedExecutionService,
     TWAPOptimizer,
     OrderBookCollector,
     ReplenishmentRateAnalyzer,

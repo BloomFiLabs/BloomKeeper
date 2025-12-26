@@ -417,11 +417,11 @@ export class PerpKeeperScheduler implements OnModuleInit {
     
     setTimeout(async () => {
       try {
-        // Reconcile persisted position state with actual exchange positions
-        await this.reconcilePositions();
+      // Reconcile persisted position state with actual exchange positions
+      await this.reconcilePositions();
 
-        // Update performance metrics immediately on startup so APY is available
-        // This populates fundingSnapshots for estimated APY AND syncs real funding payments
+      // Update performance metrics immediately on startup so APY is available
+      // This populates fundingSnapshots for estimated APY AND syncs real funding payments
         // Link prediction service to diagnostics
         if (this.diagnosticsService && this.predictionService) {
           this.diagnosticsService.setPredictionService(this.predictionService);
@@ -432,7 +432,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
         this.logger.log('📊 Initial performance metrics loaded (estimated + realized APY)');
 
         // First strategy execution
-        await this.executeHourly();
+      await this.executeHourly();
       } catch (error: any) {
         this.logger.error(`Startup initialization failed: ${error.message}`);
       }
@@ -1536,8 +1536,8 @@ export class PerpKeeperScheduler implements OnModuleInit {
       const singleLegPositions = this.detectSingleLegPositions(allPositions);
 
       if (singleLegPositions.length === 0) {
-        return;
-      }
+      return;
+    }
 
       // If global lock is held and we DON'T have critical single legs, respect the lock
       if (isLocked) {
@@ -1553,16 +1553,16 @@ export class PerpKeeperScheduler implements OnModuleInit {
       threadId = this.executionLockService?.generateThreadId() || threadId;
       if (!isLocked && this.executionLockService) {
         if (!this.executionLockService.tryAcquireGlobalLock(threadId, 'checkAndRetrySingleLegPositions')) {
-          return;
-        }
+        return;
+      }
       }
 
       this.logger.warn(`⚠️ Detected ${singleLegPositions.length} single-leg position(s). Attempting to open missing side...`);
 
-      let anyClosed = false;
+        let anyClosed = false;
 
-      // Try to open missing side for each single-leg position
-      for (const position of singleLegPositions) {
+        // Try to open missing side for each single-leg position
+        for (const position of singleLegPositions) {
           // Identify missing exchange (for 2-exchange arbitrage)
           // Most trades are Hyperliquid vs {Lighter, Aster}
           let missingExchange: ExchangeType | undefined;
@@ -1612,27 +1612,27 @@ export class PerpKeeperScheduler implements OnModuleInit {
               'CLOSED',
             );
           }
-      }
+        }
 
-      // If any positions were closed, refresh positions and look for new opportunities
-      if (anyClosed) {
-        // Wait for positions to settle
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        // If any positions were closed, refresh positions and look for new opportunities
+        if (anyClosed) {
+          // Wait for positions to settle
+          await new Promise((resolve) => setTimeout(resolve, 2000));
 
-        // Refresh positions to ensure we have latest state
+          // Refresh positions to ensure we have latest state
         const refreshedPositionsResult = await this.orchestrator.getAllPositionsWithMetrics();
         const refreshedPositions = refreshedPositionsResult.positions.filter(p => Math.abs(p.size) > 0.0001);
 
-        // Verify positions are actually closed
+          // Verify positions are actually closed
         const stillSingleLeg = this.detectSingleLegPositions(refreshedPositions);
-        if (stillSingleLeg.length === 0) {
+          if (stillSingleLeg.length === 0) {
           this.logger.log(`✅ All single-leg positions closed. Looking for new opportunities...`);
-          await this.triggerNewOpportunitySearch();
-        } else {
-          this.logger.warn(
-            `⚠️ Still detecting ${stillSingleLeg.length} single-leg position(s) after closing. ` +
-              `This may be stale data - will retry next cycle.`,
-          );
+            await this.triggerNewOpportunitySearch();
+          } else {
+            this.logger.warn(
+              `⚠️ Still detecting ${stillSingleLeg.length} single-leg position(s) after closing. ` +
+                `This may be stale data - will retry next cycle.`,
+            );
         }
       }
     } catch (error: any) {
@@ -3167,11 +3167,11 @@ export class PerpKeeperScheduler implements OnModuleInit {
           await this.executeNuclearClose(symbol, [longPos, shortPos], adapters);
           this.persistentImbalances.delete(symbol);
         } else if (persistenceMinutes >= 1) {
-          this.logger.warn(
+              this.logger.warn(
             `⏳ Tracking persistent imbalance for ${symbol}: ${imbalancePercent.toFixed(1)}% for ${persistenceMinutes.toFixed(1)} min ` +
             `(Nuclear in ${(NUCLEAR_TIMEOUT_MINUTES - persistenceMinutes).toFixed(1)} min)`
-          );
-        }
+              );
+            }
       }
 
       // Clean up tracking for symbols that no longer have positions
@@ -3181,7 +3181,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
         }
       }
 
-    } catch (error: any) {
+          } catch (error: any) {
       this.logger.error(`Error in nuclear option check: ${error.message}`);
     }
   }
@@ -3219,7 +3219,7 @@ export class PerpKeeperScheduler implements OnModuleInit {
           true, // reduceOnly
         );
 
-        this.logger.warn(
+            this.logger.warn(
           `☢️ Nuclear MARKET close: ${position.side} ${closeSize.toFixed(4)} ${position.symbol} on ${position.exchangeType}`
         );
 
@@ -3359,10 +3359,10 @@ export class PerpKeeperScheduler implements OnModuleInit {
                 );
                 // Update our state to match exchange
                 this.marketStateService?.updatePosition(actualPos);
-              }
-            }
           }
-        } catch (error: any) {
+        }
+      }
+    } catch (error: any) {
           this.logger.debug(
             `Could not reconcile positions for ${exchangeType}: ${error.message}`
           );
