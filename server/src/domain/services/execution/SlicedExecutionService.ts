@@ -359,9 +359,14 @@ export class SlicedExecutionService {
 
     result.totalLongFilled = cumulativeLongFilled;
     result.totalShortFilled = cumulativeShortFilled;
+    
+    // Calculate final imbalance
+    const finalImbalance = Math.abs(cumulativeLongFilled - cumulativeShortFilled);
+    const finalImbalancePercent = (finalImbalance / totalSize) * 100;
+    
     result.success = 
       result.completedSlices === numberOfSlices &&
-      Math.abs(cumulativeLongFilled - cumulativeShortFilled) / totalSize < 0.02; // < 2% total imbalance
+      finalImbalancePercent < 2; // < 2% total imbalance
 
     this.logger.log(
       `${result.success ? '✅' : '⚠️'} Sliced execution ${result.success ? 'complete' : 'partial'}: ` +
@@ -370,6 +375,47 @@ export class SlicedExecutionService {
       (result.abortReason ? ` (Aborted: ${result.abortReason})` : '') +
       (timeToFundingMs ? ` [${this.formatTimeToFunding(timeToFundingMs)} was available]` : '')
     );
+
+    // CRITICAL: If we have significant imbalance, try to rollback the excess
+    if (!result.success && finalImbalance > sliceSize * 0.5) {
+      this.logger.error(
+        `🚨 SIGNIFICANT IMBALANCE DETECTED: ${finalImbalance.toFixed(4)} ${symbol} ` +
+        `(${finalImbalancePercent.toFixed(1)}%). Attempting emergency rollback...`
+      );
+      
+      try {
+        if (cumulativeLongFilled > cumulativeShortFilled) {
+          // More LONG than SHORT - close excess LONG
+          const excess = cumulativeLongFilled - cumulativeShortFilled;
+          await this.rollbackLeg(
+            longAdapter,
+            symbol,
+            excess,
+            OrderSide.LONG,
+            longPrice,
+          );
+          result.totalLongFilled -= excess;
+          this.logger.log(`✅ Emergency rollback: Closed ${excess.toFixed(4)} excess LONG`);
+        } else if (cumulativeShortFilled > cumulativeLongFilled) {
+          // More SHORT than LONG - close excess SHORT
+          const excess = cumulativeShortFilled - cumulativeLongFilled;
+          await this.rollbackLeg(
+            shortAdapter,
+            symbol,
+            excess,
+            OrderSide.SHORT,
+            shortPrice,
+          );
+          result.totalShortFilled -= excess;
+          this.logger.log(`✅ Emergency rollback: Closed ${excess.toFixed(4)} excess SHORT`);
+        }
+      } catch (rollbackError: any) {
+        this.logger.error(
+          `🚨🚨 CRITICAL: Emergency rollback FAILED! Manual intervention required. ` +
+          `Error: ${rollbackError.message}`
+        );
+      }
+    }
 
     return result;
   }
@@ -522,9 +568,43 @@ export class SlicedExecutionService {
         result.longFilled = secondFillResult.filled;
       }
 
-      // If second leg partially filled, we have imbalance (handled by caller)
+      // CRITICAL FIX: If second leg didn't fill AT ALL, we must rollback first leg!
+      // This prevents single-leg exposure when one exchange's orders don't fill
+      if (!secondFillResult.filled && secondFillResult.filledSize === 0) {
+        this.logger.warn(
+          `🚨 Second leg NEVER FILLED for slice ${sliceNumber}! Rolling back first leg...`
+        );
+        
+        // Cancel the unfilled second order
+        if (secondResponse.orderId) {
+          await secondAdapter.cancelOrder(secondResponse.orderId, symbol).catch(() => {});
+        }
+        
+        // ROLLBACK the first leg that DID fill
+        await this.rollbackLeg(
+          firstAdapter,
+          symbol,
+          firstFillResult.filledSize,
+          firstIsLong ? OrderSide.LONG : OrderSide.SHORT,
+          firstIsLong ? longPrice : shortPrice,
+        );
+        
+        // Zero out the first leg since we rolled it back
+        if (firstIsLong) {
+          result.longFilledSize = 0;
+          result.longFilled = false;
+        } else {
+          result.shortFilledSize = 0;
+          result.shortFilled = false;
+        }
+        
+        result.error = 'Second leg timed out - rolled back first leg';
+        return result;
+      }
+      
+      // If second leg partially filled, cancel unfilled portion
+      // (caller will handle the imbalance)
       if (!secondFillResult.filled && secondResponse.orderId) {
-        // Cancel unfilled portion
         await secondAdapter.cancelOrder(secondResponse.orderId, symbol).catch(() => {});
       }
 
