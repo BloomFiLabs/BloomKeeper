@@ -34,21 +34,38 @@ export class PredictionAutoCalibrator implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
-    // Run initial calibration after a short delay
+    // DISABLED ON STARTUP: Calibration is a LUXURY feature, not required for trading!
+    // The bot works perfectly with default weights and lookbacks.
+    // 
+    // Calibration can be manually triggered via API if needed, or will run
+    // after 2 HOURS when the system has stabilized.
+    
+    const STARTUP_DELAY_MS = 2 * 60 * 60 * 1000; // 2 HOURS - give system time to stabilize
+    
+    this.logger.log(
+      `📊 Prediction Auto-Calibrator initialized - DISABLED on startup (runs after ${STARTUP_DELAY_MS / 3600000}h)`
+    );
+    
+    // Only schedule if env var ENABLE_CALIBRATION is set
+    const enableCalibration = process.env.ENABLE_CALIBRATION === 'true';
+    
+    if (!enableCalibration) {
+      this.logger.log('ℹ️ Calibration DISABLED (set ENABLE_CALIBRATION=true to enable)');
+      return;
+    }
+    
     setTimeout(() => {
       this.runCalibrationCycle().catch(err => 
         this.logger.error(`Initial calibration failed: ${err.message}`)
       );
-    }, 60000); // 1 minute delay
+    }, STARTUP_DELAY_MS);
 
-    // Schedule periodic calibration
+    // Schedule periodic calibration (every 24 hours)
     this.calibrationTimer = setInterval(() => {
       this.runCalibrationCycle().catch(err => 
         this.logger.error(`Periodic calibration failed: ${err.message}`)
       );
     }, CALIBRATION_CONFIG.CALIBRATION_INTERVAL_MS);
-
-    this.logger.log('Prediction Auto-Calibrator initialized');
   }
 
   onModuleDestroy() {
@@ -59,6 +76,8 @@ export class PredictionAutoCalibrator implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Run a full calibration cycle for all active assets
+   * 
+   * RATE-LIMIT AWARE: Adds delays between calibrations to avoid API storms
    */
   async runCalibrationCycle(): Promise<void> {
     if (this.isCalibrating) {
@@ -67,7 +86,7 @@ export class PredictionAutoCalibrator implements OnModuleInit, OnModuleDestroy {
     }
 
     this.isCalibrating = true;
-    this.logger.log('Starting daily prediction calibration cycle...');
+    this.logger.log('Starting daily prediction calibration cycle (rate-limit aware)...');
 
     try {
       const symbols = await this.aggregator.discoverCommonAssets();
@@ -75,18 +94,28 @@ export class PredictionAutoCalibrator implements OnModuleInit, OnModuleDestroy {
         e !== ExchangeType.MOCK && e !== ExchangeType.EXTENDED
       );
 
+      let calibrated = 0;
+      const total = symbols.length * exchanges.length;
+      
       for (const symbol of symbols) {
         for (const exchange of exchanges) {
           try {
             await this.calibrateAsset(symbol, exchange);
-          } catch (err) {
+            calibrated++;
+            
+            // RATE LIMIT PROTECTION: 2 second delay between calibrations
+            // This spreads the load and avoids API hammering
+            if (calibrated < total) {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          } catch (err: any) {
             this.logger.debug(`Failed to calibrate ${symbol}/${exchange}: ${err.message}`);
           }
         }
       }
 
-      this.logger.log('Prediction calibration cycle complete');
-    } catch (error) {
+      this.logger.log(`Prediction calibration cycle complete: ${calibrated}/${total} calibrations`);
+    } catch (error: any) {
       this.logger.error(`Calibration cycle failed: ${error.message}`);
     } finally {
       this.isCalibrating = false;

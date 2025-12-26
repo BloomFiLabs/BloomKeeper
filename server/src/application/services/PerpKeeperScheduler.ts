@@ -409,14 +409,19 @@ export class PerpKeeperScheduler implements OnModuleInit {
    * Run immediately on module initialization (startup)
    */
   async onModuleInit() {
-    // Wait a bit for other services to initialize
+    // STAGGERED STARTUP: Wait for other services to initialize without competing for rate limits
+    // WebSocket connections need time to establish and cache data before we start hitting REST APIs
+    const STARTUP_DELAY_MS = 15000; // 15 seconds
+    
+    this.logger.log(`🚀 PerpKeeperScheduler initializing - first run in ${STARTUP_DELAY_MS / 1000}s`);
+    
     setTimeout(async () => {
-      // Reconcile persisted position state with actual exchange positions
-      await this.reconcilePositions();
-
-      // Update performance metrics immediately on startup so APY is available
-      // This populates fundingSnapshots for estimated APY AND syncs real funding payments
       try {
+        // Reconcile persisted position state with actual exchange positions
+        await this.reconcilePositions();
+
+        // Update performance metrics immediately on startup so APY is available
+        // This populates fundingSnapshots for estimated APY AND syncs real funding payments
         // Link prediction service to diagnostics
         if (this.diagnosticsService && this.predictionService) {
           this.diagnosticsService.setPredictionService(this.predictionService);
@@ -425,13 +430,13 @@ export class PerpKeeperScheduler implements OnModuleInit {
         await this.syncFundingPayments(); // Fetch actual funding payments for Realized APY
         await this.updatePerformanceMetrics(); // Update position metrics for Estimated APY
         this.logger.log('📊 Initial performance metrics loaded (estimated + realized APY)');
-      } catch (error: any) {
-        this.logger.warn(`Failed to load initial metrics: ${error.message}`);
-      }
 
-      // Removed startup log - execution logs will show when it runs
-      await this.executeHourly();
-    }, 2000); // 2 second delay to ensure all services are ready
+        // First strategy execution
+        await this.executeHourly();
+      } catch (error: any) {
+        this.logger.error(`Startup initialization failed: ${error.message}`);
+      }
+    }, STARTUP_DELAY_MS);
   }
 
   /**

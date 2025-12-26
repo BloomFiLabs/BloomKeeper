@@ -85,17 +85,24 @@ export class HistoricalFundingRateService
     // Load cached data from disk first
     await this.loadFromDisk();
 
-    // Backfill only missing historical data from native APIs on startup
-    // This runs in background - don't await to avoid blocking startup
-    this.backfillHistoricalData().catch((err) => {
-      this.logger.error(
-        `Failed to backfill historical data on startup: ${err.message}`,
-      );
-    });
+    // DELAYED: Backfill historical data after 10 MINUTES to avoid rate limit storm
+    // We already have disk-cached data, so the bot can operate immediately
+    const BACKFILL_DELAY_MS = 10 * 60 * 1000; // 10 minutes
+    
+    this.logger.log(
+      `Historical funding rate service initialized - backfill in ${BACKFILL_DELAY_MS / 60000} minutes`
+    );
+    
+    setTimeout(() => {
+      this.backfillHistoricalData().catch((err) => {
+        this.logger.error(
+          `Failed to backfill historical data: ${err.message}`,
+        );
+      });
+    }, BACKFILL_DELAY_MS);
 
-    // Start periodic data collection (every hour)
+    // Start periodic data collection (every hour, but first one delayed)
     this.startPeriodicCollection();
-    this.logger.log('Historical funding rate service initialized');
   }
 
   /**
@@ -967,11 +974,20 @@ export class HistoricalFundingRateService
   /**
    * Backfill historical data from native APIs on startup
    * Only fetches missing data (data older than what's already cached)
+   * 
+   * RATE-LIMIT AWARE: Adds delays between symbols to avoid API storms
    */
   async backfillHistoricalData(): Promise<void> {
+    // Check if backfill is disabled
+    const disableBackfill = process.env.DISABLE_HISTORICAL_BACKFILL === 'true';
+    if (disableBackfill) {
+      this.logger.log('ℹ️ Historical backfill DISABLED (set DISABLE_HISTORICAL_BACKFILL=false to enable)');
+      return;
+    }
+    
     try {
       this.logger.log(
-        '🔄 Backfilling missing historical funding rate data from native APIs...',
+        '🔄 Backfilling missing historical funding rate data (rate-limited)...',
       );
 
       const symbols = await this.aggregator.discoverCommonAssets();
@@ -994,8 +1010,25 @@ export class HistoricalFundingRateService
       let hyperliquidSkipped = 0;
       let asterSkipped = 0;
       let lighterSkipped = 0;
+      
+      // RATE LIMIT PROTECTION: Process only 5 symbols at a time with delays
+      const BATCH_SIZE = 5;
+      const BATCH_DELAY_MS = 5000; // 5 seconds between batches
+      const SYMBOL_DELAY_MS = 1000; // 1 second between symbols in a batch
 
-      for (const symbol of symbols) {
+      for (let i = 0; i < symbols.length; i++) {
+        const symbol = symbols[i];
+        
+        // Add delay between batches
+        if (i > 0 && i % BATCH_SIZE === 0) {
+          this.logger.debug(`Backfill progress: ${i}/${symbols.length} symbols, pausing for rate limit...`);
+          await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        }
+        
+        // Add small delay between symbols
+        if (i > 0) {
+          await new Promise(resolve => setTimeout(resolve, SYMBOL_DELAY_MS));
+        }
         try {
           const mapping = this.aggregator.getSymbolMapping(symbol);
 
