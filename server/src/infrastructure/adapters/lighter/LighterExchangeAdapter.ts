@@ -69,6 +69,18 @@ export class LighterExchangeAdapter
   // Track consecutive nonce errors for debugging
   private consecutiveNonceErrors = 0;
 
+  // ==================== ORDER TRACKING ====================
+  // Track placed orders by transaction hash to match with Lighter order index
+  // Key: transaction hash, Value: { symbol, side, size, price, placedAt }
+  private pendingOrdersMap: Map<string, {
+    symbol: string;
+    side: OrderSide;
+    size: number;
+    price?: number;
+    placedAt: Date;
+  }> = new Map();
+  private readonly PENDING_ORDER_TTL_MS = 300000; // 5 minutes TTL for pending orders
+
   // ==================== ROBUST NONCE MANAGEMENT ====================
   // Local nonce tracking to handle stale API responses
   private localNonce: number | null = null;
@@ -1602,6 +1614,16 @@ export class LighterExchangeAdapter
 
     const hash = result.mainOrder.hash;
 
+    // Track this order for status matching (tx hash -> order details)
+    this.pendingOrdersMap.set(hash, {
+      symbol: request.symbol,
+      side: request.side,
+      size: request.size,
+      price: request.price,
+      placedAt: new Date(),
+    });
+    this.cleanupPendingOrders(); // Cleanup old entries
+
     return new PerpOrderResponse(
       hash,
       OrderStatus.SUBMITTED,
@@ -1613,6 +1635,18 @@ export class LighterExchangeAdapter
       undefined,
       new Date(),
     );
+  }
+
+  /**
+   * Cleanup old pending orders from tracking map
+   */
+  private cleanupPendingOrders(): void {
+    const now = Date.now();
+    for (const [hash, order] of this.pendingOrdersMap.entries()) {
+      if (now - order.placedAt.getTime() > this.PENDING_ORDER_TTL_MS) {
+        this.pendingOrdersMap.delete(hash);
+      }
+    }
   }
 
   /**
@@ -2379,7 +2413,32 @@ const releaseMutex = await this.acquireOrderMutex();
       // STEP 2: Fallback to REST API (check open orders)
       try {
         const openOrders = await this.getOpenOrders();
-        const orderStillOpen = openOrders.find((o) => o.orderId === orderId);
+        
+        // CRITICAL FIX: orderId might be a transaction hash, but openOrders use Lighter order index
+        // First try direct match (in case orderId is already an order index)
+        let orderStillOpen = openOrders.find((o) => o.orderId === orderId);
+        
+        // If no direct match and we have tracking info, match by symbol/side/size
+        if (!orderStillOpen) {
+          const trackedOrder = this.pendingOrdersMap.get(orderId);
+          if (trackedOrder) {
+            // Find matching order by symbol and side
+            const sideStr = trackedOrder.side === OrderSide.LONG ? 'buy' : 'sell';
+            orderStillOpen = openOrders.find((o) => 
+              o.symbol === trackedOrder.symbol && 
+              o.side.toLowerCase() === sideStr &&
+              // Match size within 1% tolerance (Lighter may round)
+              Math.abs(o.size - trackedOrder.size) / trackedOrder.size < 0.01
+            );
+            
+            if (orderStillOpen) {
+              this.logger.debug(
+                `📍 Matched tx hash ${orderId.substring(0, 16)}... to Lighter order ${orderStillOpen.orderId} ` +
+                `(${trackedOrder.symbol} ${sideStr} ${trackedOrder.size})`
+              );
+            }
+          }
+        }
         
         if (orderStillOpen) {
           // Order is still open - return SUBMITTED with filled size
@@ -2404,8 +2463,11 @@ const releaseMutex = await this.acquireOrderMutex();
 
         if (matchingPosition) {
           // Order not in open orders + position exists = likely filled
+          // Remove from pending tracking
+          this.pendingOrdersMap.delete(orderId);
+          
           this.logger.log(
-            `✅ getOrderStatus: Order ${orderId} not in open orders and position exists for ${symbol} ` +
+            `✅ getOrderStatus: Order ${orderId.substring(0, 16)}... not in open orders and position exists for ${symbol} ` +
               `(${matchingPosition.side}, size: ${matchingPosition.size}). Returning FILLED.`,
           );
           return new PerpOrderResponse(
@@ -2420,9 +2482,35 @@ const releaseMutex = await this.acquireOrderMutex();
             new Date(),
           );
         } else {
+          // Order not in open orders + no position = check if we have tracking info
+          const trackedOrder = this.pendingOrdersMap.get(orderId);
+          if (trackedOrder) {
+            // We placed this order but it's not in open orders and no position
+            // This could mean: (a) still processing, (b) cancelled, (c) filled but position closed
+            // Give it more time if recently placed
+            const age = Date.now() - trackedOrder.placedAt.getTime();
+            if (age < 10000) { // Less than 10 seconds old
+              this.logger.debug(
+                `getOrderStatus: Order ${orderId.substring(0, 16)}... not found yet (age: ${age}ms). Returning SUBMITTED.`,
+              );
+              return new PerpOrderResponse(
+                orderId,
+                OrderStatus.SUBMITTED,
+                symbol,
+                trackedOrder.side,
+                undefined,
+                0,
+                trackedOrder.price,
+                undefined,
+                new Date(),
+              );
+            }
+          }
+          
           // Order not in open orders + no position = likely cancelled
+          this.pendingOrdersMap.delete(orderId);
           this.logger.debug(
-            `getOrderStatus: Order ${orderId} not in open orders and no position for ${symbol}. May be cancelled.`,
+            `getOrderStatus: Order ${orderId.substring(0, 16)}... not in open orders and no position for ${symbol}. May be cancelled.`,
           );
           return new PerpOrderResponse(
             orderId,
