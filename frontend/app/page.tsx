@@ -37,8 +37,8 @@ ChartJS.register(
   Filler
 );
 
-const DIAGNOSTICS_URL = 'http://146.190.7.44:3000/keeper/diagnostics';
-const RESET_URL = 'http://146.190.7.44:3000/keeper/reset-metrics';
+const DIAGNOSTICS_URL = 'https://bloomfikeeper.com/keeper/diagnostics';
+const RESET_URL = 'https://bloomfikeeper.com/keeper/reset-metrics';
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
