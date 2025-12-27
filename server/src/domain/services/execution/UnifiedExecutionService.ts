@@ -244,7 +244,27 @@ export class UnifiedExecutionService {
       // Re-verify slice size against portfolio just before placing order
       await this.validateSliceSafety(firstAdapter, secondAdapter, sliceSize, firstPrice, cfg);
 
-      // --- STEP 1: Place Leg A ---
+      // --- STEP 1: Get initial position size BEFORE placing order ---
+      // This is critical: if there's an existing position, we need to track the delta
+      let initialPositionSize = 0;
+      try {
+        const positions = await firstAdapter.getPositions();
+        const existingPosition = positions.find(
+          (p) => p.symbol === symbol && 
+          ((firstIsLong && p.side === OrderSide.LONG) || (!firstIsLong && p.side === OrderSide.SHORT))
+        );
+        if (existingPosition) {
+          initialPositionSize = Math.abs(existingPosition.size);
+          this.logger.debug(
+            `📊 Initial position for ${symbol} ${firstSide}: ${initialPositionSize.toFixed(4)} ` +
+            `(will track delta after order fills)`
+          );
+        }
+      } catch (error: any) {
+        this.logger.debug(`Could not get initial position: ${error.message}`);
+      }
+
+      // --- STEP 2: Place Leg A ---
       const firstOrder = new PerpOrderRequest(symbol, firstSide, OrderType.LIMIT, sliceSize, firstPrice, TimeInForce.GTC);
       const firstResp = await firstAdapter.placeOrder(firstOrder);
       
@@ -253,8 +273,15 @@ export class UnifiedExecutionService {
         return result;
       }
 
-      // --- STEP 2: Wait for Leg A Fill ---
-      const firstFill = await this.waitForFill(firstAdapter, firstResp.orderId!, symbol, sliceSize, cfg);
+      // --- STEP 3: Wait for Leg A Fill ---
+      const firstFill = await this.waitForFill(
+        firstAdapter, 
+        firstResp.orderId!, 
+        symbol, 
+        sliceSize, 
+        cfg,
+        initialPositionSize // Pass initial position to calculate delta
+      );
       
       if (firstIsLong) {
         result.longFilledSize = firstFill.filledSize;
@@ -340,7 +367,8 @@ export class UnifiedExecutionService {
     orderId: string, 
     symbol: string, 
     expectedSize: number, 
-    cfg: UnifiedExecutionConfig
+    cfg: UnifiedExecutionConfig,
+    initialPositionSize: number = 0 // Position size BEFORE order was placed
   ): Promise<{ filled: boolean, filledSize: number }> {
     const start = Date.now();
     let currentFilled = 0;
@@ -348,10 +376,55 @@ export class UnifiedExecutionService {
     while (Date.now() - start < cfg.sliceFillTimeoutMs) {
       try {
         const status = await adapter.getOrderStatus(orderId, symbol);
-        currentFilled = status.filledSize || 0;
         
-        if (status.status === OrderStatus.FILLED) return { filled: true, filledSize: currentFilled };
-        if (status.status === OrderStatus.CANCELLED || status.status === OrderStatus.REJECTED) return { filled: false, filledSize: currentFilled };
+        // CRITICAL: If there was an initial position, calculate the DELTA
+        // getOrderStatus returns total position size, but we need the fill size
+        if (initialPositionSize > 0 && status.status === OrderStatus.FILLED) {
+          // Order is filled - check current position to get actual fill size
+          try {
+            const positions = await adapter.getPositions();
+            const currentPosition = positions.find(
+              (p) => p.symbol === symbol && Math.abs(p.size) > 0.0001
+            );
+            if (currentPosition) {
+              const currentPositionSize = Math.abs(currentPosition.size);
+              const fillDelta = currentPositionSize - initialPositionSize;
+              
+              if (fillDelta > 0) {
+                // Position increased - this is the actual fill size
+                this.logger.log(
+                  `✅ Fill detected via position delta: ${symbol} ` +
+                  `initial=${initialPositionSize.toFixed(4)}, ` +
+                  `current=${currentPositionSize.toFixed(4)}, ` +
+                  `filled=${fillDelta.toFixed(4)}`
+                );
+                return { filled: true, filledSize: fillDelta };
+              } else {
+                // Position didn't increase - might be a different order or position closed
+                // Fall back to status.filledSize
+                currentFilled = status.filledSize || 0;
+              }
+            }
+          } catch (posError: any) {
+            this.logger.debug(`Could not get position for delta calculation: ${posError.message}`);
+            // Fall back to status.filledSize
+            currentFilled = status.filledSize || 0;
+          }
+        } else {
+          // No initial position or order not filled yet - use status.filledSize
+          currentFilled = status.filledSize || 0;
+        }
+        
+        if (status.status === OrderStatus.FILLED) {
+          // If we didn't calculate delta above, use the status filledSize
+          if (currentFilled === 0) {
+            currentFilled = status.filledSize || expectedSize; // Fallback to expectedSize if status doesn't have it
+          }
+          return { filled: true, filledSize: currentFilled };
+        }
+        if (status.status === OrderStatus.CANCELLED || status.status === OrderStatus.REJECTED) {
+          return { filled: false, filledSize: currentFilled };
+        }
         
         await new Promise(r => setTimeout(r, cfg.fillCheckIntervalMs));
       } catch {
