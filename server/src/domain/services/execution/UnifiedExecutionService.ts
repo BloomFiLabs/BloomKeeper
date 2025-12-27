@@ -398,14 +398,11 @@ export class UnifiedExecutionService {
   ): Promise<{ filled: boolean, filledSize: number }> {
     const start = Date.now();
     let currentFilled = 0;
-    let firstCheck = true;
 
-    // CRITICAL: Add small delay before first check to allow instant fills to update positions
-    // Orders that fill instantly (market orders or very aggressive limits) need time for position updates
-    if (firstCheck) {
-      await new Promise(r => setTimeout(r, 500)); // 500ms delay for position updates
-      firstCheck = false;
-    }
+    // Small delay before first check to allow instant fills to propagate
+    // But use a configurable delay that's a fraction of the timeout to avoid eating into fill time
+    const initialDelay = Math.min(200, cfg.sliceFillTimeoutMs * 0.1);
+    await new Promise(r => setTimeout(r, initialDelay));
 
     while (Date.now() - start < cfg.sliceFillTimeoutMs) {
       try {
