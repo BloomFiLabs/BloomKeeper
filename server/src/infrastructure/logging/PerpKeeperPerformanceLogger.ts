@@ -716,8 +716,12 @@ export class PerpKeeperPerformanceLogger
 
     // 3. Add current unrealized basis drift to "Realized APY" for a true performance snapshot
     // This makes the APY reflect what would happen if we closed EVERYTHING right now
-    const currentMetrics = this.getPerformanceMetrics(capitalDeployed);
-    totalProfit += currentMetrics.totalUnrealizedPnl;
+    // NOTE: Calculate totalUnrealizedPnl directly to avoid circular call with getPerformanceMetrics
+    let totalUnrealizedPnl = 0;
+    for (const metrics of this.exchangeMetrics.values()) {
+      totalUnrealizedPnl += metrics.totalUnrealizedPnl;
+    }
+    totalProfit += totalUnrealizedPnl;
 
     const runtimeDays = this.getRuntimeDays();
     if (runtimeDays === 0) return 0;

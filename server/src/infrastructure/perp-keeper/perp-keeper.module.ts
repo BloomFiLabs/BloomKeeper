@@ -829,6 +829,7 @@ import { PredictionAutoCalibrator } from '../../domain/services/prediction/Predi
       provide: 'IPerpKeeperPerformanceLogger',
       useExisting: PerpKeeperPerformanceLogger,
     },
+    TradeLoggingService,
   ],
   exports: [
     PerpKeeperService,
@@ -848,7 +849,6 @@ import { PredictionAutoCalibrator } from '../../domain/services/prediction/Predi
     KeeperStrategyEventListener,
     WithdrawalFulfiller,
     NAVReporter,
-    TradeLoggingService,
     // Order guardian service
     OrderGuardianService,
     // Unified state service
