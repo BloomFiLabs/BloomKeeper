@@ -1672,9 +1672,11 @@ export class LighterExchangeAdapter
         
         // Find order index from active orders
         const activeOrders = await this.getOpenOrders();
+        // Map request.side (LONG/SHORT) to open order side format (buy/sell)
+        const requestSideNormalized = request.side === OrderSide.LONG || request.side.toUpperCase() === 'LONG' ? 'buy' : 'sell';
         const matchingOrder = activeOrders.find(o => 
           o.symbol === request.symbol && 
-          o.side.toLowerCase() === request.side.toLowerCase()
+          o.side.toLowerCase() === requestSideNormalized
         );
 
         if (!matchingOrder) {
@@ -4504,12 +4506,30 @@ const releaseMutex = await this.acquireOrderMutex();
         if (isResolved || !orderSide || repriceCount >= MAX_REPRICES) return;
 
         try {
-          // Get current best bid/ask from WebSocket
-          const marketIndex = await this.getMarketIndex(symbol);
-          const book = this.wsProvider?.getBestBidAsk(marketIndex);
+          // Get current best bid/ask - try WebSocket first, then REST fallback
+          let book: { bestBid: number; bestAsk: number } | null = null;
+          
+          try {
+            const marketIndex = await this.getMarketIndex(symbol);
+            book = this.wsProvider?.getBestBidAsk(marketIndex) ?? null;
+          } catch (e) {
+            // WebSocket lookup failed
+          }
+          
+          // CRITICAL: Fall back to REST if WebSocket has no data
+          if (!book) {
+            try {
+              book = await this.getBestBidAsk(symbol);
+              if (book) {
+                this.logger.debug(`Using REST fallback for ${symbol} order book: bid=${book.bestBid.toFixed(4)}, ask=${book.bestAsk.toFixed(4)}`);
+              }
+            } catch (e: any) {
+              this.logger.debug(`REST fallback failed for ${symbol}: ${e.message}`);
+            }
+          }
           
           if (!book) {
-            this.logger.debug(`No order book data for repricing ${symbol}`);
+            this.logger.debug(`No order book data for repricing ${symbol} (tried WS + REST)`);
             return;
           }
 

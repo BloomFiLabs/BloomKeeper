@@ -2424,9 +2424,23 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         if (isResolved || !orderSide || repriceCount >= MAX_REPRICES) return;
 
         try {
-          const book = this.wsProvider?.getBestBidAsk(symbol);
+          // Try WebSocket first, then REST fallback
+          let book: { bestBid: number; bestAsk: number } | null = this.wsProvider?.getBestBidAsk(symbol) || null;
+          
+          // CRITICAL: Fall back to REST if WebSocket has no data
           if (!book) {
-            this.logger.debug(`No order book data for repricing ${symbol}`);
+            try {
+              book = await this.getBestBidAsk(symbol);
+              if (book) {
+                this.logger.debug(`Using REST fallback for ${symbol} order book: bid=${book.bestBid.toFixed(4)}, ask=${book.bestAsk.toFixed(4)}`);
+              }
+            } catch (e: any) {
+              this.logger.debug(`REST fallback failed for ${symbol}: ${e.message}`);
+            }
+          }
+          
+          if (!book) {
+            this.logger.debug(`No order book data for repricing ${symbol} (tried WS + REST)`);
             return;
           }
 
