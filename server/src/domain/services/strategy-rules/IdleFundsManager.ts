@@ -27,6 +27,7 @@ import { CostCalculator } from './CostCalculator';
 import type { IOrderExecutor } from './IOrderExecutor';
 import { Inject, Optional, forwardRef } from '@nestjs/common';
 import { ArbitrageExecutionResult } from '../FundingArbitrageStrategy';
+import { MarketQualityFilter } from '../MarketQualityFilter';
 
 /**
  * IdleFundsManager - Manages idle funds and reallocates them to best opportunities
@@ -50,6 +51,8 @@ export class IdleFundsManager implements IIdleFundsManager {
     @Optional()
     @Inject(forwardRef(() => 'IOrderExecutor'))
     private readonly orderExecutor?: IOrderExecutor,
+    @Optional()
+    private readonly marketQualityFilter?: MarketQualityFilter,
   ) {}
 
   async detectIdleFunds(
@@ -318,6 +321,15 @@ export class IdleFundsManager implements IIdleFundsManager {
 
       if (totalExpectedReturn > 0) {
         for (const opportunity of topOpportunities) {
+          // Skip blacklisted symbols (e.g., MEGA with invalid margin mode)
+          if (this.marketQualityFilter?.isBlacklisted(opportunity.symbol, opportunity.longExchange) ||
+              this.marketQualityFilter?.isBlacklisted(opportunity.symbol, opportunity.shortExchange)) {
+            this.logger.debug(
+              `Skipping blacklisted symbol ${opportunity.symbol} for idle funds allocation`
+            );
+            continue;
+          }
+
           const opportunityWeight =
             (opportunity.expectedReturn?.toDecimal() || 0) /
             totalExpectedReturn;
@@ -526,6 +538,37 @@ export class IdleFundsManager implements IIdleFundsManager {
                 `(hedged pair via OrderExecutor, ${reason})`,
             );
           } else {
+            // Record failure for blacklisting
+            const errorMsg = executionResult.error.message.toLowerCase();
+            if (errorMsg.includes('invalid margin mode') || 
+                errorMsg.includes('margin mode') ||
+                errorMsg.includes('failed after') ||
+                errorMsg.includes('never filled')) {
+              // Determine failure type
+              const failureType = errorMsg.includes('invalid margin mode') || errorMsg.includes('margin mode')
+                ? 'REJECTED' as const
+                : errorMsg.includes('never filled')
+                ? 'FILL_TIMEOUT' as const
+                : 'OTHER' as const;
+              
+              this.marketQualityFilter?.recordFailure({
+                symbol: opportunity.symbol,
+                exchange: opportunity.longExchange,
+                failureType,
+                message: executionResult.error.message,
+                timestamp: new Date(),
+              });
+              if (opportunity.shortExchange) {
+                this.marketQualityFilter?.recordFailure({
+                  symbol: opportunity.symbol,
+                  exchange: opportunity.shortExchange,
+                  failureType,
+                  message: executionResult.error.message,
+                  timestamp: new Date(),
+                });
+              }
+            }
+            
             this.logger.warn(
               `Failed to execute idle funds allocation via OrderExecutor: ${executionResult.error.message}`,
             );
