@@ -85,18 +85,28 @@ export class MakerEfficiencyService implements OnModuleInit {
           this.handleReactiveBookUpdate(ExchangeType.HYPERLIQUID, coin, bestBid, bestAsk);
         });
         this.activeBookSubscriptions.set(key, unsubscribe);
-        this.logger.debug(`📡 Subscribed to reactive HL book updates for ${order.symbol}`);
+        this.logger.log(`📡 Subscribed to reactive HL book updates for ${order.symbol}`);
       } else if (exchange === ExchangeType.LIGHTER) {
         // For Lighter, we need the market index
         const adapter = this.keeperService.getExchangeAdapter(ExchangeType.LIGHTER);
         if (adapter) {
           (adapter as any).getMarketIndex(order.symbol).then((marketIndex: number) => {
+            // Verify we can get orderbook data before subscribing
+            const testBook = this.lighterWsProvider.getBestBidAsk(marketIndex);
+            if (!testBook) {
+              this.logger.warn(`⚠️ No orderbook data available yet for ${order.symbol} (marketIndex: ${marketIndex}), subscription may not work`);
+            }
+            
             const unsubscribe = this.lighterWsProvider.onBookUpdate(marketIndex, (bestBid, bestAsk, mktIdx) => {
               this.handleReactiveBookUpdate(ExchangeType.LIGHTER, order.symbol, bestBid, bestAsk);
             });
             this.activeBookSubscriptions.set(key, unsubscribe);
-            this.logger.debug(`📡 Subscribed to reactive Lighter book updates for ${order.symbol}`);
-          }).catch(() => {});
+            this.logger.log(`📡 Subscribed to reactive Lighter book updates for ${order.symbol} (marketIndex: ${marketIndex})`);
+          }).catch((error: any) => {
+            this.logger.error(`❌ Failed to subscribe to reactive Lighter book updates for ${order.symbol}: ${error.message}`);
+          });
+        } else {
+          this.logger.error(`❌ No Lighter adapter available to subscribe for ${order.symbol}`);
         }
       }
     }
@@ -115,7 +125,10 @@ export class MakerEfficiencyService implements OnModuleInit {
       o.isForceFilling !== true
     );
     
-    if (relevantOrders.length === 0) return;
+    if (relevantOrders.length === 0) {
+      this.logger.debug(`Reactive update for ${symbol} on ${exchange}: no active orders`);
+      return;
+    }
     
     for (const order of relevantOrders) {
       const orderKey = `${order.exchange}-${order.orderId}`;
@@ -123,22 +136,35 @@ export class MakerEfficiencyService implements OnModuleInit {
       const lastReprice = this.lastReactiveReprice.get(orderKey) || 0;
       
       // Debounce - don't reprice same order too fast
-      if (now - lastReprice < this.REACTIVE_DEBOUNCE_MS) continue;
+      if (now - lastReprice < this.REACTIVE_DEBOUNCE_MS) {
+        this.logger.debug(`Reactive update for ${symbol} debounced (${now - lastReprice}ms since last reprice)`);
+        continue;
+      }
       
       const currentPrice = order.price || 0;
+      // More aggressive: reprice if we're not competitive (equal or worse than book)
       const needsReprice = 
-        (order.side === 'LONG' && currentPrice < bestBid) ||
-        (order.side === 'SHORT' && currentPrice > bestAsk);
+        (order.side === 'LONG' && currentPrice <= bestBid) ||
+        (order.side === 'SHORT' && currentPrice >= bestAsk);
       
       if (needsReprice) {
         this.lastReactiveReprice.set(orderKey, now);
+        const distance = order.side === 'LONG' 
+          ? ((bestBid - currentPrice) / currentPrice * 100).toFixed(2)
+          : ((currentPrice - bestAsk) / currentPrice * 100).toFixed(2);
         this.logger.log(
           `⚡ REACTIVE reprice: ${order.side} ${symbol} on ${exchange} - ` +
-          `Our price ${currentPrice.toFixed(4)} is worse than book (bid=${bestBid.toFixed(4)}, ask=${bestAsk.toFixed(4)})`
+          `Our price ${currentPrice.toFixed(4)} is ${needsReprice ? 'worse' : 'equal'} than book ` +
+          `(bid=${bestBid.toFixed(4)}, ask=${bestAsk.toFixed(4)}, ${distance}% away)`
         );
         
         // Trigger immediate reprice (bypass rate limit checks for reactive - they're already debounced)
         await this.checkAndRepositionOrder(order, true);
+      } else {
+        this.logger.debug(
+          `Reactive update for ${order.side} ${symbol}: price ${currentPrice.toFixed(4)} is competitive ` +
+          `(bid=${bestBid.toFixed(4)}, ask=${bestAsk.toFixed(4)})`
+        );
       }
     }
   }
@@ -283,13 +309,31 @@ export class MakerEfficiencyService implements OnModuleInit {
     }
 
     if (!bestBidAsk) {
-      this.logger.debug(`No real-time book data for ${symbol} on ${exchange} yet.`);
-      return;
+      // Try fallback to adapter's getBestBidAsk if WebSocket data unavailable
+      try {
+        bestBidAsk = await adapter.getBestBidAsk(symbol);
+        if (!bestBidAsk) {
+          this.logger.warn(`⚠️ No orderbook data available for ${symbol} on ${exchange} (order age: ${orderAgeSec.toFixed(0)}s)`);
+          return;
+        }
+        this.logger.debug(`Using REST fallback for orderbook data: ${symbol} on ${exchange}`);
+      } catch (e: any) {
+        this.logger.warn(`⚠️ Failed to get orderbook data for ${symbol} on ${exchange}: ${e.message}`);
+        return;
+      }
     }
 
     const { bestBid, bestAsk } = bestBidAsk;
     const currentPrice = activeOrder.price || 0;
     const tickSize = await adapter.getTickSize(symbol);
+
+    // Log current state for debugging
+    if (orderAgeSec > 30) {
+      this.logger.debug(
+        `📊 Order check: ${activeOrder.side} ${symbol} @ ${currentPrice.toFixed(4)} | ` +
+        `Book: bid=${bestBid.toFixed(4)}, ask=${bestAsk.toFixed(4)} | Age: ${orderAgeSec.toFixed(0)}s`
+      );
+    }
 
     // 2. Determine target price to be the best maker
     // For URGENT orders (force=true or >30s old), be MORE AGGRESSIVE
@@ -299,20 +343,30 @@ export class MakerEfficiencyService implements OnModuleInit {
     // Aggressive offset: 2 ticks for urgent, 1 tick for normal
     const aggressiveOffset = isUrgent ? tickSize * 2 : tickSize;
 
+    // Check if order is far from book (more than 2 ticks away)
+    const isFarFromBook = activeOrder.side === 'LONG' 
+      ? (currentPrice < bestBid - tickSize * 2)
+      : (currentPrice > bestAsk + tickSize * 2);
+
     if (activeOrder.side === 'LONG') {
       // For BUY orders, we want to be bestBid + tick(s)
-      if (currentPrice < bestBid || (isUrgent && currentPrice <= bestBid)) {
+      // Always reprice if we're worse than or equal to the book (below or equal to bestBid)
+      // OR if we're far from the book
+      if (currentPrice <= bestBid || isFarFromBook) {
         targetPrice = bestBid + aggressiveOffset;
       }
     } else {
       // For SELL orders, we want to be bestAsk - tick(s)
-      if (currentPrice > bestAsk || (isUrgent && currentPrice >= bestAsk)) {
+      // Always reprice if we're worse than or equal to the book (above or equal to bestAsk)
+      // OR if we're far from the book
+      if (currentPrice >= bestAsk || isFarFromBook) {
         targetPrice = bestAsk - aggressiveOffset;
       }
     }
 
     // 3. Reposition if target price changed significantly OR if forced
-    const priceNeedsUpdate = Math.abs(targetPrice - currentPrice) > (tickSize / 2);
+    const priceDiff = Math.abs(targetPrice - currentPrice);
+    const priceNeedsUpdate = priceDiff > (tickSize / 2) || force || isFarFromBook;
     if (priceNeedsUpdate || force) {
       // Ensure we don't cross the spread (don't buy above bestAsk or sell below bestBid)
       if (activeOrder.side === 'LONG' && targetPrice >= bestAsk) {
@@ -323,9 +377,13 @@ export class MakerEfficiencyService implements OnModuleInit {
       }
 
       const urgencyLabel = isUrgent ? '🚨 URGENT' : '🎯';
+      const distanceFromBook = activeOrder.side === 'LONG' 
+        ? ((bestBid - currentPrice) / currentPrice * 100).toFixed(2)
+        : ((currentPrice - bestAsk) / currentPrice * 100).toFixed(2);
       this.logger.log(
         `${urgencyLabel} Repositioning ${activeOrder.side} ${symbol} on ${exchange}: ` +
-        `${currentPrice.toFixed(4)} -> ${targetPrice.toFixed(4)} (Age: ${orderAgeSec.toFixed(0)}s)`
+        `${currentPrice.toFixed(4)} -> ${targetPrice.toFixed(4)} ` +
+        `(Age: ${orderAgeSec.toFixed(0)}s, ${distanceFromBook}% from book)`
       );
 
       try {
