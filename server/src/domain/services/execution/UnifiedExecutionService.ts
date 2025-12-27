@@ -372,9 +372,47 @@ export class UnifiedExecutionService {
   ): Promise<{ filled: boolean, filledSize: number }> {
     const start = Date.now();
     let currentFilled = 0;
+    let firstCheck = true;
+
+    // CRITICAL: Add small delay before first check to allow instant fills to update positions
+    // Orders that fill instantly (market orders or very aggressive limits) need time for position updates
+    if (firstCheck) {
+      await new Promise(r => setTimeout(r, 500)); // 500ms delay for position updates
+      firstCheck = false;
+    }
 
     while (Date.now() - start < cfg.sliceFillTimeoutMs) {
       try {
+        // ALWAYS check position delta first if we have initial position
+        // This catches instant fills even if getOrderStatus hasn't updated yet
+        if (initialPositionSize > 0) {
+          try {
+            const positions = await adapter.getPositions();
+            const currentPosition = positions.find(
+              (p) => p.symbol === symbol && Math.abs(p.size) > 0.0001
+            );
+            if (currentPosition) {
+              const currentPositionSize = Math.abs(currentPosition.size);
+              const fillDelta = Math.abs(currentPositionSize - initialPositionSize);
+              
+              // If position increased significantly (at least 50% of expected), consider it filled
+              // This handles cases where order filled instantly but getOrderStatus hasn't updated
+              if (fillDelta >= (expectedSize * 0.5)) {
+                this.logger.log(
+                  `✅ Fill detected via position delta: ${symbol} ` +
+                  `initial=${initialPositionSize.toFixed(4)}, ` +
+                  `current=${currentPositionSize.toFixed(4)}, ` +
+                  `filled=${fillDelta.toFixed(4)} (expected=${expectedSize.toFixed(4)})`
+                );
+                return { filled: true, filledSize: fillDelta };
+              }
+            }
+          } catch (posError: any) {
+            this.logger.debug(`Could not get position for delta check: ${posError.message}`);
+          }
+        }
+
+        // Now check order status
         const status = await adapter.getOrderStatus(orderId, symbol);
         
         // CRITICAL: If there was an initial position, calculate the DELTA
@@ -388,7 +426,7 @@ export class UnifiedExecutionService {
             );
             if (currentPosition) {
               const currentPositionSize = Math.abs(currentPosition.size);
-              const fillDelta = currentPositionSize - initialPositionSize;
+              const fillDelta = Math.abs(currentPositionSize - initialPositionSize);
               
               if (fillDelta > 0) {
                 // Position increased - this is the actual fill size
@@ -422,7 +460,35 @@ export class UnifiedExecutionService {
           }
           return { filled: true, filledSize: currentFilled };
         }
-        if (status.status === OrderStatus.CANCELLED || status.status === OrderStatus.REJECTED) {
+        
+        // CRITICAL: If order status is CANCELLED but position increased, it likely filled instantly
+        // This handles the case where order fills so fast it's removed from open orders before status check
+        if (status.status === OrderStatus.CANCELLED && initialPositionSize > 0) {
+          try {
+            const positions = await adapter.getPositions();
+            const currentPosition = positions.find(
+              (p) => p.symbol === symbol && Math.abs(p.size) > 0.0001
+            );
+            if (currentPosition) {
+              const currentPositionSize = Math.abs(currentPosition.size);
+              const fillDelta = Math.abs(currentPositionSize - initialPositionSize);
+              
+              // If position increased significantly, treat as filled (order filled instantly)
+              if (fillDelta >= (expectedSize * 0.5)) {
+                this.logger.log(
+                  `✅ Fill detected: Order marked CANCELLED but position increased ` +
+                  `(${symbol} initial=${initialPositionSize.toFixed(4)}, ` +
+                  `current=${currentPositionSize.toFixed(4)}, filled=${fillDelta.toFixed(4)})`
+                );
+                return { filled: true, filledSize: fillDelta };
+              }
+            }
+          } catch (posError: any) {
+            this.logger.debug(`Could not verify position after CANCELLED status: ${posError.message}`);
+          }
+        }
+        
+        if (status.status === OrderStatus.REJECTED) {
           return { filled: false, filledSize: currentFilled };
         }
         
