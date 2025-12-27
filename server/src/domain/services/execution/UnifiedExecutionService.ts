@@ -240,6 +240,10 @@ export class UnifiedExecutionService {
     const secondPrice = firstIsLong ? shortPrice : longPrice;
 
     try {
+      // --- FINAL SANITY CHECK ---
+      // Re-verify slice size against portfolio just before placing order
+      await this.validateSliceSafety(firstAdapter, secondAdapter, sliceSize, firstPrice, cfg);
+
       // --- STEP 1: Place Leg A ---
       const firstOrder = new PerpOrderRequest(symbol, firstSide, OrderType.LIMIT, sliceSize, firstPrice, TimeInForce.GTC);
       const firstResp = await firstAdapter.placeOrder(firstOrder);
@@ -394,6 +398,38 @@ export class UnifiedExecutionService {
       this.logger.warn(`Closing excess SHORT: ${Math.abs(imbalance).toFixed(4)}`);
       await this.rollback(shortAdapter, symbol, Math.abs(imbalance), OrderSide.SHORT);
       result.totalShortFilled += imbalance;
+    }
+  }
+
+  private async validateSliceSafety(
+    adapterA: IPerpExchangeAdapter,
+    adapterB: IPerpExchangeAdapter,
+    sliceSize: number,
+    price: number,
+    cfg: UnifiedExecutionConfig
+  ): Promise<void> {
+    const [equityA, equityB] = await Promise.all([
+      adapterA.getEquity().catch(() => 0),
+      adapterB.getEquity().catch(() => 0),
+    ]);
+    
+    const totalPortfolioUsd = equityA + equityB;
+    if (totalPortfolioUsd <= 0) return; // Can't validate if we can't get equity
+
+    const sliceUsd = sliceSize * price;
+    const maxAllowedUsd = Math.min(
+      totalPortfolioUsd * cfg.maxPortfolioPctPerSlice * 1.1, // 10% buffer
+      cfg.maxUsdPerSlice * 1.1
+    );
+
+    if (sliceUsd > maxAllowedUsd) {
+      this.logger.error(
+        `🚨 SPLICING SAFETY VIOLATION DETECTED 🚨\n` +
+        `   Slice Size: $${sliceUsd.toFixed(2)}\n` +
+        `   Portfolio: $${totalPortfolioUsd.toFixed(2)}\n` +
+        `   Max Allowed: $${maxAllowedUsd.toFixed(2)} (${(cfg.maxPortfolioPctPerSlice * 100).toFixed(1)}% of portfolio)`
+      );
+      throw new Error(`Splicing safety violation: Slice size too large ($${sliceUsd.toFixed(2)})`);
     }
   }
 

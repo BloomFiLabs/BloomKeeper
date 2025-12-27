@@ -683,7 +683,8 @@ export class DiagnosticsService implements OnModuleInit {
   private pendingSave = false;
   
   // Start time for uptime calculation
-  private readonly startTime: Date = new Date();
+  private startTime: Date = new Date();
+  private lastResetTime: Date = new Date();
   
   // Circular buffer of hourly buckets (168 hours = 7 days)
   private readonly MAX_HOURS = 168;
@@ -2849,6 +2850,10 @@ export class DiagnosticsService implements OnModuleInit {
         }
       }
 
+      // Restore timestamps
+      if (serialized.startTime) this.startTime = new Date(serialized.startTime);
+      if (serialized.lastResetTime) this.lastResetTime = new Date(serialized.lastResetTime);
+
       // Restore recent errors
       if (Array.isArray(serialized.recentErrors)) {
         this.recentErrors.length = 0;
@@ -2908,6 +2913,8 @@ export class DiagnosticsService implements OnModuleInit {
       }
 
       const serialized = {
+        startTime: this.startTime.toISOString(),
+        lastResetTime: this.lastResetTime.toISOString(),
         activeSingleLegs: Object.fromEntries(this.activeSingleLegs),
         recentErrors: this.recentErrors,
         marginModeErrors: Object.fromEntries(this.marginModeErrors),

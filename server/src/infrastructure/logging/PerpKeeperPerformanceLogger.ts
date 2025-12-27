@@ -48,6 +48,7 @@ export class PerpKeeperPerformanceLogger
   // Performance tracking
   private startTime: Date = new Date();
   private lastResetTime: Date = new Date();
+  private initializedFromDiagnostics = false;
   private exchangeMetrics: Map<ExchangeType, ExchangePerformanceMetrics> =
     new Map();
   private fundingSnapshots: FundingRateSnapshot[] = [];
@@ -711,8 +712,12 @@ export class PerpKeeperPerformanceLogger
     }
 
     // 2. Add Realized P&L (Basis drift) and subtract costs
-    // Note: this.totalRealizedPnl only tracks current session unless persisted
     totalProfit += (this.totalRealizedPnl - this.totalTradingCosts);
+
+    // 3. Add current unrealized basis drift to "Realized APY" for a true performance snapshot
+    // This makes the APY reflect what would happen if we closed EVERYTHING right now
+    const currentMetrics = this.getPerformanceMetrics(capitalDeployed);
+    totalProfit += currentMetrics.totalUnrealizedPnl;
 
     const runtimeDays = this.getRuntimeDays();
     if (runtimeDays === 0) return 0;
@@ -1201,14 +1206,20 @@ export class PerpKeeperPerformanceLogger
     );
   }
 
-  /**
-   * Get runtime in days
-   */
-  private getRuntimeDays(): number {
+  public getRuntimeDays(): number {
+    // Priority 1: Use persistent timestamps from DiagnosticsService
+    if (!this.initializedFromDiagnostics && this.diagnosticsService) {
+      const diag = this.diagnosticsService.getDiagnostics();
+      if (diag.uptime && diag.uptime.since) {
+        this.startTime = new Date(diag.uptime.since);
+        this.initializedFromDiagnostics = true;
+      }
+    }
+
     const now = new Date();
     const runtimeHours =
       (now.getTime() - this.startTime.getTime()) / (1000 * 60 * 60);
-    return runtimeHours / 24;
+    return Math.max(0.0001, runtimeHours / 24); // Never zero to avoid div-by-zero
   }
 
   /**

@@ -481,6 +481,50 @@ export class OrderExecutor implements IOrderExecutor {
    *
    * @returns Tuple of [longResponse, shortResponse]
    */
+  /**
+   * Final safety check for all-at-once order placement
+   */
+  private async validateOrderSafety(
+    longAdapter: IPerpExchangeAdapter,
+    shortAdapter: IPerpExchangeAdapter,
+    longOrder: PerpOrderRequest,
+    shortOrder: PerpOrderRequest,
+  ): Promise<void> {
+    try {
+      const [longEquity, shortEquity] = await Promise.all([
+        longAdapter.getEquity().catch(() => 0),
+        shortAdapter.getEquity().catch(() => 0),
+      ]);
+
+      const totalPortfolioUsd = longEquity + shortEquity;
+      if (totalPortfolioUsd <= 0) return; // Fail-open if we can't get equity
+
+      const longUsd = longOrder.size * (longOrder.price || 0);
+      const shortUsd = shortOrder.size * (shortOrder.price || 0);
+      const maxOrderUsd = Math.max(longUsd, shortUsd);
+
+      // Hard caps for non-sliced execution (more relaxed than slice limits, but still strict)
+      const maxAllowedUsd = Math.min(
+        totalPortfolioUsd * 0.20, // Max 20% portfolio in one go
+        10000 // Absolute max $10k per order
+      );
+
+      if (maxOrderUsd > maxAllowedUsd) {
+        this.logger.error(
+          `🚨 NON-SLICED ORDER SAFETY VIOLATION 🚨\n` +
+          `   Order Size: $${maxOrderUsd.toFixed(2)}\n` +
+          `   Portfolio: $${totalPortfolioUsd.toFixed(2)}\n` +
+          `   Limit: $${maxAllowedUsd.toFixed(2)} (20% portfolio / $10k cap)`
+        );
+        throw new Error(`Order safety violation: All-at-once order too large ($${maxOrderUsd.toFixed(2)})`);
+      }
+    } catch (error: any) {
+      if (error.message.includes('safety violation')) throw error;
+      // Other errors (like equity fetch failure) are logged but we continue
+      this.logger.warn(`Could not perform final safety check: ${error.message}`);
+    }
+  }
+
   private async placeOrderPair(
     longAdapter: IPerpExchangeAdapter,
     shortAdapter: IPerpExchangeAdapter,
@@ -569,6 +613,11 @@ export class OrderExecutor implements IOrderExecutor {
     const startTime = Date.now();
 
     try {
+      // --- FINAL SANITY CHECK ---
+      // Ensure we never place an order pair that exceeds 20% of portfolio or a hard $10k cap
+      // This is a last-resort safety check for non-sliced execution
+      await this.validateOrderSafety(longAdapter, shortAdapter, longOrder, shortOrder);
+
       if (requiresSequential) {
         // CRITICAL: Always place Lighter leg FIRST (it's the flakier exchange)
         // If Lighter fails, we haven't committed anything - no rollback needed!
