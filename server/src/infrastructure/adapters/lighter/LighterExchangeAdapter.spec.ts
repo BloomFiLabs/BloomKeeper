@@ -507,3 +507,417 @@ describe('LighterExchangeAdapter ReduceOnly Validation', () => {
     });
   });
 });
+
+/**
+ * CRITICAL BUG PREVENTION TESTS
+ * 
+ * These tests ensure the order ID mismatch bug never happens again.
+ * 
+ * Background:
+ * - When placing orders, Lighter returns a TRANSACTION HASH (e.g., "b4d8f51a4c3637e0...")
+ * - When checking open orders, Lighter returns an ORDER INDEX (e.g., "24488322932508293")
+ * - These are completely different formats!
+ * - Without proper tracking, getOrderStatus() could never match orders correctly.
+ * 
+ * The fix:
+ * - Track placed orders in a Map<txHash, {symbol, side, size, price, placedAt}>
+ * - In getOrderStatus(), match by symbol/side/size if direct ID match fails
+ */
+describe('LighterExchangeAdapter Order ID Matching (Critical Bug Prevention)', () => {
+  let adapter: LighterExchangeAdapter;
+  let mockConfigService: jest.Mocked<ConfigService>;
+  let mockRateLimiter: jest.Mocked<RateLimiterService>;
+
+  beforeEach(async () => {
+    mockConfigService = {
+      get: jest.fn((key: string, defaultValue?: any) => {
+        const config: Record<string, any> = {
+          LIGHTER_API_BASE_URL: 'https://test.lighter.xyz',
+          LIGHTER_API_KEY:
+            '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+          LIGHTER_ACCOUNT_INDEX: '1000',
+          LIGHTER_API_KEY_INDEX: '1',
+        };
+        return config[key] ?? defaultValue;
+      }),
+    } as any;
+
+    mockRateLimiter = {
+      acquire: jest.fn().mockResolvedValue(undefined),
+      tryAcquire: jest.fn().mockReturnValue(true),
+      getUsage: jest.fn().mockReturnValue({
+        currentWeightPerSecond: 0,
+        currentWeightPerMinute: 0,
+        maxWeightPerSecond: 12,
+        maxWeightPerMinute: 60,
+        queuedRequests: 0,
+        budgetHealth: 1.0,
+      }),
+      recordExternalRateLimit: jest.fn(),
+    } as any;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        {
+          provide: LighterExchangeAdapter,
+          useFactory: () =>
+            new LighterExchangeAdapter(
+              mockConfigService,
+              mockRateLimiter,
+            ),
+        },
+        { provide: ConfigService, useValue: mockConfigService },
+        { provide: RateLimiterService, useValue: mockRateLimiter },
+      ],
+    }).compile();
+
+    adapter = module.get<LighterExchangeAdapter>(LighterExchangeAdapter);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Order tracking after placement', () => {
+    it('should track placed orders with transaction hash as key', async () => {
+      // Mock the internal methods to simulate order placement
+      const txHash = 'a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd';
+      
+      // Access the private pendingOrdersMap via reflection for testing
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      // Simulate what happens after placeOrder succeeds
+      pendingOrdersMap.set(txHash, {
+        symbol: 'AVNT',
+        side: OrderSide.SHORT,
+        size: 217,
+        price: 0.38281,
+        placedAt: new Date(),
+      });
+
+      // Verify the order is tracked
+      expect(pendingOrdersMap.has(txHash)).toBe(true);
+      const tracked = pendingOrdersMap.get(txHash);
+      expect(tracked.symbol).toBe('AVNT');
+      expect(tracked.side).toBe(OrderSide.SHORT);
+      expect(tracked.size).toBe(217);
+    });
+
+    it('should cleanup old pending orders after TTL expires', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      const cleanupFn = (adapter as any).cleanupPendingOrders.bind(adapter);
+      
+      // Add an old order (6 minutes ago, TTL is 5 minutes)
+      const oldTxHash = 'old_tx_hash_12345678901234567890123456789012345678901234567890';
+      pendingOrdersMap.set(oldTxHash, {
+        symbol: 'OLD',
+        side: OrderSide.LONG,
+        size: 100,
+        placedAt: new Date(Date.now() - 6 * 60 * 1000), // 6 minutes ago
+      });
+
+      // Add a fresh order
+      const freshTxHash = 'fresh_tx_hash_1234567890123456789012345678901234567890123456';
+      pendingOrdersMap.set(freshTxHash, {
+        symbol: 'FRESH',
+        side: OrderSide.SHORT,
+        size: 50,
+        placedAt: new Date(), // Just now
+      });
+
+      // Run cleanup
+      cleanupFn();
+
+      // Old order should be removed, fresh order should remain
+      expect(pendingOrdersMap.has(oldTxHash)).toBe(false);
+      expect(pendingOrdersMap.has(freshTxHash)).toBe(true);
+    });
+  });
+
+  describe('getOrderStatus with transaction hash vs order index', () => {
+    it('should match order by symbol/side/size when direct ID match fails', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      // Simulate a placed order with transaction hash
+      const txHash = 'b4d8f51a4c3637e04988123e42042bfc2b9a9a1fa0f3cd787f69117be2ccb3697727e9a79cd6b1e4';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'AVNT',
+        side: OrderSide.SHORT,
+        size: 217,
+        price: 0.38281,
+        placedAt: new Date(),
+      });
+
+      // Mock getOpenOrders to return order with DIFFERENT ID format (order index)
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([
+        {
+          orderId: '24488322932508293', // This is the Lighter order index, NOT the tx hash!
+          symbol: 'AVNT',
+          side: 'sell',
+          size: 217,
+          filledSize: 0,
+          price: 0.38281,
+        },
+      ]);
+
+      // Mock getPositions (no position yet since order is still open)
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      // getOrderStatus should match by symbol/side/size and return SUBMITTED
+      const status = await adapter.getOrderStatus(txHash, 'AVNT');
+      
+      expect(status.status).toBe('SUBMITTED');
+      expect(status.orderId).toBe(txHash); // Should preserve original order ID
+    });
+
+    it('should detect FILLED when order not in open orders but position exists', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      const txHash = 'filled_order_tx_hash_12345678901234567890123456789012345678901234';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'AVNT',
+        side: OrderSide.SHORT,
+        size: 217,
+        price: 0.38281,
+        placedAt: new Date(),
+      });
+
+      // Mock getOpenOrders to return NO matching order (it filled!)
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([]);
+
+      // Mock getPositions to return a position (order filled!)
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([
+        {
+          exchangeType: 'LIGHTER' as any,
+          symbol: 'AVNT',
+          side: OrderSide.SHORT,
+          size: 217,
+          entryPrice: 0.38281,
+          markPrice: 0.38270,
+          unrealizedPnl: 0.02,
+          isLong: () => false,
+          isShort: () => true,
+          getValue: () => 83.05,
+          getPnlPercent: () => 0.03,
+        } as any,
+      ]);
+
+      const status = await adapter.getOrderStatus(txHash, 'AVNT');
+      
+      expect(status.status).toBe('FILLED');
+      expect(status.filledSize).toBe(217);
+    });
+
+    it('should return SUBMITTED for recently placed order not yet visible', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      // Order placed just now (within 10 second grace period)
+      const txHash = 'very_recent_order_12345678901234567890123456789012345678901234567';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'NEWCOIN',
+        side: OrderSide.LONG,
+        size: 100,
+        price: 1.5,
+        placedAt: new Date(), // Just now
+      });
+
+      // Mock getOpenOrders to return empty (order not visible yet)
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([]);
+
+      // Mock getPositions to return empty (no fill yet)
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      const status = await adapter.getOrderStatus(txHash, 'NEWCOIN');
+      
+      // Should return SUBMITTED since order is very recent
+      expect(status.status).toBe('SUBMITTED');
+    });
+
+    it('should return CANCELLED for old order not in open orders and no position', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      // Order placed 30 seconds ago (past the 10 second grace period)
+      const txHash = 'old_cancelled_order_1234567890123456789012345678901234567890123';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'CANCELLED',
+        side: OrderSide.LONG,
+        size: 50,
+        price: 2.0,
+        placedAt: new Date(Date.now() - 30000), // 30 seconds ago
+      });
+
+      // Mock getOpenOrders to return empty
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([]);
+
+      // Mock getPositions to return empty
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      const status = await adapter.getOrderStatus(txHash, 'CANCELLED');
+      
+      // Should return CANCELLED since order is old and not found
+      expect(status.status).toBe('CANCELLED');
+    });
+
+    it('should handle size tolerance when matching orders (within 1%)', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      const txHash = 'size_tolerance_test_12345678901234567890123456789012345678901234';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'AVNT',
+        side: OrderSide.SHORT,
+        size: 217, // Original size
+        price: 0.38281,
+        placedAt: new Date(),
+      });
+
+      // Mock getOpenOrders with slightly different size (Lighter may round)
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([
+        {
+          orderId: '99999999999999999',
+          symbol: 'AVNT',
+          side: 'sell',
+          size: 216.5, // Within 1% of 217
+          filledSize: 0,
+          price: 0.38281,
+        },
+      ]);
+
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      const status = await adapter.getOrderStatus(txHash, 'AVNT');
+      
+      // Should match despite small size difference
+      expect(status.status).toBe('SUBMITTED');
+    });
+
+    it('should NOT match orders with different symbols', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      const txHash = 'wrong_symbol_test_12345678901234567890123456789012345678901234567';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'AVNT',
+        side: OrderSide.SHORT,
+        size: 217,
+        price: 0.38281,
+        placedAt: new Date(Date.now() - 30000), // 30 seconds ago
+      });
+
+      // Mock getOpenOrders with DIFFERENT symbol
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([
+        {
+          orderId: '88888888888888888',
+          symbol: 'KAITO', // Different symbol!
+          side: 'sell',
+          size: 217,
+          filledSize: 0,
+          price: 0.55,
+        },
+      ]);
+
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      const status = await adapter.getOrderStatus(txHash, 'AVNT');
+      
+      // Should NOT match - order is for different symbol
+      expect(status.status).toBe('CANCELLED');
+    });
+
+    it('should NOT match orders with different sides', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      const txHash = 'wrong_side_test_123456789012345678901234567890123456789012345678';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'AVNT',
+        side: OrderSide.SHORT, // We placed a SHORT
+        size: 217,
+        price: 0.38281,
+        placedAt: new Date(Date.now() - 30000),
+      });
+
+      // Mock getOpenOrders with DIFFERENT side
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([
+        {
+          orderId: '77777777777777777',
+          symbol: 'AVNT',
+          side: 'buy', // Different side!
+          size: 217,
+          filledSize: 0,
+          price: 0.38281,
+        },
+      ]);
+
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      const status = await adapter.getOrderStatus(txHash, 'AVNT');
+      
+      // Should NOT match - order is for different side
+      expect(status.status).toBe('CANCELLED');
+    });
+  });
+
+  describe('Edge cases for order matching', () => {
+    it('should handle multiple orders for same symbol by matching size', async () => {
+      const pendingOrdersMap = (adapter as any).pendingOrdersMap as Map<string, any>;
+      
+      const txHash = 'multi_order_test_12345678901234567890123456789012345678901234567';
+      pendingOrdersMap.set(txHash, {
+        symbol: 'AVNT',
+        side: OrderSide.SHORT,
+        size: 100, // Specific size
+        price: 0.38281,
+        placedAt: new Date(),
+      });
+
+      // Mock getOpenOrders with MULTIPLE orders for same symbol
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([
+        {
+          orderId: '11111111111111111',
+          symbol: 'AVNT',
+          side: 'sell',
+          size: 50, // Wrong size
+          filledSize: 0,
+          price: 0.38281,
+        },
+        {
+          orderId: '22222222222222222',
+          symbol: 'AVNT',
+          side: 'sell',
+          size: 100, // Correct size!
+          filledSize: 0,
+          price: 0.38281,
+        },
+        {
+          orderId: '33333333333333333',
+          symbol: 'AVNT',
+          side: 'sell',
+          size: 200, // Wrong size
+          filledSize: 0,
+          price: 0.38281,
+        },
+      ]);
+
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      const status = await adapter.getOrderStatus(txHash, 'AVNT');
+      
+      // Should match the order with correct size
+      expect(status.status).toBe('SUBMITTED');
+    });
+
+    it('should handle order without tracking info gracefully', async () => {
+      // Don't add anything to pendingOrdersMap
+
+      // Mock getOpenOrders with no matching order
+      jest.spyOn(adapter, 'getOpenOrders').mockResolvedValue([]);
+
+      // Mock getPositions with no position
+      jest.spyOn(adapter, 'getPositions').mockResolvedValue([]);
+
+      const unknownTxHash = 'unknown_order_hash_123456789012345678901234567890123456789';
+      const status = await adapter.getOrderStatus(unknownTxHash, 'UNKNOWN');
+      
+      // Should return CANCELLED since we have no info about this order
+      expect(status.status).toBe('CANCELLED');
+    });
+  });
+});
