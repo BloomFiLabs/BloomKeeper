@@ -5,7 +5,7 @@ import { ExecutionLockService, ActiveOrder } from '../../../infrastructure/servi
 import { HyperLiquidWebSocketProvider } from '../../../infrastructure/adapters/hyperliquid/HyperLiquidWebSocketProvider';
 import { LighterWebSocketProvider } from '../../../infrastructure/adapters/lighter/LighterWebSocketProvider';
 import { ExchangeType } from '../../value-objects/ExchangeConfig';
-import { OrderSide, OrderType, PerpOrderRequest, TimeInForce } from '../../value-objects/PerpOrder';
+import { OrderSide, OrderType, OrderStatus, PerpOrderRequest, TimeInForce } from '../../value-objects/PerpOrder';
 import { RateLimiterService, RateLimitPriority } from '../../../infrastructure/services/RateLimiterService';
 
 /**
@@ -233,24 +233,11 @@ export class MakerEfficiencyService implements OnModuleInit {
       baseIntervalMs = 15000; // 15 seconds per order check
     }
 
-    // 3. For OLD orders (>60s), ALWAYS check regardless of health
-    // Old orders are at risk of causing imbalances - TOP PRIORITY
-    // Increased from 30s to 60s to reduce API pressure
-    const urgentOrders = orders.filter(o => now - o.placedAt.getTime() > 60000);
-    const normalOrders = orders.filter(o => now - o.placedAt.getTime() <= 30000);
-
-    // 4. Process urgent orders IMMEDIATELY (no rate limit delay for orders >30s old)
-    if (urgentOrders.length > 0) {
-      this.logger.warn(
-        `🚨 ${urgentOrders.length} URGENT unfilled order(s) on ${exchange} (>30s old) - repricing NOW`
-      );
-      for (const order of urgentOrders) {
-        await this.checkAndRepositionOrder(order, true); // force=true
-      }
-    }
-
+    // 3. Process ALL orders - repricing should continue until FULLY filled
+    // No age limits - orders should be repriced until they fill completely
+    // Urgent orders (>60s) get priority but all orders are processed
+    
     // 5. Scale interval based on budget health (but less aggressively)
-    // Health throttling should NOT delay urgent orders (handled above)
     let intervalMs = baseIntervalMs;
     if (budgetHealth < 0.5) {
       // Only slow down by max 2x (was 4x)
@@ -264,24 +251,36 @@ export class MakerEfficiencyService implements OnModuleInit {
     if (budgetHealth < 0.3) {
       this.logger.warn(
         `⚠️ Low budget health for ${exchange} (${(budgetHealth * 100).toFixed(1)}%). ` +
-        `Normal order repricing slowed: ${intervalMs/1000}s interval.`
+        `Order repricing slowed: ${intervalMs/1000}s interval.`
+      );
+    }
+
+    // Separate urgent vs normal for logging, but process ALL orders
+    const urgentOrders = orders.filter(o => now - o.placedAt.getTime() > 60000);
+    const normalOrders = orders.filter(o => now - o.placedAt.getTime() <= 60000);
+
+    if (urgentOrders.length > 0) {
+      this.logger.warn(
+        `🚨 ${urgentOrders.length} URGENT unfilled order(s) on ${exchange} (>60s old) - repricing NOW`
       );
     }
 
     this.logger.debug(
-      `Checking efficiency for ${normalOrders.length} normal orders on ${exchange} ` +
-      `(Health: ${(budgetHealth * 100).toFixed(1)}%, Interval: ${intervalMs/1000}s)`
+      `Checking efficiency for ${orders.length} orders on ${exchange} ` +
+      `(${urgentOrders.length} urgent, ${normalOrders.length} normal, Health: ${(budgetHealth * 100).toFixed(1)}%, Interval: ${intervalMs/1000}s)`
     );
 
-    // Process normal orders (already sorted by age, oldest first)
-    for (const order of normalOrders) {
+    // Process ALL orders (already sorted by age, oldest first)
+    // Repricing continues until orders are FULLY filled
+    for (const order of orders) {
       // Per-order throttling - don't recheck same order too fast
       const orderKey = `${order.exchange}-${order.orderId}`;
       const lastOrderCheck = this.lastOrderCheck.get(orderKey) || 0;
       if (now - lastOrderCheck < 2000) continue; // Min 2s between rechecks per order
       
       this.lastOrderCheck.set(orderKey, now);
-      await this.checkAndRepositionOrder(order, false);
+      const isUrgent = now - order.placedAt.getTime() > 60000;
+      await this.checkAndRepositionOrder(order, isUrgent); // force=true for urgent orders
     }
   }
 
@@ -293,6 +292,36 @@ export class MakerEfficiencyService implements OnModuleInit {
     const orderAgeSec = orderAgeMs / 1000;
 
     if (!adapter) return;
+
+    // CRITICAL: Check if order is FULLY filled - if so, stop repricing
+    try {
+      const orderStatus = await adapter.getOrderStatus(activeOrder.orderId, symbol);
+      const orderSize = activeOrder.size || 0;
+      const filledSize = orderStatus.filledSize || 0;
+      
+      // If order is fully filled (within 0.1% tolerance for rounding), stop repricing
+      if (orderStatus.status === OrderStatus.FILLED || 
+          (orderSize > 0 && filledSize >= orderSize * 0.999)) {
+        this.logger.log(
+          `✅ Order ${activeOrder.orderId} for ${symbol} is FULLY FILLED ` +
+          `(${filledSize.toFixed(4)}/${orderSize.toFixed(4)}) - stopping repricing`
+        );
+        // Update order status to FILLED
+        if (this.executionLockService) {
+          this.executionLockService.updateOrderStatus(
+            exchange,
+            symbol,
+            activeOrder.side,
+            'FILLED',
+            activeOrder.orderId
+          );
+        }
+        return; // Stop repricing - order is done
+      }
+    } catch (error: any) {
+      // If we can't check status, continue with repricing (better safe than sorry)
+      this.logger.debug(`Could not check order status for ${symbol}: ${error.message}`);
+    }
 
     // 1. Get real-time order book from WebSocket providers
     let bestBidAsk: { bestBid: number; bestAsk: number } | null = null;
