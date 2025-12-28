@@ -7,6 +7,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import {
+  LighterWebSocketSendTx,
+  LighterWebSocketSendBatchTx,
+} from './types';
 
 interface MarketStatsMessage {
   channel: string;
@@ -173,6 +177,16 @@ export class LighterWebSocketProvider
   private isPositionsSubscribed = false;
   private isOrdersSubscribed = false;
 
+  // Transaction sending support
+  private pendingTransactions: Map<string, {
+    resolve: (hash: string | string[]) => void;
+    reject: (error: Error) => void;
+    timestamp: number;
+  }> = new Map();
+  private transactionRequestId = 0;
+  private readonly TRANSACTION_TIMEOUT_MS = 30000; // 30 seconds timeout
+  private cleanupInterval: NodeJS.Timeout | null = null;
+
   constructor(private readonly configService?: ConfigService) {
     super();
     // Try to get account address for user subscriptions
@@ -231,6 +245,14 @@ export class LighterWebSocketProvider
           this.isConnected = true;
           this.reconnectAttempts = 0;
           // Removed WebSocket connection log - only execution logs shown
+
+          // Start cleanup interval for stale transactions
+          if (this.cleanupInterval) {
+            clearInterval(this.cleanupInterval);
+          }
+          this.cleanupInterval = setInterval(() => {
+            this.cleanupStaleTransactions();
+          }, 5000); // Clean up every 5 seconds
 
           // Resubscribe to all markets we were tracking
           // Use setTimeout to ensure subscriptions happen after connection is fully established
@@ -318,6 +340,17 @@ export class LighterWebSocketProvider
    * Disconnect from WebSocket
    */
   private async disconnect(): Promise<void> {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+
+    // Reject all pending transactions
+    for (const [id, pending] of this.pendingTransactions.entries()) {
+      pending.reject(new Error('WebSocket disconnected'));
+    }
+    this.pendingTransactions.clear();
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -482,6 +515,12 @@ export class LighterWebSocketProvider
       return;
     }
 
+    // Handle transaction responses (from sendtx/sendtxbatch)
+    if (message.type === 'jsonapi/sendtx_response' || message.type === 'jsonapi/sendtxbatch_response') {
+      this.handleTransactionResponse(message);
+      return;
+    }
+
     // Handle other message types (subscription confirmations, etc.)
     if (message.type && message.channel) {
       // Only log subscription confirmations, not routine updates
@@ -539,6 +578,7 @@ export class LighterWebSocketProvider
       if (!this.subscribedOrderbooks.has(marketIndex)) {
         this.subscribeToOrderbook(marketIndex);
       }
+      this.logger.warn(`⚠️ No order book data for market ${marketIndex}`);
       return null;
     }
 
@@ -1103,5 +1143,220 @@ export class LighterWebSocketProvider
    */
   isSubscribedToAllOrders(): boolean {
     return this.isOrdersSubscribed;
+  }
+
+  /**
+   * Send transaction via WebSocket
+   * Based on: https://apidocs.lighter.xyz/docs/websocket-reference#send-tx
+   * 
+   * @param txType Transaction type (integer from SignerClient)
+   * @param txInfo Transaction info (generated using sign methods in SignerClient)
+   * @returns Promise that resolves to transaction hash
+   */
+  async sendTransaction(txType: number, txInfo: any): Promise<string> {
+    if (!this.isConnected || !this.ws) {
+      throw new Error('WebSocket not connected');
+    }
+
+    const requestId = `tx_${++this.transactionRequestId}_${Date.now()}`;
+    
+    return new Promise<string>((resolve, reject) => {
+      // Set timeout
+      const timeout = setTimeout(() => {
+        this.pendingTransactions.delete(requestId);
+        reject(new Error(`Transaction timeout after ${this.TRANSACTION_TIMEOUT_MS}ms`));
+      }, this.TRANSACTION_TIMEOUT_MS);
+
+      // Store promise handlers
+      this.pendingTransactions.set(requestId, {
+        resolve: (hash: string) => {
+          clearTimeout(timeout);
+          resolve(hash);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+        timestamp: Date.now(),
+      });
+
+      try {
+        const message: LighterWebSocketSendTx = {
+          type: 'jsonapi/sendtx',
+          data: {
+            tx_type: txType,
+            tx_info: txInfo,
+          },
+        };
+
+        // Include requestId in data for tracking (if supported)
+        // Some implementations may use a correlation ID field
+        const messageWithId = {
+          ...message,
+          request_id: requestId, // Add request ID for correlation
+        };
+
+        this.ws!.send(JSON.stringify(messageWithId));
+        this.logger.debug(`📤 Sent WebSocket transaction (type: ${txType}, requestId: ${requestId})`);
+      } catch (error: any) {
+        this.pendingTransactions.delete(requestId);
+        clearTimeout(timeout);
+        reject(new Error(`Failed to send transaction: ${error.message}`));
+      }
+    });
+  }
+
+  /**
+   * Send batch transactions via WebSocket
+   * Based on: https://apidocs.lighter.xyz/docs/websocket-reference#send-batch-tx
+   * 
+   * @param txTypes Array of transaction types
+   * @param txInfos Array of transaction infos (must match txTypes length)
+   * @returns Promise that resolves to array of transaction hashes
+   */
+  async sendBatchTransactions(txTypes: number[], txInfos: any[]): Promise<string[]> {
+    if (!this.isConnected || !this.ws) {
+      throw new Error('WebSocket not connected');
+    }
+
+    if (txTypes.length !== txInfos.length) {
+      throw new Error('txTypes and txInfos arrays must have the same length');
+    }
+
+    if (txTypes.length === 0) {
+      throw new Error('Batch must contain at least one transaction');
+    }
+
+    if (txTypes.length > 50) {
+      throw new Error('Batch cannot contain more than 50 transactions');
+    }
+
+    const requestId = `batch_${++this.transactionRequestId}_${Date.now()}`;
+    
+    return new Promise<string[]>((resolve, reject) => {
+      // Set timeout
+      const timeout = setTimeout(() => {
+        this.pendingTransactions.delete(requestId);
+        reject(new Error(`Batch transaction timeout after ${this.TRANSACTION_TIMEOUT_MS}ms`));
+      }, this.TRANSACTION_TIMEOUT_MS);
+
+      // Store promise handlers
+      this.pendingTransactions.set(requestId, {
+        resolve: (hashes: any) => {
+          clearTimeout(timeout);
+          // hashes might be a string (single hash) or array
+          const hashArray = Array.isArray(hashes) ? hashes : [hashes];
+          resolve(hashArray);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+        timestamp: Date.now(),
+      });
+
+      try {
+        const message: LighterWebSocketSendBatchTx = {
+          type: 'jsonapi/sendtxbatch',
+          data: {
+            tx_types: txTypes,
+            tx_infos: txInfos,
+          },
+        };
+
+        // Include requestId for tracking
+        const messageWithId = {
+          ...message,
+          request_id: requestId,
+        };
+
+        this.ws!.send(JSON.stringify(messageWithId));
+        this.logger.debug(`📤 Sent WebSocket batch transaction (${txTypes.length} txs, requestId: ${requestId})`);
+      } catch (error: any) {
+        this.pendingTransactions.delete(requestId);
+        clearTimeout(timeout);
+        reject(new Error(`Failed to send batch transactions: ${error.message}`));
+      }
+    });
+  }
+
+  /**
+   * Handle transaction response from WebSocket
+   */
+  private handleTransactionResponse(message: WsMessage): void {
+    try {
+      // Response format may vary - check for common fields
+      const data = message.data || message;
+      const requestId = data.request_id || data.id;
+      const hash = data.hash || data.tx_hash || data.transaction_hash;
+      const error = data.error || message.error;
+
+      if (error) {
+        // Find pending transaction by requestId or try to match by other means
+        if (requestId && this.pendingTransactions.has(requestId)) {
+          const pending = this.pendingTransactions.get(requestId)!;
+          this.pendingTransactions.delete(requestId);
+          pending.reject(new Error(error.message || error || 'Transaction failed'));
+          return;
+        }
+
+        // If no requestId match, reject all pending (fallback)
+        this.logger.warn(`Transaction error without matching requestId: ${JSON.stringify(error)}`);
+        return;
+      }
+
+      if (hash) {
+        // Single transaction response
+        if (requestId && this.pendingTransactions.has(requestId)) {
+          const pending = this.pendingTransactions.get(requestId)!;
+          this.pendingTransactions.delete(requestId);
+          pending.resolve(hash);
+          this.logger.debug(`✅ Transaction confirmed: ${hash.substring(0, 16)}...`);
+          return;
+        }
+
+        // Batch response - hashes might be in an array
+        if (Array.isArray(hash) || (data.hashes && Array.isArray(data.hashes))) {
+          const hashes = Array.isArray(hash) ? hash : data.hashes;
+          if (requestId && this.pendingTransactions.has(requestId)) {
+            const pending = this.pendingTransactions.get(requestId)!;
+            this.pendingTransactions.delete(requestId);
+            pending.resolve(hashes);
+            this.logger.debug(`✅ Batch transaction confirmed: ${hashes.length} transactions`);
+            return;
+          }
+        }
+
+        // Fallback: try to match by timestamp (within 5 seconds)
+        const now = Date.now();
+        for (const [id, pending] of this.pendingTransactions.entries()) {
+          if (now - pending.timestamp < 5000) {
+            this.pendingTransactions.delete(id);
+            pending.resolve(hash);
+            this.logger.debug(`✅ Transaction confirmed (matched by timestamp): ${hash.substring(0, 16)}...`);
+            return;
+          }
+        }
+
+        this.logger.warn(`Transaction response received but no matching pending transaction: ${hash.substring(0, 16)}...`);
+      } else {
+        this.logger.warn(`Transaction response missing hash: ${JSON.stringify(message)}`);
+      }
+    } catch (error: any) {
+      this.logger.error(`Failed to handle transaction response: ${error.message}`);
+    }
+  }
+
+  /**
+   * Clean up stale pending transactions
+   */
+  private cleanupStaleTransactions(): void {
+    const now = Date.now();
+    for (const [id, pending] of this.pendingTransactions.entries()) {
+      if (now - pending.timestamp > this.TRANSACTION_TIMEOUT_MS) {
+        this.pendingTransactions.delete(id);
+        pending.reject(new Error('Transaction timeout'));
+      }
+    }
   }
 }
