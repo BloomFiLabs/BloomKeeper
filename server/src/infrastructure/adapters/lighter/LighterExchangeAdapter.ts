@@ -4544,8 +4544,40 @@ const releaseMutex = await this.acquireOrderMutex();
           );
 
           if (!ourOrder) {
-            // Order might have filled while we were checking - verify via position
-            this.logger.debug(`Order no longer in open orders list, might have filled`);
+            // Order might have filled while we were checking - verify via position delta
+            this.logger.debug(`Order no longer in open orders list, checking if filled via position...`);
+            
+            try {
+              // Check if order filled by looking at position delta
+              const positions = await this.getPositions();
+              const position = positions.find(
+                (p) => p.symbol === symbol && 
+                       ((isSellOrder && p.side === OrderSide.SHORT) || (!isSellOrder && p.side === OrderSide.LONG))
+              );
+              
+              if (position && Math.abs(position.size) >= expectedSize * 0.95) {
+                // Position exists with expected size - order likely filled!
+                this.logger.log(`✅ Order ${currentOrderId.substring(0, 16)}... appears to have FILLED (position: ${position.size.toFixed(2)})`);
+                cleanup();
+                resolve(new PerpOrderResponse(
+                  currentOrderId,
+                  OrderStatus.FILLED,
+                  symbol,
+                  orderSide!,
+                  undefined,
+                  Math.abs(position.size),
+                  originalPrice || 0,
+                  undefined,
+                  new Date()
+                ));
+                return;
+              }
+            } catch (e: any) {
+              this.logger.debug(`Could not verify fill via position: ${e.message}`);
+            }
+            
+            // Order not found and position check inconclusive - might have filled or been cancelled
+            this.logger.debug(`Order not found in open orders and position check inconclusive - will continue checking`);
             return;
           }
 
