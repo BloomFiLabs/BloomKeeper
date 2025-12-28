@@ -1659,6 +1659,7 @@ export class OrderExecutor implements IOrderExecutor {
         bestOpportunity,
         adapters,
         result,
+        threadId,
       );
     } finally {
       // Always release the symbol lock
@@ -1681,6 +1682,7 @@ export class OrderExecutor implements IOrderExecutor {
     },
     adapters: Map<ExchangeType, IPerpExchangeAdapter>,
     result: ArbitrageExecutionResult,
+    threadId: string,
   ): Promise<Result<ArbitrageExecutionResult, DomainException>> {
     const { plan, opportunity } = bestOpportunity;
 
