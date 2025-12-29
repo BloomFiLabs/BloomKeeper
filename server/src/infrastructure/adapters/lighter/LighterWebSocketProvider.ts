@@ -1036,8 +1036,6 @@ export class LighterWebSocketProvider
     // Mark that we've received a position snapshot (even if empty)
     this.hasReceivedPositionSnapshot = true;
     
-    this.logger.debug(`📊 Lighter WS position update: ${positionCount} positions received (snapshot flag set)`);
-    
     // Clear positions that are no longer in the update (closed positions)
     const receivedMarketIds = new Set(Object.keys(positions).map(k => parseInt(k)));
     for (const marketId of this.positionCache.keys()) {
