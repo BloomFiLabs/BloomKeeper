@@ -474,8 +474,10 @@ export class MakerEfficiencyService implements OnModuleInit {
       } catch (error: any) {
         this.logger.error(`Failed to reposition order for ${symbol}: ${error.message}`);
         
-        // If the order no longer exists on the exchange, check if it was filled
-        // This prevents infinite retry loops for filled/cancelled orders
+        // If the order no longer exists on the exchange, we need to determine if it was:
+        // 1. FILLED - position should have increased
+        // 2. CANCELLED - position unchanged
+        // NEVER trust error messages - always verify via position delta
         if (
           error.message?.includes('already canceled') ||
           error.message?.includes('already cancelled') ||
@@ -484,35 +486,71 @@ export class MakerEfficiencyService implements OnModuleInit {
           error.message?.includes('Order not found') ||
           error.message?.includes('does not exist')
         ) {
-          // IMPORTANT: Check if the order was actually FILLED before removing from tracking
-          // If it was filled, we should mark it as FILLED so waitForOrderFill can detect it
-          const errorMentionsFilled = error.message?.toLowerCase().includes('filled');
-          
-          if (errorMentionsFilled) {
-            // Order might have been filled - mark it as FILLED instead of force-clearing
-            this.logger.log(
-              `✅ Order ${activeOrder.orderId} for ${symbol} appears to have been FILLED (detected via modify error)`
-            );
-            this.executionLockService.updateOrderStatus(
-              exchange,
-              symbol,
-              activeOrder.side as 'LONG' | 'SHORT',
-              'FILLED',
-              activeOrder.orderId
-            );
-          } else {
-            // Order was cancelled or never placed - safe to remove from tracking
-            this.logger.warn(
-              `🗑️ Order ${activeOrder.orderId} for ${symbol} no longer exists on ${exchange}, removing from tracking`
-            );
-            this.executionLockService.forceClearOrder(
-              exchange,
-              symbol,
-              activeOrder.side as 'LONG' | 'SHORT'
-            );
-          }
+          await this.handleDisappearedOrder(exchange, symbol, activeOrder);
         }
       }
+    }
+  }
+  
+  /**
+   * When an order disappears (modify fails), check position to determine if it was filled or cancelled.
+   * NEVER trust error messages - only trust position changes.
+   */
+  private async handleDisappearedOrder(
+    exchange: ExchangeType,
+    symbol: string,
+    activeOrder: ActiveOrder
+  ): Promise<void> {
+    try {
+      // Get current position to check if order was filled
+      const adapter = this.keeperService.getExchangeAdapter(exchange);
+      const positions = await adapter.getPositions();
+      const position = positions.find(p => p.symbol === symbol);
+      
+      const currentSize = position ? Math.abs(position.size) : 0;
+      const expectedSize = activeOrder.size || 0;
+      const initialSize = activeOrder.initialPositionSize ?? 0;
+      
+      // Calculate position delta since order was placed
+      const positionDelta = currentSize - initialSize;
+      
+      // If position increased by at least 50% of expected size, consider it filled
+      // (partial fills count as fills)
+      const fillThreshold = expectedSize * 0.5;
+      const wasFilled = positionDelta >= fillThreshold;
+      
+      if (wasFilled) {
+        this.logger.log(
+          `✅ Order ${activeOrder.orderId} for ${symbol} FILLED (position delta: ${positionDelta.toFixed(4)}, ` +
+          `initial: ${initialSize.toFixed(4)}, current: ${currentSize.toFixed(4)})`
+        );
+        this.executionLockService.updateOrderStatus(
+          exchange,
+          symbol,
+          activeOrder.side as 'LONG' | 'SHORT',
+          'FILLED',
+          activeOrder.orderId
+        );
+      } else {
+        this.logger.warn(
+          `🗑️ Order ${activeOrder.orderId} for ${symbol} CANCELLED (no position change: ` +
+          `delta=${positionDelta.toFixed(4)}, initial=${initialSize.toFixed(4)}, current=${currentSize.toFixed(4)})`
+        );
+        this.executionLockService.forceClearOrder(
+          exchange,
+          symbol,
+          activeOrder.side as 'LONG' | 'SHORT'
+        );
+      }
+    } catch (positionError: any) {
+      this.logger.error(`Failed to check position for ${symbol}: ${positionError.message}`);
+      // If we can't check position, force clear the order to prevent stuck state
+      // Better to restart the order than be stuck forever
+      this.executionLockService.forceClearOrder(
+        exchange,
+        symbol,
+        activeOrder.side as 'LONG' | 'SHORT'
+      );
     }
   }
 }

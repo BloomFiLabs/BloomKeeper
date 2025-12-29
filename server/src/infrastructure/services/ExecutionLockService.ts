@@ -21,6 +21,7 @@ export interface ActiveOrder {
   price?: number;
   reduceOnly?: boolean;
   isForceFilling?: boolean; // New flag: tells MakerEfficiencyService to stop managing this order
+  initialPositionSize?: number; // Position size when order was placed (for fill detection)
 }
 
 /**
@@ -577,6 +578,7 @@ export class ExecutionLockService {
   /**
    * Register an order being placed
    * Returns false if there's already an active order for this symbol/side/exchange
+   * @param initialPositionSize - Current position size BEFORE order is placed (for fill detection)
    */
   registerOrderPlacing(
     orderId: string,
@@ -586,6 +588,7 @@ export class ExecutionLockService {
     threadId: string,
     size?: number,
     price?: number,
+    initialPositionSize?: number,
   ): boolean {
     const key = this.getOrderKey(exchange, symbol, side);
     const normalizedSymbol = this.normalizeSymbol(symbol);
@@ -624,11 +627,13 @@ export class ExecutionLockService {
       status: 'PLACING',
       size,
       price,
+      initialPositionSize,
     };
 
     this.activeOrders.set(key, order);
     this.logger.log(
-      `📝 Order registered: ${orderId} for ${normalizedSymbol} (${side}) on ${exchange} by ${threadId}`,
+      `📝 Order registered: ${orderId} for ${normalizedSymbol} (${side}) on ${exchange} by ${threadId}` +
+      (initialPositionSize !== undefined ? ` (initial pos: ${initialPositionSize.toFixed(4)})` : ''),
     );
 
     return true;

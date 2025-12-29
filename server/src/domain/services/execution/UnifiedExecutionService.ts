@@ -354,7 +354,8 @@ export class UnifiedExecutionService {
           firstSide === OrderSide.LONG ? 'LONG' : 'SHORT',
           threadId,
           sliceSize,
-          firstPrice
+          firstPrice,
+          initialPositionSize // Track initial position for fill detection
         );
         this.executionLockService.updateOrderStatus(exchangeA, symbol, firstSide === OrderSide.LONG ? 'LONG' : 'SHORT', 'WAITING_FILL', firstResp.orderId);
         
@@ -480,7 +481,8 @@ export class UnifiedExecutionService {
           secondSide === OrderSide.LONG ? 'LONG' : 'SHORT',
           threadId,
           matchedSize,
-          secondPrice
+          secondPrice,
+          initialPositionSizeB // Track initial position for fill detection
         );
         this.executionLockService.updateOrderStatus(exchangeB, symbol, secondSide === OrderSide.LONG ? 'LONG' : 'SHORT', 'WAITING_FILL', secondResp.orderId);
         
