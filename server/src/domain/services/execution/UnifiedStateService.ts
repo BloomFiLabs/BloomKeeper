@@ -96,7 +96,8 @@ export class UnifiedStateService implements OnModuleInit {
     }
     
     if (this.lighterWs) {
-      this.lighterWs.subscribeToPositionUpdates();
+      // Lighter position subscriptions are handled by LighterExchangeAdapter.ensureInitialized()
+      // which calls setAccountIndex() after getting the account index from the API
       
       // Reactive position refresh on order updates
       this.lighterWs.on('order_update', (update) => {

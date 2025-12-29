@@ -222,23 +222,6 @@ export class LighterWebSocketProvider
   /**
    * Connect to Lighter WebSocket
    */
-  /**
-   * Subscribe to position and order updates for the account
-   */
-  subscribeToPositionUpdates(): void {
-    if (!this.accountAddress) {
-      this.logger.warn(`Cannot subscribe to positions: account address unknown`);
-      return;
-    }
-    
-    this.isPositionsSubscribed = true;
-    this.isOrdersSubscribed = true;
-    
-    if (this.isConnected) {
-      this.resubscribeAll();
-    }
-  }
-
   private async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
@@ -277,6 +260,12 @@ export class LighterWebSocketProvider
                   this.subscribeToAllMarkets();
                 }
               }, 2000);
+            }
+            
+            // Subscribe to positions/orders if account index is set
+            if (this.accountIndex && !this.isPositionsSubscribed) {
+              this.subscribeToPositions();
+              this.subscribeToOrders();
             }
           }, 500); // Increased delay to allow markets to be discovered
           resolve();
@@ -762,9 +751,11 @@ export class LighterWebSocketProvider
     }
     
     // Resubscribe to positions if we were subscribed
-    if (this.isPositionsSubscribed && this.accountAddress) {
+    if (this.accountIndex) {
       this.isPositionsSubscribed = false; // Reset to allow resubscription
-      this.subscribeToPositionUpdates();
+      this.isOrdersSubscribed = false;
+      this.subscribeToPositions();
+      this.subscribeToOrders();
     }
   }
 
@@ -988,7 +979,6 @@ export class LighterWebSocketProvider
    */
   subscribeToPositions(): void {
     if (!this.accountIndex) {
-      this.logger.debug('Cannot subscribe to positions: no account index set');
       return;
     }
 
