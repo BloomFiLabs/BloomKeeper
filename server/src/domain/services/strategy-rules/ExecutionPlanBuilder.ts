@@ -244,7 +244,8 @@ export class ExecutionPlanBuilder implements IExecutionPlanBuilder {
 
       // 2. Time-to-Recover Check (Payback Period)
       // Calculate how many hours of funding it takes to cover the basis cost if it moves 1 SD against us
-      const hourlyFundingUsd = (opportunity.spread.toDecimal() / 24) * 100; // per $100 notional
+      // opportunity.spread is HOURLY rate (e.g., 0.0001 = 0.01% per hour)
+      const hourlyFundingUsd = opportunity.spread.toDecimal() * 100; // per $100 notional
       const basisCostUsd = (Math.abs(basisBps) / 10000) * 100; // per $100 notional
       
       const hoursToRecoverBasis = hourlyFundingUsd > 0 ? basisCostUsd / hourlyFundingUsd : Infinity;

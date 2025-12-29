@@ -2427,12 +2427,54 @@ export class HyperliquidExchangeAdapter implements IPerpExchangeAdapter {
         }
 
         try {
-          // Check if order exists in ExecutionLockService (might have been repriced)
+          // Check if order exists in ExecutionLockService (might have been repriced or filled)
           if (this.executionLockService) {
             const activeOrder = this.executionLockService.getActiveOrder(ExchangeType.HYPERLIQUID, symbol, orderSide === OrderSide.LONG ? 'LONG' : 'SHORT');
+            
+            // Check if order was repriced (new order ID)
             if (activeOrder && activeOrder.orderId && activeOrder.orderId !== currentOrderId) {
               this.logger.debug(`📍 waitForOrderFill: Following repriced order ${currentOrderId} -> ${activeOrder.orderId}`);
               currentOrderId = activeOrder.orderId;
+            }
+            
+            // Check if order was marked as FILLED by MakerEfficiencyService
+            if (activeOrder && activeOrder.status === 'FILLED') {
+              this.logger.log(`✅ Order ${currentOrderId} marked as FILLED by MakerEfficiencyService`);
+              cleanup();
+              resolve(new PerpOrderResponse(
+                currentOrderId,
+                OrderStatus.FILLED,
+                symbol,
+                orderSide || OrderSide.LONG,
+                undefined,
+                expectedSize,
+                undefined,
+                undefined,
+                new Date()
+              ));
+              return;
+            }
+            
+            // Also check order history for recent fills (in case order was already moved to history)
+            const recentHistory = this.executionLockService.getOrderHistory(10);
+            const filledInHistory = recentHistory.find(
+              o => o.orderId === currentOrderId && o.status === 'FILLED'
+            );
+            if (filledInHistory) {
+              this.logger.log(`✅ Order ${currentOrderId} found in history as FILLED`);
+              cleanup();
+              resolve(new PerpOrderResponse(
+                currentOrderId,
+                OrderStatus.FILLED,
+                symbol,
+                orderSide || OrderSide.LONG,
+                undefined,
+                expectedSize,
+                undefined,
+                undefined,
+                new Date()
+              ));
+              return;
             }
           }
 

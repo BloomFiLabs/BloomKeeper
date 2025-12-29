@@ -474,7 +474,7 @@ export class MakerEfficiencyService implements OnModuleInit {
       } catch (error: any) {
         this.logger.error(`Failed to reposition order for ${symbol}: ${error.message}`);
         
-        // If the order no longer exists on the exchange, remove it from tracking
+        // If the order no longer exists on the exchange, check if it was filled
         // This prevents infinite retry loops for filled/cancelled orders
         if (
           error.message?.includes('already canceled') ||
@@ -484,14 +484,33 @@ export class MakerEfficiencyService implements OnModuleInit {
           error.message?.includes('Order not found') ||
           error.message?.includes('does not exist')
         ) {
-          this.logger.warn(
-            `🗑️ Order ${activeOrder.orderId} for ${symbol} no longer exists on ${exchange}, removing from tracking`
-          );
-          this.executionLockService.forceClearOrder(
-            exchange,
-            symbol,
-            activeOrder.side as 'LONG' | 'SHORT'
-          );
+          // IMPORTANT: Check if the order was actually FILLED before removing from tracking
+          // If it was filled, we should mark it as FILLED so waitForOrderFill can detect it
+          const errorMentionsFilled = error.message?.toLowerCase().includes('filled');
+          
+          if (errorMentionsFilled) {
+            // Order might have been filled - mark it as FILLED instead of force-clearing
+            this.logger.log(
+              `✅ Order ${activeOrder.orderId} for ${symbol} appears to have been FILLED (detected via modify error)`
+            );
+            this.executionLockService.updateOrderStatus(
+              exchange,
+              symbol,
+              activeOrder.side as 'LONG' | 'SHORT',
+              'FILLED',
+              activeOrder.orderId
+            );
+          } else {
+            // Order was cancelled or never placed - safe to remove from tracking
+            this.logger.warn(
+              `🗑️ Order ${activeOrder.orderId} for ${symbol} no longer exists on ${exchange}, removing from tracking`
+            );
+            this.executionLockService.forceClearOrder(
+              exchange,
+              symbol,
+              activeOrder.side as 'LONG' | 'SHORT'
+            );
+          }
         }
       }
     }
