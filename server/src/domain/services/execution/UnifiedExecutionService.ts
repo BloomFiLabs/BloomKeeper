@@ -222,7 +222,8 @@ export class UnifiedExecutionService {
         sliceNumber,
         cfg,
         firstIsLong,
-        effectiveThreadId
+        effectiveThreadId,
+        totalPortfolioUsd // Pass original portfolio value for stable safety check
       );
 
       result.sliceResults.push(sliceResult);
@@ -265,6 +266,7 @@ export class UnifiedExecutionService {
 
   /**
    * Execute a single slice sequentially
+   * @param originalPortfolioUsd - Portfolio value at execution planning time (for stable safety check)
    */
   private async executeSequentialSlice(
     longAdapter: IPerpExchangeAdapter,
@@ -277,6 +279,7 @@ export class UnifiedExecutionService {
     cfg: UnifiedExecutionConfig,
     firstIsLong: boolean,
     threadId: string,
+    originalPortfolioUsd: number,
   ): Promise<SliceResult> {
     const result: SliceResult = {
       sliceNumber,
@@ -295,8 +298,9 @@ export class UnifiedExecutionService {
 
     try {
       // --- FINAL SANITY CHECK ---
-      // Re-verify slice size against portfolio just before placing order
-      await this.validateSliceSafety(firstAdapter, secondAdapter, sliceSize, firstPrice, cfg);
+      // Verify slice size against ORIGINAL portfolio value (captured at planning time)
+      // This prevents false positives from portfolio fluctuations during execution
+      this.validateSliceSafety(sliceSize, firstPrice, originalPortfolioUsd, cfg);
 
       // --- STEP 1: Get initial position size BEFORE placing order ---
       // This is critical: if there's an existing position, we need to track the delta
@@ -671,24 +675,31 @@ export class UnifiedExecutionService {
     }
   }
 
-  private async validateSliceSafety(
-    adapterA: IPerpExchangeAdapter,
-    adapterB: IPerpExchangeAdapter,
+  /**
+   * Validate slice safety against the ORIGINAL portfolio value captured at planning time.
+   * 
+   * Why use original portfolio value instead of current equity?
+   * - During multi-slice execution, current equity fluctuates (fees, PnL, margin usage)
+   * - The slice sizes were calculated based on the original portfolio value
+   * - Using current equity can cause false positives when equity temporarily dips
+   * - The real safety was validated at planning time; this is just a sanity check
+   * 
+   * @param originalPortfolioUsd - The portfolio value captured at execution planning time
+   */
+  private validateSliceSafety(
     sliceSize: number,
     price: number,
+    originalPortfolioUsd: number,
     cfg: UnifiedExecutionConfig
-  ): Promise<void> {
-    const [equityA, equityB] = await Promise.all([
-      adapterA.getEquity().catch(() => 0),
-      adapterB.getEquity().catch(() => 0),
-    ]);
-    
-    const totalPortfolioUsd = equityA + equityB;
-    if (totalPortfolioUsd <= 0) return; // Can't validate if we can't get equity
+  ): void {
+    if (originalPortfolioUsd <= 0) return; // Can't validate without original portfolio
 
     const sliceUsd = sliceSize * price;
+    
+    // Use the ORIGINAL portfolio value (stable) with a small buffer for rounding
+    // The real safety validation happened at planning time when slices were calculated
     const maxAllowedUsd = Math.min(
-      totalPortfolioUsd * cfg.maxPortfolioPctPerSlice * 1.1, // 10% buffer
+      originalPortfolioUsd * cfg.maxPortfolioPctPerSlice * 1.1, // 10% buffer for rounding
       cfg.maxUsdPerSlice * 1.1
     );
 
@@ -696,8 +707,8 @@ export class UnifiedExecutionService {
       this.logger.error(
         `🚨 SPLICING SAFETY VIOLATION DETECTED 🚨\n` +
         `   Slice Size: $${sliceUsd.toFixed(2)}\n` +
-        `   Portfolio: $${totalPortfolioUsd.toFixed(2)}\n` +
-        `   Max Allowed: $${maxAllowedUsd.toFixed(2)} (${(cfg.maxPortfolioPctPerSlice * 100).toFixed(1)}% of portfolio)`
+        `   Original Portfolio: $${originalPortfolioUsd.toFixed(2)}\n` +
+        `   Max Allowed: $${maxAllowedUsd.toFixed(2)} (${(cfg.maxPortfolioPctPerSlice * 100).toFixed(1)}% of original portfolio)`
       );
       throw new Error(`Splicing safety violation: Slice size too large ($${sliceUsd.toFixed(2)})`);
     }
